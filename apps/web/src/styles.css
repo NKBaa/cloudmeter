@@ -297,6 +297,16 @@ nav a.active {
   width: 100%;
 }
 .icon-text:hover { background: var(--sidebar-2); color: #fff; }
+.nav-group {
+  margin: 16px 0 2px;
+  padding: 0 13px 3px;
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: rgba(255,255,255,.28);
+}
+.nav-group:first-of-type { margin-top: 0; }
 .workspace { padding: 42px 4vw; max-width: 1500px; }
 .workspace > header {
   display: flex;

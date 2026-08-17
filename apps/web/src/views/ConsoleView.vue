@@ -533,13 +533,15 @@ async function exitImpersonation(){const token=localStorage.getItem("admin_sessi
     <aside>
       <BrandMark />
       <nav>
-        <a class="active"><Gauge :size="18" />概览</a
-        ><a href="#apps"><AppWindow :size="18" />我的应用</a
-        ><a href="#billing"><CreditCard :size="18" />余额与账单</a
-        ><a href="#subscription"><BadgeDollarSign :size="18" />套餐</a
-        ><a href="#usage"><CreditCard :size="18" />用量明细</a
-        ><a href="/console/releases"><Rocket :size="18" />版本历史</a
-        ><a href="/console/backups"><ArchiveRestore :size="18" />备份与恢复</a>
+        <a class="active"><Gauge :size="18" />概览</a>
+        <div class="nav-group">应用管理</div>
+        <a href="#apps"><AppWindow :size="18" />我的应用</a>
+        <a href="/console/releases"><Rocket :size="18" />版本历史</a>
+        <a href="/console/backups"><ArchiveRestore :size="18" />备份与恢复</a>
+        <div class="nav-group">财务管理</div>
+        <a href="#billing"><CreditCard :size="18" />余额与账单</a>
+        <a href="#usage"><CreditCard :size="18" />用量明细</a>
+        <a href="#subscription"><BadgeDollarSign :size="18" />套餐订阅</a>
       </nav>
       <button class="icon-text" @click="logout">
         <LogOut :size="17" />退出

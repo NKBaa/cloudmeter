@@ -167,18 +167,28 @@ async function grantCredit(){
       <BrandMark/>
       <nav>
         <a class="active" href="#overview"><Activity :size="18"/>平台概览</a>
-        <a href="#accounts"><Users :size="18"/>账户</a>
-        <a href="/admin/products"><AppWindow :size="18"/>产品管理</a>
-        <a href="#announcements"><Megaphone :size="18"/>公告</a>
+        <div class="nav-group">用户管理</div>
+        <a href="#accounts"><Users :size="18"/>账户管理</a>
         <template v-if="isSuperAdmin">
-          <a href="/admin/plans"><BadgeDollarSign :size="18"/>套餐管理</a>
+          <a href="#registration"><Globe2 :size="18"/>注册策略</a>
+        </template>
+        <div class="nav-group">产品管理</div>
+        <a href="/admin/products"><AppWindow :size="18"/>产品与版本</a>
+        <template v-if="isSuperAdmin">
           <a href="/admin/pricing"><BadgeCent :size="18"/>价格管理</a>
+          <a href="/admin/plans"><BadgeDollarSign :size="18"/>套餐管理</a>
+        </template>
+        <div class="nav-group">财务运营</div>
+        <template v-if="isSuperAdmin">
           <a href="/admin/payments"><CreditCard :size="18"/>充值订单</a>
           <a href="/admin/payment-settings"><Settings2 :size="18"/>支付设置</a>
+        </template>
+        <div class="nav-group">系统设置</div>
+        <a href="#announcements"><Megaphone :size="18"/>公告管理</a>
+        <template v-if="isSuperAdmin">
+          <a href="#oauth"><KeyRound :size="18"/>OAuth 认证</a>
+          <a href="#mail"><MailCheck :size="18"/>SMTP 邮件</a>
           <a href="/admin/audit"><FileClock :size="18"/>审计日志</a>
-          <a href="#registration"><Globe2 :size="18"/>注册策略</a>
-          <a href="#oauth"><KeyRound :size="18"/>OAuth</a>
-          <a href="#mail"><MailCheck :size="18"/>SMTP</a>
         </template>
       </nav>
       <button class="icon-text" @click="logout"><LogOut :size="17"/>退出</button>
