@@ -218,3 +218,24 @@ bash deploy/verify.sh
 ```
 
 正式栈和验收栈不得使用同一个 `COMPOSE_PROJECT_NAME`。需要删除验收数据时，先用 `docker compose ... ps` 确认当前项目名和资源范围，再仅对验收项目执行清理。
+
+### 防止 WSL 空闲自动关机
+
+WSL2 发行版空闲约 60 秒会被自动关机（`vmIdleTimeout`），导致 Docker 引擎和全部容器周期性掉线。若平台长期运行在 Windows 的 WSL Ubuntu 中，请修改 `C:\Users\<用户名>\.wslconfig`：
+
+```ini
+[wsl2]
+localhostForwarding=true
+vmIdleTimeout=86400000
+```
+
+然后创建 Windows 计划任务（登录时自启），常驻一个 WSL 会话防止空闲关机。保活脚本示例：
+
+```powershell
+while ($true) {
+  & 'C:\Windows\System32\wsl.exe' -d Ubuntu-24.04 -- bash -lc 'while true; do sleep 3600; done'
+  Start-Sleep -Seconds 10
+}
+```
+
+同时确保 Docker Desktop 未与 Ubuntu 本地引擎同时运行同一批容器，避免双引擎互相抢占端口和资源；Ubuntu 本地 `docker.service` 应保持 enabled。保活任务保持常驻后，`wsl --shutdown` 也会在约 25 秒内被计划任务重新拉起，服务自动恢复。
