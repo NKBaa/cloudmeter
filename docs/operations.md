@@ -6,6 +6,8 @@
 
 需要实际创建用户应用时，将 `DOCKER_EXECUTOR_ENABLED=true`，并确认 `DOCKER_SOCKET_PATH` 指向 Docker Engine Socket；Socket 只挂载到 Worker，API、Web、Router 和用户容器不会获得该权限。
 
+用户端“每日签到”按 `Asia/Shanghai` 自然日计算，每位用户每天最多一次。奖励使用加密安全随机数生成并作为 `checkin_reward` 追加到不可修改的钱包账本；重复请求只返回当日原奖励。超级管理员可在“签到设置”中开关功能并配置 1–10000 分的奖励范围，设置变更写入审计日志。
+
 首次启动前必须生成一次 `SECRETS_ENCRYPTION_KEY`：
 
 ```bash

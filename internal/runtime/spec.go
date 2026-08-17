@@ -112,6 +112,20 @@ func ValidateRuntimeSpec(spec map[string]any) error {
 			return fmt.Errorf("environment variables exceed the 32 KiB limit")
 		}
 	}
+	if raw, exists := spec["editableEnvKeys"]; exists {
+		values, ok := raw.([]any)
+		if !ok { return fmt.Errorf("editableEnvKeys must be an array") }
+		if len(values) > 128 { return fmt.Errorf("editableEnvKeys may contain at most 128 entries") }
+		seen := map[string]bool{}
+		environment, _ := spec["env"].(map[string]any)
+		for _, rawKey := range values {
+			key, ok := rawKey.(string)
+			if !ok || !environmentKeyPattern.MatchString(key) { return fmt.Errorf("editable environment variable name is invalid") }
+			if seen[key] { return fmt.Errorf("editable environment variable %q is duplicated", key) }
+			if _, exists := environment[key]; !exists { return fmt.Errorf("editable environment variable %q has no default value", key) }
+			seen[key] = true
+		}
+	}
 	secretKeys, err := RuntimeSecretKeys(spec)
 	if err != nil {
 		return err

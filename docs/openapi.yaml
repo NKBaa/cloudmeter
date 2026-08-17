@@ -227,6 +227,22 @@ paths:
       security: [{bearerAuth: []}]
       responses:
         '200': {description: Available credit grants and immutable consumption history}
+  /checkin:
+    get:
+      operationId: checkinSummary
+      description: Returns the selected Beijing-time calendar month, reward totals, reward range, and today's status.
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: month, in: query, schema: {type: string, pattern: '^\d{4}-(0[1-9]|1[0-2])$'}}
+      responses: {'200': {description: Daily check-in summary and checked dates}}
+    post:
+      operationId: performCheckin
+      description: Idempotently grants one cryptographically random wallet reward per Beijing calendar day.
+      security: [{bearerAuth: []}]
+      responses:
+        '201': {description: Reward appended to the immutable wallet ledger}
+        '200': {description: Today's existing reward returned without another credit}
+        '409': {description: Daily check-in is disabled}
   /subscriptions/plans:
     get:
       operationId: subscriptionPlans
@@ -740,6 +756,17 @@ paths:
       operationId: getPaymentSettings
       security: [{bearerAuth: []}]
       responses: {'200': {description: Payment provider settings without secrets}}
+  /admin/settings/checkin:
+    get:
+      operationId: getCheckinSettings
+      security: [{bearerAuth: []}]
+      responses: {'200': {description: Daily check-in enablement and reward range}}
+    put:
+      operationId: updateCheckinSettings
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: Daily check-in settings updated}
+        '400': {description: Invalid reward range}
   /admin/settings/payments/{provider}:
     put:
       operationId: updatePaymentSettings

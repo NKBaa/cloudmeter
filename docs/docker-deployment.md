@@ -322,7 +322,13 @@ powershell -ExecutionPolicy Bypass -File deploy/verify.ps1
    compose 文件位于 `deploy/` 子目录，未指定 `--env-file .env` 时默认只读取当前目录下的 `.env`。所有命令务必使用 `docker compose --env-file .env -f deploy/compose.yaml ...`。
 
 6. **GitHub 无预构建镜像 / 私有仓库无法 `docker pull`**
-   本项目所有镜像均由部署机从源码本地构建（`up -d --build`），不要尝试从 GitHub Container Registry 拉取。
+本项目所有镜像均由部署机从源码本地构建（`up -d --build`），不要尝试从 GitHub Container Registry 拉取。
+
+### 应用端口说明
+
+CloudMeter 不会为每个用户应用创建宿主机 `-p` 映射，也不会假设所有镜像都支持 `PORT` 环境变量。产品版本中的“应用内部监听端口”必须与镜像实际监听端口一致，统一由平台 Gateway 通过 `/apps/{user_slug}/{app_slug}` 转发，因此宿主机始终只需开放 `PLATFORM_PORT`。
+
+若某个镜像确实支持动态监听端口，管理员可在产品版本中显式开启“允许用户修改内部端口”，并按镜像文档指定 `PORT`、`SERVER_PORT` 等真实环境变量；平台仅在该模板明确声明后同步用户选择，不会向其他镜像擅自注入端口变量。
 
 7. **WSL 重启后容器未自动恢复**
    Windows 重启或 WSL 发行版被关闭后，容器不会自动拉起。可参照 [operations.md](operations.md) 中的 WSL 常驻保活方案（Windows 计划任务自动拉起），或手动恢复：

@@ -89,33 +89,6 @@ func (s *Server) createAppBackup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "volume_not_found", "volume is not declared by the active release")
 		return
 	}
-	var maxStorageGiB string
-	var maxOperations int
-	err = tx.QueryRow(r.Context(), `SELECT coalesce((entitlements_snapshot->>'backupStorageGiB')::numeric,0),coalesce((entitlements_snapshot->>'backupOperationsPerMonth')::int,0)
-		FROM user_subscriptions WHERE user_id=$1 AND (status='grace_period' OR (status='active' AND (ends_at IS NULL OR ends_at+interval '3 days'>now()))) FOR UPDATE`, p.ID).Scan(&maxStorageGiB, &maxOperations)
-	if err == pgx.ErrNoRows {
-		writeError(w, 409, "subscription_required", "an active subscription is required")
-		return
-	} else if err != nil {
-		s.internalError(w, err)
-		return
-	}
-	var operations int
-	var usedBytes int64
-	if err = tx.QueryRow(r.Context(), `SELECT count(*) FILTER (WHERE b.created_at>=date_trunc('month',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'),
-		coalesce(sum(CASE WHEN b.status IN ('queued','running','succeeded') THEN coalesce(b.size_bytes,b.reserved_bytes) ELSE 0 END),0)
-		FROM app_backups b JOIN user_apps owned ON owned.id=b.user_app_id WHERE owned.user_id=$1`, p.ID).Scan(&operations, &usedBytes); err != nil {
-		s.internalError(w, err)
-		return
-	}
-	if operations >= maxOperations {
-		writeError(w, 409, "backup_operation_quota_exceeded", "monthly backup operation quota has been reached")
-		return
-	}
-	if backupStorageQuotaExceeded(maxStorageGiB, usedBytes, reservedBytes) {
-		writeError(w, 409, "backup_storage_quota_exceeded", "backup storage entitlement has been reached")
-		return
-	}
 	var active bool
 	if err = tx.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM app_backups WHERE user_app_id=$1 AND volume_key=$2 AND status IN ('queued','running'))`, appID, q.VolumeKey).Scan(&active); err != nil {
 		s.internalError(w, err)

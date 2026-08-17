@@ -209,6 +209,8 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/billing/bills/{billID}", s.authenticate(http.HandlerFunc(s.billingStatementDetail)))
 	s.mux.Handle("GET /api/billing/bills/{billID}/export", s.authenticate(http.HandlerFunc(s.exportBillingStatement)))
 	s.mux.Handle("GET /api/billing/credits", s.authenticate(http.HandlerFunc(s.listCredits)))
+	s.mux.Handle("GET /api/checkin", s.authenticate(http.HandlerFunc(s.checkinSummary)))
+	s.mux.Handle("POST /api/checkin", s.authenticate(http.HandlerFunc(s.performCheckin)))
 	s.mux.Handle("GET /api/subscriptions/plans", s.authenticate(http.HandlerFunc(s.subscriptionPlans)))
 	s.mux.Handle("POST /api/subscriptions/purchases", s.authenticate(http.HandlerFunc(s.purchaseSubscription)))
 	s.mux.Handle("GET /api/payments/orders", s.authenticate(http.HandlerFunc(s.listPaymentOrders)))
@@ -223,6 +225,8 @@ func (s *Server) routes() {
 	s.mux.Handle("POST /api/admin/payments/orders/{orderID}/query", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.queryPayment))))
 	s.mux.Handle("POST /api/admin/payments/orders/{orderID}/close", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.closePayment))))
 	s.mux.Handle("GET /api/admin/settings/payments", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.getPaymentSettings))))
+	s.mux.Handle("GET /api/admin/settings/checkin", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.getCheckinSettings))))
+	s.mux.Handle("PUT /api/admin/settings/checkin", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.updateCheckinSettings))))
 	s.mux.Handle("PUT /api/admin/settings/payments/{provider}", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.updatePaymentSettings))))
 	s.mux.Handle("GET /api/admin/pricing", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.adminPricing))))
 	s.mux.Handle("GET /api/admin/plans", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.adminPlans))))
@@ -644,13 +648,9 @@ type createVersionRequest struct {
 func (s *Server) listProducts(w http.ResponseWriter, r *http.Request) {
 	p, _ := r.Context().Value(principalKey).(principal)
 	rows, err := s.db.Query(r.Context(), `SELECT p.id,p.slug,p.name,pv.id,pv.version,pv.image_digest,pv.runtime_spec,pv.route_spec,pv.health_spec,pv.update_spec,
-		EXISTS(SELECT 1 FROM user_subscriptions us WHERE us.user_id=$1
-		  AND (us.status='grace_period' OR (us.status='active' AND (us.ends_at IS NULL OR us.ends_at+interval '3 days'>now())))
-		  AND (NOT (us.entitlements_snapshot ? 'allowedProductIds')
-		    OR jsonb_array_length(us.entitlements_snapshot->'allowedProductIds')=0
-		    OR us.entitlements_snapshot->'allowedProductIds' ? p.id::text)) AS deployable
+		true AS deployable
 		FROM app_products p JOIN app_product_versions pv ON pv.product_id=p.id
-		WHERE p.status='published' AND pv.published_at IS NOT NULL ORDER BY p.name,pv.version DESC`, p.ID)
+		WHERE p.status='published' AND pv.published_at IS NOT NULL ORDER BY p.name,pv.version DESC`)
 	if err != nil {
 		s.internalError(w, err)
 		return
@@ -699,6 +699,150 @@ type createAppRequest struct {
 	Slug           string            `json:"slug"`
 	IdempotencyKey string            `json:"idempotencyKey"`
 	Secrets        map[string]string `json:"secrets"`
+	Resources      selectedResources `json:"resources"`
+}
+
+type selectedResources struct {
+	CPUCores      *float64             `json:"cpuCores"`
+	MemoryMiB     *float64             `json:"memoryMiB"`
+	SystemDiskGiB *float64             `json:"systemDiskGiB"`
+	VolumeSizes   map[string]float64   `json:"volumeSizes"`
+	Command       []string             `json:"command"`
+	Environment   map[string]string    `json:"environment"`
+	Dependencies  []selectedDependency `json:"dependencies"`
+	ContainerPort *int                 `json:"containerPort"`
+}
+
+type selectedDependency struct {
+	Key         string `json:"key"`
+	ProductID   string `json:"productId"`
+	ServiceSlug string `json:"serviceSlug"`
+	Required    bool   `json:"required"`
+}
+
+func selectedRuntimeSpec(template map[string]any, selected selectedResources) (map[string]any, error) {
+	encoded, err := json.Marshal(template)
+	if err != nil {
+		return nil, err
+	}
+	var result map[string]any
+	if err = json.Unmarshal(encoded, &result); err != nil {
+		return nil, err
+	}
+	minimumCompute, err := runtimepolicy.RuntimeResources(result, true)
+	if err != nil {
+		return nil, err
+	}
+	minimumStorage, err := runtimepolicy.RuntimeStorage(result, true)
+	if err != nil {
+		return nil, err
+	}
+	cpu, memory, systemDisk := minimumCompute.CPUCores, minimumCompute.MemoryMiB, minimumStorage.SystemDiskGiB
+	if selected.CPUCores != nil {
+		cpu = *selected.CPUCores
+	}
+	if selected.MemoryMiB != nil {
+		memory = *selected.MemoryMiB
+	}
+	if selected.SystemDiskGiB != nil {
+		systemDisk = *selected.SystemDiskGiB
+	}
+	if cpu < minimumCompute.CPUCores || memory < minimumCompute.MemoryMiB || systemDisk < minimumStorage.SystemDiskGiB {
+		return nil, fmt.Errorf("selected CPU, memory and system disk must meet the product minimum")
+	}
+	result["cpuCores"], result["memoryMiB"], result["systemDiskGiB"] = cpu, memory, systemDisk
+	if volumes, ok := result["volumes"].([]any); ok {
+		for _, raw := range volumes {
+			volume, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			name, _ := volume["name"].(string)
+			minimum, _ := volume["sizeGiB"].(float64)
+			if chosen, exists := selected.VolumeSizes[name]; exists {
+				if chosen < minimum {
+					return nil, fmt.Errorf("volume %s must be at least %.0f GiB", name, minimum)
+				}
+				volume["sizeGiB"] = chosen
+			}
+		}
+	}
+	if selected.Command != nil {
+		result["command"] = selected.Command
+	}
+	if selected.Environment != nil {
+		environment, _ := result["env"].(map[string]any)
+		if environment == nil {
+			environment = map[string]any{}
+		}
+		allowed := map[string]bool{}
+		if rawKeys, ok := result["editableEnvKeys"].([]any); ok {
+			for _, rawKey := range rawKeys {
+				if key, ok := rawKey.(string); ok {
+					allowed[key] = true
+				}
+			}
+		}
+		for key, value := range selected.Environment {
+			if !allowed[key] {
+				return nil, fmt.Errorf("environment variable %s is not editable for this product", key)
+			}
+			environment[key] = value
+		}
+		result["env"] = environment
+	}
+	if selected.Dependencies != nil {
+		dependencies := make([]any, 0, len(selected.Dependencies))
+		for _, dependency := range selected.Dependencies {
+			dependencies = append(dependencies, map[string]any{"key": dependency.Key, "productId": dependency.ProductID, "serviceSlug": dependency.ServiceSlug, "required": dependency.Required})
+		}
+		result["dependencies"] = dependencies
+	}
+	if err = runtimepolicy.ValidateRuntimeSpec(result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func selectedRouteSpec(template map[string]any, selected selectedResources) (map[string]any, error) {
+	encoded, err := json.Marshal(template)
+	if err != nil {
+		return nil, err
+	}
+	var result map[string]any
+	if err = json.Unmarshal(encoded, &result); err != nil {
+		return nil, err
+	}
+	if selected.ContainerPort != nil {
+		templatePort, _ := exactInteger(result["containerPort"])
+		portEditable, _ := result["portEditable"].(bool)
+		if *selected.ContainerPort != templatePort && !portEditable {
+			return nil, fmt.Errorf("container port is fixed by the product template")
+		}
+		result["containerPort"] = float64(*selected.ContainerPort)
+	}
+	if err = normalizeRouteSpec(result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func bindRuntimePort(runtimeSpec, routeSpec map[string]any) error {
+	port, ok := exactInteger(routeSpec["containerPort"])
+	if !ok || port < 1 || port > 65535 {
+		return fmt.Errorf("container port must be between 1 and 65535")
+	}
+	if portEditable, _ := routeSpec["portEditable"].(bool); portEditable {
+		if key, _ := routeSpec["portEnvVar"].(string); key != "" {
+			environment, _ := runtimeSpec["env"].(map[string]any)
+			if environment == nil {
+				environment = map[string]any{}
+			}
+			environment[key] = fmt.Sprint(port)
+			runtimeSpec["env"] = environment
+		}
+	}
+	return runtimepolicy.ValidateRuntimeSpec(runtimeSpec)
 }
 
 var appSlugPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
@@ -817,39 +961,25 @@ func (s *Server) createApp(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, err)
 		return
 	}
-	var appLimit, currentApps, ingressLimit, currentIngresses int
-	var productAllowed, ingressOverageEnabled bool
-	err = tx.QueryRow(r.Context(), `SELECT coalesce((us.entitlements_snapshot->>'apps')::int,0),(SELECT count(*) FROM user_apps WHERE user_id=$1),
-		coalesce((us.entitlements_snapshot->>'publicIngresses')::int,coalesce((us.entitlements_snapshot->>'apps')::int,0)),
-		(SELECT count(*) FROM user_apps a WHERE a.user_id=$1 AND (EXISTS(SELECT 1 FROM app_routes ar WHERE ar.user_app_id=a.id) OR a.status IN ('deploying','updating'))),
-		coalesce((us.entitlements_snapshot->>'ingressOverageEnabled')::boolean,false),
-		NOT (us.entitlements_snapshot ? 'allowedProductIds') OR jsonb_array_length(us.entitlements_snapshot->'allowedProductIds')=0 OR us.entitlements_snapshot->'allowedProductIds' ? $2::text
-		FROM user_subscriptions us WHERE us.user_id=$1 AND (us.status='grace_period' OR (us.status='active' AND (us.ends_at IS NULL OR us.ends_at+interval '3 days'>now()))) FOR UPDATE`, p.ID, req.ProductID).Scan(&appLimit, &currentApps, &ingressLimit, &currentIngresses, &ingressOverageEnabled, &productAllowed)
-	if err == pgx.ErrNoRows {
-		writeError(w, 409, "subscription_required", "an active subscription is required")
-		return
-	}
-	if err != nil {
-		s.internalError(w, err)
-		return
-	}
-	if currentApps >= appLimit {
-		writeError(w, 409, "app_quota_exceeded", "application quota has been reached")
-		return
-	}
-	if currentIngresses >= ingressLimit && !ingressOverageEnabled {
-		writeError(w, 409, "public_ingress_quota_exceeded", "public ingress entitlement has been reached")
-		return
-	}
-	if !productAllowed {
-		writeError(w, 403, "product_not_in_plan", "the current plan does not include this product")
-		return
-	}
 	var productSlug, imageDigest string
 	var runtimeSpec, routeSpec, healthSpec, updateSpec map[string]any
 	err = tx.QueryRow(r.Context(), `SELECT p.slug,pv.image_digest,pv.runtime_spec,pv.route_spec,pv.health_spec,pv.update_spec FROM app_products p JOIN app_product_versions pv ON pv.product_id=p.id WHERE p.id=$1 AND pv.id=$2 AND p.status='published' AND pv.published_at IS NOT NULL`, req.ProductID, req.VersionID).Scan(&productSlug, &imageDigest, &runtimeSpec, &routeSpec, &healthSpec, &updateSpec)
 	if err != nil {
 		writeError(w, 404, "template_unavailable", "published product version not found")
+		return
+	}
+	runtimeSpec, err = selectedRuntimeSpec(runtimeSpec, req.Resources)
+	if err != nil {
+		writeError(w, 400, "invalid_resource_selection", err.Error())
+		return
+	}
+	routeSpec, err = selectedRouteSpec(routeSpec, req.Resources)
+	if err != nil {
+		writeError(w, 400, "invalid_deployment_configuration", err.Error())
+		return
+	}
+	if err = bindRuntimePort(runtimeSpec, routeSpec); err != nil {
+		writeError(w, 400, "invalid_deployment_configuration", err.Error())
 		return
 	}
 	if err = enforceRuntimeEntitlements(r.Context(), tx, p.ID, "", runtimeSpec); err != nil {

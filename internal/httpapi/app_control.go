@@ -219,36 +219,6 @@ func (s *Server) startApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var allowed bool
-	var ingressLimit, activeIngresses int
-	var ingressOverage bool
-	err = tx.QueryRow(r.Context(), `SELECT
-		NOT (subscription.entitlements_snapshot ? 'allowedProductIds')
-		  OR jsonb_array_length(subscription.entitlements_snapshot->'allowedProductIds')=0
-		  OR subscription.entitlements_snapshot->'allowedProductIds' ? $2::text,
-		coalesce((subscription.entitlements_snapshot->>'publicIngresses')::int,coalesce((subscription.entitlements_snapshot->>'apps')::int,0)),
-		(SELECT count(*) FROM user_apps candidate WHERE candidate.user_id=$1 AND candidate.id<>$3 AND candidate.status IN ('deploying','running','updating')),
-		coalesce((subscription.entitlements_snapshot->>'ingressOverageEnabled')::boolean,false)
-		FROM user_subscriptions subscription WHERE subscription.user_id=$1
-		  AND (subscription.status='grace_period' OR (subscription.status='active' AND (subscription.ends_at IS NULL OR subscription.ends_at+interval '3 days'>now())))
-		FOR UPDATE`, p.ID, productID, appID).Scan(&allowed, &ingressLimit, &activeIngresses, &ingressOverage)
-	if err == pgx.ErrNoRows {
-		writeError(w, http.StatusConflict, "subscription_required", "an active subscription is required")
-		return
-	}
-	if err != nil {
-		s.internalError(w, err)
-		return
-	}
-	if !allowed {
-		writeError(w, http.StatusForbidden, "product_not_in_plan", "the current plan does not include this product")
-		return
-	}
-	if activeIngresses >= ingressLimit && !ingressOverage {
-		writeError(w, http.StatusConflict, "public_ingress_quota_exceeded", "public ingress entitlement has been reached")
-		return
-	}
-
 	var versionID string
 	var snapshot map[string]any
 	if err = tx.QueryRow(r.Context(), `SELECT product_version_id::text,immutable_snapshot FROM app_releases

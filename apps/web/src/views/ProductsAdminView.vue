@@ -31,11 +31,11 @@ type Volume = { name: string; mountPath: string; sizeGiB: number };
 type Dependency = { key: string; productId: string; serviceSlug: string; required: boolean };
 type RuntimeSpec = {
   cpuCores?: number; memoryMiB?: number; systemDiskGiB?: number;
-  command?: string[]; env?: Record<string, string>; secretKeys?: string[]; volumes?: Volume[]; dependencies?: Dependency[];
+  command?: string[]; env?: Record<string, string>; editableEnvKeys?: string[]; secretKeys?: string[]; volumes?: Volume[]; dependencies?: Dependency[];
 };
 type RouteSpec = {
   containerPort?: number; basePath?: string; stripPrefix?: boolean;
-  websocket?: boolean; sse?: boolean; cookiePath?: string;
+  websocket?: boolean; sse?: boolean; cookiePath?: string; portEditable?: boolean; portEnvVar?: string;
 };
 type HealthSpec = { path?: string; intervalSeconds?: number; timeoutSeconds?: number };
 type UpdateSpec = { dataPolicy?: string };
@@ -45,12 +45,12 @@ type Version = {
   latestTest?: { id: string; state: string; attempts: number; lastError?: string | null; completedAt?: string | null };
 };
 type Product = { id: string; slug: string; name: string; status: string; versions: Version[] };
-type KeyValue = { key: string; value: string };
+type KeyValue = { key: string; value: string; editable: boolean };
 type VersionForm = {
   imageDigest: string; cpuCores: number; memoryMiB: number; systemDiskGiB: number;
   command: { value: string }[]; environment: KeyValue[]; secrets: { key: string }[]; volumes: Volume[];
   dependencies: Dependency[];
-  containerPort: number; basePath: string; stripPrefix: boolean; websocket: boolean; sse: boolean; cookiePath: string;
+  containerPort: number; portEditable: boolean; portEnvVar: string; basePath: string; stripPrefix: boolean; websocket: boolean; sse: boolean; cookiePath: string;
   healthPath: string; intervalSeconds: number; timeoutSeconds: number;
   dataPolicy: "stateless" | "volume_compatible" | "backup_required";
 };
@@ -73,7 +73,7 @@ function defaultVersionForm(): VersionForm {
   return {
     imageDigest: "", cpuCores: 1, memoryMiB: 512, systemDiskGiB: 5,
     command: [], environment: [], secrets: [], volumes: [], dependencies: [],
-    containerPort: 8080, basePath: "/", stripPrefix: true, websocket: true, sse: true, cookiePath: "/",
+    containerPort: 8080, portEditable: false, portEnvVar: "", basePath: "/", stripPrefix: true, websocket: true, sse: true, cookiePath: "/",
     healthPath: "/health", intervalSeconds: 10, timeoutSeconds: 5, dataPolicy: "volume_compatible",
   };
 }
@@ -160,6 +160,7 @@ function uniqueEntries(entries: KeyValue[]) {
   }
   return values;
 }
+function editableEnvironmentKeys() { return versionForm.environment.filter(entry => entry.editable && entry.key.trim()).map(entry => entry.key.trim()); }
 function secretKeys() {
   const values = versionForm.secrets.map((entry) => entry.key.trim().toUpperCase()).filter(Boolean);
   if (new Set(values).size !== values.length) throw new Error("Secret 名称不能重复");
@@ -183,7 +184,7 @@ async function createVersion() {
     const runtimeSpec: RuntimeSpec = {
       cpuCores: versionForm.cpuCores, memoryMiB: versionForm.memoryMiB, systemDiskGiB: versionForm.systemDiskGiB,
       volumes: versionForm.volumes.map((volume) => ({ name: volume.name.trim().toLowerCase(), mountPath: volume.mountPath.trim(), sizeGiB: volume.sizeGiB })),
-      env: uniqueEntries(versionForm.environment), secretKeys: secretKeys(), dependencies: dependencies(),
+      env: uniqueEntries(versionForm.environment), editableEnvKeys: editableEnvironmentKeys(), secretKeys: secretKeys(), dependencies: dependencies(),
     };
     const command = versionForm.command.map((argument) => argument.value.trim()).filter(Boolean);
     if (command.length) runtimeSpec.command = command;
@@ -191,7 +192,7 @@ async function createVersion() {
       method: "POST",
       body: JSON.stringify({
         imageDigest: versionForm.imageDigest.trim(), runtimeSpec,
-        routeSpec: { containerPort: versionForm.containerPort, basePath: versionForm.basePath.trim() || "/", stripPrefix: versionForm.stripPrefix, websocket: versionForm.websocket, sse: versionForm.sse, cookiePath: versionForm.cookiePath.trim() },
+        routeSpec: { containerPort: versionForm.containerPort, portEditable: versionForm.portEditable, portEnvVar: versionForm.portEditable ? versionForm.portEnvVar.trim() : "", basePath: versionForm.basePath.trim() || "/", stripPrefix: versionForm.stripPrefix, websocket: versionForm.websocket, sse: versionForm.sse, cookiePath: versionForm.cookiePath.trim() },
         healthSpec: { path: versionForm.healthPath.trim(), intervalSeconds: versionForm.intervalSeconds, timeoutSeconds: versionForm.timeoutSeconds },
         updateSpec: { dataPolicy: versionForm.dataPolicy },
       }),
@@ -282,9 +283,9 @@ function dataPolicyLabel(value?: string) {
                 <div class="config-heading"><Settings2 :size="18" /><div><strong>镜像与资源</strong><small>镜像必须固定到 SHA-256 Digest</small></div></div>
                 <label>镜像 Digest<input v-model="versionForm.imageDigest" required placeholder="ghcr.io/org/app@sha256:..." /></label>
                 <div class="config-grid three">
-                  <label>CPU 核心<input v-model.number="versionForm.cpuCores" type="number" min="0.1" max="64" step="0.1" required /></label>
-                  <label>内存 MiB<input v-model.number="versionForm.memoryMiB" type="number" min="64" max="262144" step="64" required /></label>
-                  <label>系统盘 GiB<input v-model.number="versionForm.systemDiskGiB" type="number" min="1" max="1024" step="1" required /></label>
+                  <label>最低 CPU 核心<input v-model.number="versionForm.cpuCores" type="number" min="0.1" max="64" step="0.1" required /></label>
+                  <label>最低内存 MiB<input v-model.number="versionForm.memoryMiB" type="number" min="64" max="262144" step="64" required /></label>
+                  <label>最低系统盘 GiB<input v-model.number="versionForm.systemDiskGiB" type="number" min="1" max="1024" step="1" required /></label>
                 </div>
               </section>
               <section class="config-section">
@@ -292,8 +293,8 @@ function dataPolicyLabel(value?: string) {
                 <div class="repeat-list"><div v-for="(argument, index) in versionForm.command" :key="index" class="repeat-row command-row"><input v-model="argument.value" :placeholder="index === 0 ? 'python' : '-m'" /><button type="button" class="icon-action" title="删除参数" @click="removeAt(versionForm.command, index)"><Trash2 :size="16" /></button></div><p v-if="!versionForm.command.length" class="quiet empty-inline">使用镜像默认命令</p></div>
               </section>
               <section class="config-section">
-                <div class="config-heading with-action"><Settings2 :size="18" /><div><strong>普通环境变量</strong><small>只保存非敏感配置，敏感值使用 Secret</small></div><button type="button" class="secondary compact" @click="versionForm.environment.push({ key: '', value: '' })"><Plus :size="15" />变量</button></div>
-                <div class="repeat-list"><div v-for="(entry, index) in versionForm.environment" :key="index" class="repeat-row key-value-row"><input v-model="entry.key" placeholder="APP_MODE" /><input v-model="entry.value" placeholder="production" /><button type="button" class="icon-action" title="删除变量" @click="removeAt(versionForm.environment, index)"><Trash2 :size="16" /></button></div><p v-if="!versionForm.environment.length" class="quiet empty-inline">没有普通环境变量</p></div>
+                <div class="config-heading with-action"><Settings2 :size="18" /><div><strong>普通环境变量</strong><small>可选择是否向用户展示并允许覆盖默认值</small></div><button type="button" class="secondary compact" @click="versionForm.environment.push({ key: '', value: '', editable: false })"><Plus :size="15" />变量</button></div>
+                <div class="repeat-list"><div v-for="(entry, index) in versionForm.environment" :key="index" class="repeat-row key-value-row editable-env-row"><input v-model="entry.key" placeholder="APP_MODE" /><input v-model="entry.value" placeholder="production" /><label class="toggle"><input v-model="entry.editable" type="checkbox"/>用户可改</label><button type="button" class="icon-action" title="删除变量" @click="removeAt(versionForm.environment, index)"><Trash2 :size="16" /></button></div><p v-if="!versionForm.environment.length" class="quiet empty-inline">没有普通环境变量</p></div>
               </section>
               <section class="config-section">
                 <div class="config-heading with-action"><KeyRound :size="18" /><div><strong>部署 Secret</strong><small>用户部署时必须填写，平台加密保存且不回显</small></div><button type="button" class="secondary compact" @click="versionForm.secrets.push({ key: '' })"><Plus :size="15" />Secret</button></div>
@@ -310,7 +311,8 @@ function dataPolicyLabel(value?: string) {
               </section>
               <section class="config-section">
                 <div class="config-heading"><Network :size="18" /><div><strong>路径路由</strong><small>公网入口由平台生成，内部路径按应用要求转发</small></div></div>
-                <div class="config-grid three"><label>容器端口<input v-model.number="versionForm.containerPort" type="number" min="1" max="65535" step="1" required /></label><label>内部 Base Path<input v-model="versionForm.basePath" required placeholder="/" /></label><label>Cookie Path<input v-model="versionForm.cookiePath" placeholder="/" /><small>留空不改写 Cookie Path</small></label></div>
+                <div class="config-grid three"><label>应用内部监听端口<input v-model.number="versionForm.containerPort" type="number" min="1" max="65535" step="1" required /><small>由镜像决定，网关自动转发到此端口</small></label><label>内部 Base Path<input v-model="versionForm.basePath" required placeholder="/" /></label><label>Cookie Path<input v-model="versionForm.cookiePath" placeholder="/" /><small>留空不改写 Cookie Path</small></label></div>
+                <div class="config-grid three"><label class="toggle"><input v-model="versionForm.portEditable" type="checkbox"/>允许用户修改内部端口</label><label>端口环境变量（可选）<input v-model="versionForm.portEnvVar" :disabled="!versionForm.portEditable" placeholder="例如 PORT 或 SERVER_PORT" pattern="[A-Za-z_][A-Za-z0-9_]{0,127}"/><small>只有镜像明确支持时填写；留空表示镜像通过命令或配置读取</small></label></div>
                 <div class="toggle-grid"><label class="toggle"><input v-model="versionForm.stripPrefix" type="checkbox" @change="applyPrefixMode" />移除平台应用前缀</label><label class="toggle"><input v-model="versionForm.websocket" type="checkbox" />允许 WebSocket</label><label class="toggle"><input v-model="versionForm.sse" type="checkbox" />允许 SSE 流式响应</label></div>
               </section>
               <section class="config-section">
@@ -326,7 +328,7 @@ function dataPolicyLabel(value?: string) {
               <span class="version-number">v{{ item.version }}</span>
               <div class="version-copy">
                 <strong>{{ item.imageDigest.split("@")[0] }}</strong>
-                <small>{{ item.runtimeSpec.cpuCores || 1 }} 核 · {{ item.runtimeSpec.memoryMiB || 512 }} MiB · {{ item.routeSpec.containerPort || 8080 }} 端口 · {{ dataPolicyLabel(item.updateSpec?.dataPolicy) }} · {{ item.runtimeSpec.dependencies?.length || 0 }} 个依赖</small>
+                <small>最低 {{ item.runtimeSpec.cpuCores || 1 }} 核 · {{ item.runtimeSpec.memoryMiB || 512 }} MiB · 默认端口 {{ item.routeSpec.containerPort || 8080 }} · {{ dataPolicyLabel(item.updateSpec?.dataPolicy) }}</small>
                 <small class="digest-copy">{{ item.imageDigest }}</small>
               </div>
               <div class="version-state">

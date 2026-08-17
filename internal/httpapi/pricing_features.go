@@ -173,13 +173,14 @@ func (s *Server) createPricingVersion(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) adminPricingOverrides(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.db.Query(r.Context(), `SELECT o.id,o.pricing_item_id,o.pricing_version_id,
-		CASE WHEN o.user_id IS NOT NULL THEN 'user' WHEN o.product_id IS NOT NULL THEN 'product' ELSE 'plan' END,
-		coalesce(o.user_id,o.product_id,o.plan_id)::text,
-		coalesce(u.display_name,p.name,pl.name),i.code,pv.version,o.created_at
+		CASE WHEN o.user_id IS NOT NULL THEN 'user' ELSE 'product' END,
+		coalesce(o.user_id,o.product_id)::text,
+		coalesce(u.display_name,p.name),i.code,pv.version,o.created_at
 		FROM pricing_overrides o
 		JOIN pricing_items i ON i.id=o.pricing_item_id
 		JOIN pricing_versions pv ON pv.id=o.pricing_version_id
-		LEFT JOIN users u ON u.id=o.user_id LEFT JOIN app_products p ON p.id=o.product_id LEFT JOIN plans pl ON pl.id=o.plan_id
+		LEFT JOIN users u ON u.id=o.user_id LEFT JOIN app_products p ON p.id=o.product_id
+		WHERE o.plan_id IS NULL
 		ORDER BY i.code,4,6`)
 	if err != nil {
 		s.internalError(w, err)
@@ -216,11 +217,11 @@ func (s *Server) upsertPricingOverride(w http.ResponseWriter, r *http.Request) {
 	q.PricingVersionID = strings.TrimSpace(q.PricingVersionID)
 	q.Scope = strings.TrimSpace(q.Scope)
 	q.ScopeID = strings.TrimSpace(q.ScopeID)
-	if q.PricingItemID == "" || q.PricingVersionID == "" || q.ScopeID == "" || (q.Scope != "user" && q.Scope != "product" && q.Scope != "plan") {
+	if q.PricingItemID == "" || q.PricingVersionID == "" || q.ScopeID == "" || (q.Scope != "user" && q.Scope != "product") {
 		writeError(w, 400, "validation_failed", "item, version and supported scope are required")
 		return
 	}
-	column := map[string]string{"user": "user_id", "product": "product_id", "plan": "plan_id"}[q.Scope]
+	column := map[string]string{"user": "user_id", "product": "product_id"}[q.Scope]
 	tx, err := s.db.BeginTx(r.Context(), pgx.TxOptions{IsoLevel: pgx.Serializable})
 	if err != nil {
 		s.internalError(w, err)
@@ -228,7 +229,7 @@ func (s *Server) upsertPricingOverride(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	var valid bool
-	query := `SELECT EXISTS(SELECT 1 FROM pricing_versions WHERE id=$1 AND pricing_item_id=$2),EXISTS(SELECT 1 FROM ` + map[string]string{"user": "users", "product": "app_products", "plan": "plans"}[q.Scope] + ` WHERE id=$3)`
+	query := `SELECT EXISTS(SELECT 1 FROM pricing_versions WHERE id=$1 AND pricing_item_id=$2),EXISTS(SELECT 1 FROM ` + map[string]string{"user": "users", "product": "app_products"}[q.Scope] + ` WHERE id=$3)`
 	var scopeValid bool
 	if err = tx.QueryRow(r.Context(), query, q.PricingVersionID, q.PricingItemID, q.ScopeID).Scan(&valid, &scopeValid); err != nil {
 		s.internalError(w, err)

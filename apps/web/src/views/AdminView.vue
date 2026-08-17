@@ -1,13 +1,17 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-import { Activity, AppWindow, BadgeCent, BadgeDollarSign, CheckCircle2, CircleAlert, CirclePause, CirclePlay, Coins, Copy, CreditCard, Eye, FileClock, Globe2, KeyRound, LogIn, LogOut, MailCheck, Megaphone, Save, Settings2, ShieldPlus, Users } from '@lucide/vue'
+import { Activity, AppWindow, BadgeCent, BadgeDollarSign, CheckCircle2, CircleAlert, CirclePause, CirclePlay, Coins, Copy, CreditCard, Eye, FileClock, Globe2, KeyRound, LogIn, LogOut, MailCheck, Megaphone, Save, Settings2, ShieldPlus, Users, X } from '@lucide/vue'
 import { api, logout } from '../api'
 import BrandMark from '../components/BrandMark.vue'
 
-type User = { id:string; email:string; displayName:string; status:string; roles:string[]; createdAt:string }
+type User = { id:string; email:string; displayName:string; status:string; roles:string[]; createdAt:string; balanceCents:number }
 type Announcement = { id:string; title:string; content:string; severity:string; published:boolean; createdAt:string }
 type OAuthSettings = { enabled:boolean; clientId:string; clientSecret:string; scopes:string; secretConfigured:boolean; minimumTrustLevel:number; publicBaseUrlConfigured:boolean; callbackUrl:string }
 type CurrentUser = { ID:string; Email:string; DisplayName:string; Roles:string[] }
+
+const props=defineProps<{page?:'overview'|'users'|'announcements'|'registration'|'mail'|'oauth'}>()
+const page=computed(()=>props.page||'overview')
+const pageTitle=computed(()=>({overview:'平台总览',users:'用户管理',announcements:'公告管理',registration:'注册策略',mail:'SMTP 邮件',oauth:'OAuth 认证'}[page.value]))
 
 const summary=ref({users:0,products:0,activeDeployments:0})
 const users=ref<User[]>([])
@@ -25,6 +29,8 @@ const github=reactive<OAuthSettings>({enabled:false,clientId:'',clientSecret:'',
 const linuxdo=reactive<OAuthSettings>({enabled:false,clientId:'',clientSecret:'',scopes:'openid email profile',secretConfigured:false,minimumTrustLevel:0,publicBaseUrlConfigured:false,callbackUrl:''})
 const notice=reactive({title:'',content:'',severity:'info',published:true})
 const credit=reactive({userId:'',amountCents:0,businessRef:'',note:'',expiresAt:''})
+const editingUser=ref<User|null>(null)
+const walletEdit=reactive({targetBalanceYuan:0,note:''})
 
 const isSuperAdmin=computed(()=>currentUser.value?.Roles.includes('super_admin')===true)
 const smtpFormReady=computed(()=>smtp.enabled&&smtp.host.trim().length>0&&smtp.port>=1&&smtp.port<=65535&&(!smtp.username.trim()||smtp.passwordConfigured||smtp.password.length>0)&&/^[^\s@]+@[^\s@]+$/.test(smtp.fromEmail.trim())&&['none','starttls','tls'].includes(smtp.tlsMode))
@@ -99,6 +105,13 @@ async function setUserStatus(user:User){
     done(status==='active'?'账户已恢复':'账户已停用')
   }catch(value){failed(value)}finally{busy.value=''}
 }
+function openUserEditor(user:User){editingUser.value=user;walletEdit.targetBalanceYuan=user.balanceCents/100;walletEdit.note=''}
+async function saveWalletBalance(){
+  const user=editingUser.value;if(!user)return
+  const target=Math.round(walletEdit.targetBalanceYuan*100),amount=target-user.balanceCents
+  if(amount===0){failed(new Error('余额没有变化'));return}
+  try{busy.value='wallet-adjust';const result=await api<{balanceCents:number}>('/admin/users/'+user.id+'/wallet/adjust',{method:'POST',body:JSON.stringify({amountCents:amount,businessRef:'admin-edit/'+crypto.randomUUID(),note:walletEdit.note.trim()||'管理员在用户编辑栏调整余额'})});user.balanceCents=result.balanceCents;done('用户余额已更新并写入调账账本');editingUser.value=null}catch(value){failed(value)}finally{busy.value=''}
+}
 async function impersonate(user:User,writeEnabled=false){
   if(writeEnabled&&!confirm('代用户执行写操作会记录真实管理员身份。确认继续？'))return
   const confirmation=writeEnabled?prompt('输入目标用户邮箱以启用写操作：'+user.email,'')||'':''
@@ -167,19 +180,19 @@ async function grantCredit(){
       <header id="overview">
         <div>
           <p class="eyebrow">{{isSuperAdmin?'超级管理员':'管理员'}}</p>
-          <h1>{{isSuperAdmin?'平台配置':'内容运营'}}</h1>
+          <h1>{{pageTitle}}</h1>
         </div>
       </header>
       <p v-if="error" class="message sticky-message">{{error}}</p>
       <p v-if="message" class="status-ok sticky-message">{{message}}</p>
 
-      <section class="metrics">
+      <section v-if="page==='overview'" class="metrics">
         <article><small>平台账户</small><strong>{{summary.users}}</strong><span>含管理员与普通用户</span></article>
         <article><small>应用产品</small><strong>{{summary.products}}</strong><span>全部模板产品</span></article>
         <article><small>进行中部署</small><strong>{{summary.activeDeployments}}</strong><span>尚未完成的任务</span></article>
       </section>
 
-      <section id="accounts" class="admin-section">
+      <section v-if="page==='users'" class="admin-section">
         <div class="section-heading">
           <div><p class="eyebrow">身份与权限</p><h2>{{isSuperAdmin?'账户管理':'账户目录'}}</h2></div>
           <span>{{users.length}} 个账户</span>
@@ -197,17 +210,19 @@ async function grantCredit(){
             <article v-for="user in users" :key="user.id" class="data-row">
               <div><strong>{{user.displayName}}</strong><small>{{user.email}} · {{user.roles.join(' / ')}}</small></div>
               <span :class="['status-pill',user.status]">{{user.status==='active'?'正常':'已停用'}}</span>
+              <span class="user-balance">¥{{(user.balanceCents/100).toFixed(2)}}</span>
               <template v-if="isSuperAdmin&&user.roles.includes('user')&&user.status==='active'">
                 <button class="icon-action" title="只读查看用户控制台" :disabled="busy==='impersonate-'+user.id" @click="impersonate(user)"><Eye :size="18"/></button>
                 <button class="icon-action" title="代用户执行操作" :disabled="busy==='impersonate-'+user.id" @click="impersonate(user,true)"><LogIn :size="18"/></button>
               </template>
               <button v-if="isSuperAdmin" class="icon-action" :title="user.status==='active'?'停用账户':'恢复账户'" :disabled="busy===user.id" @click="setUserStatus(user)"><CirclePause v-if="user.status==='active'" :size="18"/><CirclePlay v-else :size="18"/></button>
+              <button v-if="isSuperAdmin" class="icon-action" title="编辑用户与余额" @click="openUserEditor(user)"><Settings2 :size="18"/></button>
             </article>
           </div>
         </div>
       </section>
 
-      <section v-if="isSuperAdmin" class="form-panel credit-admin">
+      <section v-if="page==='users'&&isSuperAdmin" class="form-panel credit-admin">
         <h2><Coins :size="19"/>发放赠送额度</h2>
         <form @submit.prevent="grantCredit">
           <label>目标账户<select v-model="credit.userId" required><option v-for="user in users.filter(item=>item.status==='active')" :key="user.id" :value="user.id">{{user.displayName}} · {{user.email}}</option></select></label>
@@ -218,8 +233,8 @@ async function grantCredit(){
         </form>
       </section>
 
-      <div v-if="isSuperAdmin" class="admin-grid">
-        <section id="registration" class="form-panel">
+      <div v-if="isSuperAdmin&&['registration','mail','oauth'].includes(page)" class="admin-grid route-admin-grid">
+        <section v-if="page==='registration'" class="form-panel">
           <h2><Globe2 :size="19"/>注册策略</h2>
           <form @submit.prevent="saveAuth">
             <label class="toggle"><input v-model="auth.registrationEnabled" type="checkbox"/>允许用户自行注册</label>
@@ -232,7 +247,7 @@ async function grantCredit(){
           </form>
         </section>
 
-        <section id="mail" class="form-panel">
+        <section v-if="page==='mail'" class="form-panel">
           <h2><MailCheck :size="19"/>SMTP 邮箱</h2>
           <p :class="['configuration-status',smtpReady?'ready':'blocked']"><CheckCircle2 v-if="smtpReady" :size="16"/><CircleAlert v-else :size="16"/>{{smtpReady?'已保存，可用于注册邮箱验证':'尚未就绪，邮箱验证码暂不可用'}}</p>
           <form @submit.prevent="saveMail">
@@ -247,7 +262,7 @@ async function grantCredit(){
           <div class="mail-test"><label>测试收件邮箱<input v-model="testRecipient" type="email" placeholder="admin@example.com"/></label><button class="secondary compact" :disabled="busy==='test-mail'||!smtpReady" @click="testMail">发送测试邮件</button></div>
         </section>
 
-        <section id="oauth" class="form-panel">
+        <section v-if="page==='oauth'" class="form-panel">
           <h2><KeyRound :size="19"/>GitHub OAuth</h2>
           <p v-if="!github.publicBaseUrlConfigured" class="configuration-status blocked"><CircleAlert :size="16"/>需先在部署环境配置 PUBLIC_BASE_URL</p>
           <form @submit.prevent="saveOAuth('github',github)">
@@ -261,7 +276,7 @@ async function grantCredit(){
           </form>
         </section>
 
-        <section class="form-panel">
+        <section v-if="page==='oauth'" class="form-panel">
           <h2><KeyRound :size="19"/>LinuxDo OAuth</h2>
           <p v-if="!linuxdo.publicBaseUrlConfigured" class="configuration-status blocked"><CircleAlert :size="16"/>需先在部署环境配置 PUBLIC_BASE_URL</p>
           <form @submit.prevent="saveOAuth('linuxdo',linuxdo)">
@@ -277,7 +292,7 @@ async function grantCredit(){
         </section>
       </div>
 
-      <section id="announcements" class="admin-section">
+      <section v-if="page==='announcements'" class="admin-section">
         <div class="section-heading"><div><p class="eyebrow">站内信息</p><h2>公告管理</h2></div><span>{{announcements.length}} 条记录</span></div>
         <div class="admin-split">
           <form class="inline-form" @submit.prevent="publish">
@@ -299,4 +314,5 @@ async function grantCredit(){
         </div>
       </section>
     </main>
+    <div v-if="editingUser" class="modal-backdrop user-editor-backdrop" @click.self="editingUser=null"><aside class="user-editor"><header><div><p class="eyebrow">编辑用户</p><h2>{{editingUser.displayName}}</h2><small>{{editingUser.email}}</small></div><button class="icon-action" title="关闭" @click="editingUser=null"><X :size="18"/></button></header><form @submit.prevent="saveWalletBalance"><section><h3>基本信息</h3><label>显示名称<input :value="editingUser.displayName" disabled/></label><label>邮箱<input :value="editingUser.email" disabled/></label></section><section><h3>余额与调账</h3><label>目标余额（CNY）<input v-model.number="walletEdit.targetBalanceYuan" type="number" min="0" step="0.01" required/><small>当前 ¥{{(editingUser.balanceCents/100).toFixed(2)}}，保存时自动写入差额账本</small></label><label>管理员备注<textarea v-model="walletEdit.note" rows="4" maxlength="500" placeholder="本次余额调整原因"/></label></section><footer><button type="button" class="secondary" @click="editingUser=null">取消</button><button class="primary" :disabled="busy==='wallet-adjust'"><Save :size="17"/>保存更改</button></footer></form></aside></div>
 </template>

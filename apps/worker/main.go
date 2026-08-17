@@ -75,7 +75,6 @@ func main() {
 	defer db.Close()
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
-	nextSubscriptionCreditSweep := time.Time{}
 	logger.Info("worker started")
 	for {
 		select {
@@ -87,11 +86,6 @@ func main() {
 			processStopOne(ctx, db, logger)
 			reconcileRuntimeContainers(ctx, db, logger)
 			reconcileProductTestContainers(ctx, db, logger)
-			processExpiredSubscriptions(ctx, db, logger)
-			if now := time.Now(); !now.Before(nextSubscriptionCreditSweep) {
-				processSubscriptionCredits(ctx, db, logger)
-				nextSubscriptionCreditSweep = now.Add(30 * time.Second)
-			}
 			processBackupOne(ctx, db, logger)
 			processRestoreOne(ctx, db, logger)
 			processOne(ctx, db, logger)
@@ -460,29 +454,6 @@ func processBackupOne(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger
 		return
 	}
 	defer tx.Rollback(ctx)
-	var maxStorageGiB string
-	err = tx.QueryRow(ctx, `SELECT coalesce((entitlements_snapshot->>'backupStorageGiB')::numeric,0) FROM user_subscriptions WHERE user_id=$1 AND (status='grace_period' OR (status='active' AND (ends_at IS NULL OR ends_at+interval '3 days'>now()))) FOR UPDATE`, userID).Scan(&maxStorageGiB)
-	if err != nil {
-		_ = tx.Rollback(ctx)
-		_ = executor.DeleteBackup(ctx, backupHelperImage, backupVolume, storageKey, id)
-		markBackupFailed(ctx, db, id, fmt.Errorf("active subscription is required to retain a backup: %w", err), logger)
-		return
-	}
-	var otherBytes int64
-	err = tx.QueryRow(ctx, `SELECT coalesce(sum(coalesce(b.size_bytes,b.reserved_bytes)),0) FROM app_backups b JOIN user_apps a ON a.id=b.user_app_id WHERE a.user_id=$1 AND b.id<>$2 AND b.status IN ('queued','running','succeeded')`, userID, id).Scan(&otherBytes)
-	quotaExceeded := err == nil && backupStorageQuotaExceeded(maxStorageGiB, otherBytes, sizeBytes)
-	if err != nil || quotaExceeded {
-		if err != nil {
-			logger.Error("backup storage usage query failed", "backup", id, "error", err)
-		}
-		_ = tx.Rollback(ctx)
-		_ = executor.DeleteBackup(ctx, backupHelperImage, backupVolume, storageKey, id)
-		if err == nil {
-			err = fmt.Errorf("backup storage entitlement exceeded after archive creation")
-		}
-		markBackupFailed(ctx, db, id, err, logger)
-		return
-	}
 	completedAt := time.Now().UTC()
 	if _, err = tx.Exec(ctx, `UPDATE app_backups SET status='succeeded',size_bytes=$2,reserved_bytes=0,completed_at=$3,last_error=NULL WHERE id=$1`, id, sizeBytes, completedAt); err != nil {
 		logger.Error("backup completion update failed", "backup", id, "error", err)
@@ -1080,10 +1051,6 @@ func meterEgress(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
 		key := appID + ":egress:" + windowStart.Format(time.RFC3339)
 		tx, txErr := db.Begin(ctx)
 		var delta, cumulative int64
-		var egressLimit string
-		var overageEnabled bool
-		var quotaExceeded bool
-		var egressContainers []string
 		if txErr == nil {
 			_, txErr = tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", appID)
 		}
@@ -1091,38 +1058,7 @@ func meterEgress(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
 			txErr = tx.QueryRow(ctx, `SELECT coalesce(sum(byte_delta),0),coalesce(max(cumulative_bytes),0) FROM app_egress_samples
 				WHERE user_app_id=$1 AND processed_at IS NULL AND observed_at >= $2 AND observed_at < $3`, appID, windowStart, windowEnd).Scan(&delta, &cumulative)
 		}
-		if txErr == nil {
-			txErr = tx.QueryRow(ctx, `SELECT coalesce((entitlements_snapshot->>'egressGiB')::numeric,0),coalesce((entitlements_snapshot->>'egressOverageEnabled')::boolean,false) FROM user_subscriptions WHERE user_id=$1 AND (status='grace_period' OR (status='active' AND (ends_at IS NULL OR ends_at+interval '3 days'>now()))) FOR UPDATE`, userID).Scan(&egressLimit, &overageEnabled)
-		}
-		if txErr == nil {
-			var monthGiB string
-			txErr = tx.QueryRow(ctx, `SELECT coalesce(sum(quantity),0) FROM usage_events WHERE user_id=$1 AND usage_code='network.egress_gib' AND window_start>=date_trunc('month',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`, userID).Scan(&monthGiB)
-			quotaExceeded = egressQuotaExceeded(egressLimit, monthGiB, delta) && !overageEnabled
-		}
-		if txErr == nil && quotaExceeded {
-			containerRows, queryErr := tx.Query(ctx, `SELECT ar.upstream_container FROM app_routes ar JOIN user_apps ua ON ua.id=ar.user_app_id WHERE ua.user_id=$1 AND ar.upstream_container<>''`, userID)
-			if queryErr != nil {
-				txErr = queryErr
-			} else {
-				for containerRows.Next() {
-					var container string
-					if scanErr := containerRows.Scan(&container); scanErr == nil && container != "" {
-						egressContainers = append(egressContainers, container)
-					}
-				}
-				if rowsErr := containerRows.Err(); rowsErr != nil {
-					txErr = rowsErr
-				}
-				containerRows.Close()
-			}
-		}
-		if txErr == nil && quotaExceeded {
-			_, txErr = tx.Exec(ctx, `UPDATE user_apps SET status='suspended',suspension_reason='egress_quota' WHERE user_id=$1 AND status IN ('running','updating','deploying')`, userID)
-		}
-		if txErr == nil && quotaExceeded {
-			_, txErr = tx.Exec(ctx, `DELETE FROM app_routes WHERE user_app_id IN (SELECT id FROM user_apps WHERE user_id=$1 AND status='suspended' AND suspension_reason='egress_quota')`, userID)
-		}
-		if txErr == nil && delta > 0 && !quotaExceeded {
+		if txErr == nil && delta > 0 {
 			_, txErr = tx.Exec(ctx, `INSERT INTO usage_events(user_id,user_app_id,usage_code,quantity,unit,window_start,window_end,price_version_id,idempotency_key)
 				VALUES($1,$2,'network.egress_gib',$3::numeric / 1073741824,'GiB',$4,$5,resolve_pricing_version($1,$2,'network.egress_gib','GiB',$4),$6) ON CONFLICT DO NOTHING`, userID, appID, delta, windowStart, windowEnd, key)
 		}
@@ -1141,16 +1077,6 @@ func meterEgress(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
 		if txErr != nil {
 			logger.Error("egress meter commit failed", "app", appID, "error", txErr)
 			continue
-		}
-		if quotaExceeded && executor != nil {
-			for _, container := range egressContainers {
-				if stopErr := executor.Stop(ctx, container); stopErr != nil {
-					logger.Warn("egress quota suspended app stop failed", "container", container, "error", stopErr)
-				}
-				if removeErr := executor.Remove(ctx, container); removeErr != nil {
-					logger.Warn("egress quota suspended app cleanup failed", "container", container, "error", removeErr)
-				}
-			}
 		}
 	}
 }

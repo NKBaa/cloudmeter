@@ -5,6 +5,10 @@ import {
   ArchiveRestore,
   BadgeDollarSign,
   CalendarDays,
+  CalendarCheck,
+  ChevronLeft,
+  ChevronRight,
+  Gift,
   Check,
   CircleStop,
   CreditCard,
@@ -20,12 +24,14 @@ import {
   RefreshCw,
   RotateCcw,
   Rocket,
+  Settings2,
   X,
 } from "@lucide/vue";
 import { api, logout } from "../api";
 import BrandMark from "../components/BrandMark.vue";
 
 type Dependency = { key: string; productId: string; serviceSlug: string; required: boolean };
+type Volume = { name: string; mountPath: string; sizeGiB: number };
 type Product = {
   id: string;
   slug: string;
@@ -34,8 +40,8 @@ type Product = {
   version: number;
   deployable: boolean;
   missingDependencies?: string[];
-  runtimeSpec?: { secretKeys?: string[]; dependencies?: Dependency[] };
-  routeSpec?: { containerPort?: number };
+  runtimeSpec?: { cpuCores?: number; memoryMiB?: number; systemDiskGiB?: number; command?: string[]; env?: Record<string,string>; editableEnvKeys?: string[]; secretKeys?: string[]; dependencies?: Dependency[]; volumes?: Volume[] };
+  routeSpec?: { containerPort?: number; portEditable?: boolean; portEnvVar?: string };
 };
 type App = {
   id: string;
@@ -104,20 +110,10 @@ type Notification = {
 };
 type AppSecret = { key: string; version: number; createdAt: string };
 type AppSecretResponse = { secrets: AppSecret[]; allowedKeys: string[] };
-type SubscriptionPlan = {
-  planId: string; planVersionId: string; code: string; name: string; version: number;
-  cyclePriceCents: number; payableCents: number; purchaseAction: string; current: boolean;
-  entitlements: { apps?: number; cpuCores?: number; memoryGiB?: number; creditGrantCents?: number };
-};
-type CurrentSubscription = {
-  planId: string; planVersionId: string; code: string; name: string; status: string;
-  cyclePriceCents: number; startsAt: string; endsAt?: string; graceEndsAt?: string;
-};
-type SubscriptionPurchase = {
-  id: string; planVersionId: string; planCode: string; planName: string; action: string; status: string;
-  amountCents: number; balanceAfterCents: number; servicePeriodStart: string; servicePeriodEnd: string;
-  subscriptionEndsAt?: string; createdAt: string;
-};
+type CheckinSummary = { enabled:boolean; checkedInToday:boolean; totalCheckins:number; monthRewardCents:number; totalRewardCents:number; month:string; checkedDates:string[]; minRewardCents:number; maxRewardCents:number };
+const props = defineProps<{ page?: "overview" | "deploy" | "apps" | "billing" | "recharge" | "usage" | "checkin" }>();
+const page = computed(() => props.page || "overview");
+const pageTitle = computed(() => ({ overview: "资源概览", deploy: "部署应用", apps: "我的应用", billing: "余额与账单", recharge: "账户充值", usage: "用量明细", checkin: "每日签到" })[page.value]);
 const products = ref<Product[]>([]),
   apps = ref<App[]>([]),
   usage = ref<Usage[]>([]),
@@ -128,18 +124,15 @@ const products = ref<Product[]>([]),
   paymentProviders = ref<PaymentProvider[]>([]),
   announcements = ref<Announcement[]>([]),
   notifications = ref<Notification[]>([]),
-  subscriptionPlans = ref<SubscriptionPlan[]>([]),
-  currentSubscription = ref<CurrentSubscription | null>(null),
-  subscriptionPurchases = ref<SubscriptionPurchase[]>([]),
   releases = ref<Record<string, Release[]>>({}),
   balance = ref(0),
   name = ref(""),
   error = ref(""),
   message = ref(""),
   topup = ref(0),
+  selectedTopup = ref(100),
   busy = ref("");
 const activeBill = ref<string>(""), billItems = ref<Record<string, BillItem[]>>({});
-const pendingPlan = ref<SubscriptionPlan | null>(null), purchaseKey = ref("");
 const impersonation = ref({active:false,readOnly:true,actorName:""});
 const writeLocked=computed(()=>impersonation.value.active&&impersonation.value.readOnly);
 const secretApp = ref<App | null>(null),
@@ -150,7 +143,55 @@ const secretApp = ref<App | null>(null),
   secretBusy = ref(false);
 const deployProduct = ref<Product | null>(null),
   deploySlug = ref(""),
-  deploySecrets = ref<Record<string, string>>({});
+  deploySecrets = ref<Record<string, string>>({}),
+  deployCPU = ref(1), deployMemory = ref(512), deploySystemDisk = ref(5),
+  deployVolumes = ref<Record<string, number>>({});
+const deployCommand = ref("");
+const deployPort = ref(8080);
+const deployEnvironment = ref<{key:string;value:string}[]>([]);
+const deployDependencies = ref<Dependency[]>([]);
+const templateInput = ref<HTMLInputElement|null>(null);
+const checkin=ref<CheckinSummary|null>(null),checkinMonth=ref(new Date().toLocaleDateString('sv-SE',{timeZone:'Asia/Shanghai'}).slice(0,7));
+const calendarDays=computed(()=>{const [year,month]=checkinMonth.value.split('-').map(Number);const count=new Date(year,month,0).getDate();const offset=(new Date(year,month-1,1).getDay()+6)%7;return [...Array(offset).fill(null),...Array.from({length:count},(_,i)=>i+1)]});
+const todayShanghai=()=>new Date().toLocaleDateString('sv-SE',{timeZone:'Asia/Shanghai'});
+const dateKey=(day:number)=>`${checkinMonth.value}-${String(day).padStart(2,'0')}`;
+const isChecked=(day:number)=>Boolean(checkin.value?.checkedDates.includes(dateKey(day)));
+const isToday=(day:number)=>dateKey(day)===todayShanghai();
+async function loadCheckin(){checkin.value=await api<CheckinSummary>(`/checkin?month=${checkinMonth.value}`)}
+async function changeCheckinMonth(offset:number){const [year,month]=checkinMonth.value.split('-').map(Number);const next=new Date(year,month-1+offset,1);checkinMonth.value=`${next.getFullYear()}-${String(next.getMonth()+1).padStart(2,'0')}`;await loadCheckin()}
+async function doCheckin(){try{busy.value='checkin';error.value='';const result=await api<{rewardCents:number;balanceCents:number}>('/checkin',{method:'POST'});balance.value=result.balanceCents;message.value=`签到成功，获得 ¥${(result.rewardCents/100).toFixed(2)}`;await Promise.all([loadCheckin(),load()])}catch(e){error.value=(e as Error).message}finally{busy.value=''}}
+const topupOptions = [10, 20, 50, 100, 200, 300, 400, 500];
+const totalSpend = computed(() => ledger.value.filter(item => item.amountCents < 0).reduce((sum, item) => sum - item.amountCents, 0));
+function addEnvironment(){ deployEnvironment.value.push({key:"",value:""}); }
+function removeEnvironment(index:number){ deployEnvironment.value.splice(index,1); }
+function addDependency(){
+  const candidate = products.value.find(product => !deployDependencies.value.some(item => item.productId === product.id));
+  if (candidate) deployDependencies.value.push({key:candidate.slug,productId:candidate.id,serviceSlug:candidate.slug,required:true});
+}
+function removeDependency(index:number){ deployDependencies.value.splice(index,1); }
+function chooseTopup(amount:number){ selectedTopup.value=amount; topup.value=amount; }
+function openTemplateImport(){ templateInput.value?.click(); }
+async function importTemplate(event:Event){
+  const input=event.target as HTMLInputElement, file=input.files?.[0]; if(!file)return;
+  try{
+    const data=JSON.parse(await file.text()) as any;
+    const product=products.value.find(item=>item.id===data.productId||item.slug===data.productSlug);
+    if(!product)throw new Error("模板中的产品当前不可部署");
+    openDeploy(product);
+    if(data.slug)deploySlug.value=String(data.slug);
+    const resources=data.resources||{};
+    if(resources.cpuCores!=null)deployCPU.value=Number(resources.cpuCores);
+    if(resources.memoryMiB!=null)deployMemory.value=Number(resources.memoryMiB);
+    if(resources.systemDiskGiB!=null)deploySystemDisk.value=Number(resources.systemDiskGiB);
+    // Internal listening ports belong to the published product template.
+    // Imported files cannot override a port the image may not actually honor.
+    if(resources.volumeSizes)deployVolumes.value={...deployVolumes.value,...resources.volumeSizes};
+    if(Array.isArray(resources.command))deployCommand.value=resources.command.join(" ");
+    if(resources.environment){const allowed=new Set(product.runtimeSpec?.editableEnvKeys||[]);deployEnvironment.value=Object.entries(resources.environment).filter(([key])=>allowed.has(key)).map(([key,value])=>({key,value:String(value)}));}
+    if(Array.isArray(resources.dependencies))deployDependencies.value=resources.dependencies;
+    message.value="配置模板已导入，请检查各项配置后部署";
+  }catch(e){error.value=(e as Error).message}finally{input.value=""}
+}
 const labels: Record<string, string> = {
   queued: "排队中",
   pulling: "拉取镜像",
@@ -190,14 +231,15 @@ function appStateClass(app: App) {
 const ledgerLabel = (value: string) => ({
   topup: "充值入账",
   usage: "用量扣费",
-  subscription: "套餐费用",
+  subscription: "历史套餐费用",
   refund: "退款",
   grant: "赠送额度",
   adjustment: "账户调账",
+  checkin_reward: "签到奖励",
   reversal: "账本冲正",
 }[value] || value);
 async function load() {
-  const [m, p, a, b, u, l, statementData, creditData, o, n, notices, providers, subscriptions] = await Promise.all([
+  const [m, p, a, b, u, l, statementData, creditData, o, n, notices, providers] = await Promise.all([
     api<any>("/me"),
     api<any>("/products"),
     api<any>("/apps"),
@@ -210,7 +252,6 @@ async function load() {
     api<{ announcements: Announcement[] }>("/announcements"),
     api<{ notifications: Notification[] }>("/notifications"),
     api<{ providers: PaymentProvider[] }>("/payments/providers"),
-    api<{ plans: SubscriptionPlan[]; current: CurrentSubscription | null; purchases: SubscriptionPurchase[] }>("/subscriptions/plans"),
   ]);
   name.value = m.DisplayName;
   impersonation.value={active:Boolean(m.Impersonating),readOnly:Boolean(m.ImpersonationReadOnly),actorName:m.ActorDisplayName||"管理员"};
@@ -225,9 +266,6 @@ async function load() {
   paymentProviders.value = providers.providers;
   announcements.value = n.announcements;
   notifications.value = notices.notifications;
-  subscriptionPlans.value = subscriptions.plans;
-  currentSubscription.value = subscriptions.current;
-  subscriptionPurchases.value = subscriptions.purchases;
   const pairs = await Promise.all(
     apps.value.map(
       async (app) =>
@@ -280,6 +318,7 @@ async function markNotificationRead(item: Notification) {
 onMounted(async () => {
   try {
     await load();
+    if (page.value === "checkin") await loadCheckin();
   } catch (e) {
     error.value = (e as Error).message;
   }
@@ -294,7 +333,7 @@ function openDeploy(p: Product) {
   if (!p.deployable) {
     error.value = p.missingDependencies?.length
       ? `请先部署并运行依赖服务：${p.missingDependencies.join("、")}`
-      : "当前套餐不包含此产品";
+      : "该产品当前不可部署";
     return;
   }
   deployProduct.value = p;
@@ -302,11 +341,23 @@ function openDeploy(p: Product) {
   deploySecrets.value = Object.fromEntries(
     (p.runtimeSpec?.secretKeys || []).map((key) => [key, ""]),
   );
+  deployCPU.value = p.runtimeSpec?.cpuCores || 1;
+  deployMemory.value = p.runtimeSpec?.memoryMiB || 512;
+  deploySystemDisk.value = p.runtimeSpec?.systemDiskGiB || 5;
+  deployVolumes.value = Object.fromEntries((p.runtimeSpec?.volumes || []).map(volume => [volume.name, volume.sizeGiB]));
+  deployCommand.value = (p.runtimeSpec?.command || []).join(" ");
+  deployPort.value = p.routeSpec?.containerPort || 8080;
+  deployEnvironment.value = (p.runtimeSpec?.editableEnvKeys || []).map(key=>({key,value:p.runtimeSpec?.env?.[key]||""}));
+  deployDependencies.value = (p.runtimeSpec?.dependencies || []).map(dependency => ({...dependency}));
 }
 function closeDeploy() {
   deployProduct.value = null;
   deploySlug.value = "";
   deploySecrets.value = {};
+  deployVolumes.value = {};
+  deployCommand.value = "";
+  deployEnvironment.value = [];
+  deployDependencies.value = [];
 }
 function dependencyEndpoint(dependency: Dependency) {
   const target = products.value.find((product) => product.id === dependency.productId);
@@ -326,6 +377,16 @@ async function deploy() {
         slug: deploySlug.value.trim(),
         idempotencyKey: crypto.randomUUID(),
         secrets: deploySecrets.value,
+        resources: {
+          cpuCores: deployCPU.value,
+          memoryMiB: deployMemory.value,
+          systemDiskGiB: deploySystemDisk.value,
+          volumeSizes: deployVolumes.value,
+          command: deployCommand.value.trim() ? deployCommand.value.trim().split(/\s+/) : [],
+          environment: Object.fromEntries(deployEnvironment.value.filter(item=>item.key.trim()).map(item=>[item.key.trim(),item.value])),
+          dependencies: deployDependencies.value,
+          containerPort: deployPort.value,
+        },
       }),
     });
     closeDeploy();
@@ -465,7 +526,8 @@ async function createOrder() {
     return;
   }
   try {
-    const provider = paymentProviders.value.some((v) => v.provider === "epay" && v.enabled) ? "epay" : "manual";
+    if (!paymentProviders.value.some((v) => v.provider === "epay" && v.enabled)) throw new Error("在线支付尚未开通，请联系管理员调整余额");
+    const provider = "epay";
     const result = await api<{ checkoutUrl?: string }>("/payments/orders", {
       method: "POST",
       body: JSON.stringify({
@@ -486,40 +548,6 @@ async function createOrder() {
     error.value = (e as Error).message;
   }
 }
-const subscriptionAction = (value: string) => ({ purchase: "购买", renewal: "续期", upgrade: "升级", downgrade: "降级", change: "更换" }[value] || value);
-function subscriptionStatus() {
-  const current = currentSubscription.value;
-  if (!current) return "未分配";
-  if (current.status === "grace_period") return `宽限期至 ${new Date(current.graceEndsAt || "").toLocaleString()}`;
-  if (current.status === "expired") return "已过期";
-  if (current.status === "active") return current.endsAt ? `有效至 ${new Date(current.endsAt).toLocaleString()}` : "长期有效";
-  return current.status;
-}
-function openPurchase(plan: SubscriptionPlan) {
-  pendingPlan.value = plan;
-  purchaseKey.value = crypto.randomUUID();
-  error.value = "";
-}
-async function confirmPurchase() {
-  if (!pendingPlan.value || balance.value < pendingPlan.value.payableCents) return;
-  try {
-    busy.value = "subscription";
-    const result = await api<{ purchase: SubscriptionPurchase; creditGrantedCents: number; resumeJobs: number }>("/subscriptions/purchases", {
-      method: "POST",
-      body: JSON.stringify({ planVersionId: pendingPlan.value.planVersionId, idempotencyKey: purchaseKey.value }),
-    });
-    const details = [`已扣款 ¥${(result.purchase.amountCents / 100).toFixed(2)}`];
-    if (result.creditGrantedCents) details.push(`已发放 ¥${(result.creditGrantedCents / 100).toFixed(2)} 额度`);
-    if (result.resumeJobs) details.push(`正在恢复 ${result.resumeJobs} 个应用`);
-    message.value = `${result.purchase.planName}${subscriptionAction(result.purchase.action)}成功，${details.join("，")}`;
-    pendingPlan.value = null;
-    await load();
-  } catch (e) {
-    error.value = (e as Error).message;
-  } finally {
-    busy.value = "";
-  }
-}
 async function exitImpersonation(){const token=localStorage.getItem("admin_session_token");if(!token){await logout();return}try{await api('/impersonation',{method:'DELETE'});localStorage.setItem("session_token",token);localStorage.removeItem("admin_session_token");location.assign("/admin")}catch{
   // The global API handler clears both tokens on 401; restore the actor token so
   // the shared logout flow can still revoke the original administrator session.
@@ -534,12 +562,12 @@ async function exitImpersonation(){const token=localStorage.getItem("admin_sessi
       <header>
         <div>
           <p class="eyebrow">控制台</p>
-          <h1>晚上好，{{ name || "..." }}</h1>
+          <h1>{{ page === 'overview' ? `晚上好，${name || '...'}` : pageTitle }}</h1>
         </div>
       </header>
       <p v-if="error" class="message">{{ error }}</p>
       <p v-if="message" class="status-ok">{{ message }}</p>
-      <section class="metrics">
+      <section v-if="page === 'overview'" class="metrics">
         <article>
           <small>钱包余额</small
           ><strong>¥ {{ (balance / 100).toFixed(2) }}</strong
@@ -557,34 +585,7 @@ async function exitImpersonation(){const token=localStorage.getItem("admin_sessi
           ><span>管理员已发布</span>
         </article>
       </section>
-      <section id="subscription" class="subscription-panel">
-        <div class="section-heading">
-          <div><p class="eyebrow">订阅套餐</p><h2>{{ currentSubscription?.name || "选择套餐" }}</h2></div>
-          <span>{{ subscriptionStatus() }}</span>
-        </div>
-        <div class="subscription-current">
-          <div><CalendarDays :size="19" /><span><small>当前周期价</small><strong>¥{{ ((currentSubscription?.cyclePriceCents || 0) / 100).toFixed(2) }}</strong></span></div>
-          <p>套餐由你主动购买或续期，不会自动扣款。有效期结束后进入 3 天宽限期。</p>
-        </div>
-        <div class="plan-options">
-          <article v-for="plan in subscriptionPlans" :key="plan.planVersionId" :class="{ current: plan.current }">
-            <span class="product-icon"><BadgeDollarSign :size="19" /></span>
-            <div class="plan-copy"><strong>{{ plan.name }}</strong><small>{{ plan.code }} · {{ plan.entitlements.apps || 0 }} 个应用 · {{ plan.entitlements.cpuCores || 0 }} 核 / {{ plan.entitlements.memoryGiB || 0 }} GiB</small></div>
-            <div class="plan-price"><strong>¥{{ (plan.cyclePriceCents / 100).toFixed(2) }}</strong><small>本次 ¥{{ (plan.payableCents / 100).toFixed(2) }}</small></div>
-            <button class="secondary compact" :disabled="writeLocked || busy === 'subscription' || (plan.current && currentSubscription?.status === 'active' && !currentSubscription?.endsAt)" @click="openPurchase(plan)">
-              {{ plan.current && currentSubscription?.status === 'active' && !currentSubscription?.endsAt ? '当前套餐' : subscriptionAction(plan.purchaseAction) }}
-            </button>
-          </article>
-        </div>
-        <div v-if="subscriptionPurchases.length" class="subscription-history">
-          <div class="ledger-heading"><strong>套餐交易</strong><span>最近 {{ Math.min(subscriptionPurchases.length, 5) }} 条</span></div>
-          <article v-for="item in subscriptionPurchases.slice(0, 5)" :key="item.id">
-            <div><strong>{{ item.planName }} · {{ subscriptionAction(item.action) }}</strong><small>{{ new Date(item.createdAt).toLocaleString() }} · 服务期至 {{ new Date(item.servicePeriodEnd).toLocaleString() }}</small></div>
-            <span :class="['ledger-amount', item.status === 'succeeded' ? 'debit' : '']">{{ item.status === 'succeeded' ? `¥${(item.amountCents / 100).toFixed(2)}` : '余额不足' }}</span>
-          </article>
-        </div>
-      </section>
-      <section v-if="notifications.length || announcements.length" class="announcement-feed">
+      <section v-if="page === 'overview' && (notifications.length || announcements.length)" class="announcement-feed">
         <div class="section-heading">
           <div>
             <p class="eyebrow">平台通知</p>
@@ -618,24 +619,7 @@ async function exitImpersonation(){const token=localStorage.getItem("admin_sessi
           </div>
         </article>
       </section>
-      <section id="billing" class="billing-panel">
-        <div>
-          <p class="eyebrow">余额与账单</p>
-          <h2>{{ paymentProviders.some((v) => v.provider === 'epay' && v.enabled) ? '账户充值' : '人工充值' }}</h2>
-          <p class="quiet">{{ paymentProviders.some((v) => v.provider === 'epay' && v.enabled) ? '使用已配置的在线支付完成充值。' : '提交申请后由管理员核验入账。' }}</p>
-        </div>
-        <form class="topup-form" @submit.prevent="createOrder">
-          <label
-            >充值金额（元）<input
-              v-model.number="topup"
-              type="number"
-              min="1"
-              step="0.01"
-              placeholder="100.00" /></label
-          ><button class="primary compact" :disabled="writeLocked">
-            <Receipt :size="16" />{{ paymentProviders.some((v) => v.provider === 'epay' && v.enabled) ? '立即支付' : '提交充值申请' }}
-          </button>
-        </form>
+      <section v-if="page === 'billing'" class="billing-panel">
         <div v-if="orders.length" class="order-list">
           <article v-for="order in orders.slice(0, 5)" :key="order.id">
             <span>¥ {{ (order.amountCents / 100).toFixed(2) }}</span
@@ -677,7 +661,7 @@ async function exitImpersonation(){const token=localStorage.getItem("admin_sessi
             <button class="icon-action" title="导出 CSV" @click="exportBill(bill)"><FileDown :size="17" /></button>
             <div v-if="activeBill === bill.id" class="statement-items">
               <div v-for="item in billItems[bill.id] || []" :key="item.id">
-                <span><strong>{{ item.kind === 'subscription' ? `${item.appSlug || '套餐'} · ${subscriptionAction(item.usageCode.replace('subscription.', ''))}` : item.usageCode }}</strong><small>{{ item.kind === 'subscription' ? `服务周期 ${new Date(item.windowStart).toLocaleDateString()} - ${new Date(item.windowEnd).toLocaleDateString()}` : `${item.appSlug || '账户级'} · ${item.quantity} ${item.unit} · ${new Date(item.windowStart).toLocaleString()}` }}</small></span>
+                <span><strong>{{ item.kind === 'subscription' ? `历史套餐 · ${item.usageCode}` : item.usageCode }}</strong><small>{{ item.kind === 'subscription' ? `历史服务周期 ${new Date(item.windowStart).toLocaleDateString()} - ${new Date(item.windowEnd).toLocaleDateString()}` : `${item.appSlug || '账户级'} · ${item.quantity} ${item.unit} · ${new Date(item.windowStart).toLocaleString()}` }}</small></span>
                 <strong>¥{{ (item.amountCents / 100).toFixed(2) }}</strong>
               </div>
             </div>
@@ -691,7 +675,7 @@ async function exitImpersonation(){const token=localStorage.getItem("admin_sessi
           <p v-if="!creditGrants.length" class="quiet empty-copy">当前没有赠送额度</p>
         </div>
       </section>
-      <section id="apps" v-if="apps.length" class="product-list">
+      <section v-if="page === 'apps' && apps.length" class="product-list">
         <div class="section-heading">
           <div>
             <p class="eyebrow">我的应用</p>
@@ -757,7 +741,7 @@ async function exitImpersonation(){const token=localStorage.getItem("admin_sessi
           </div>
         </article>
       </section>
-      <section id="usage" class="product-list">
+      <section v-if="page === 'usage'" class="product-list">
         <div class="section-heading">
           <div>
             <p class="eyebrow">用量与扣费</p>
@@ -789,18 +773,17 @@ async function exitImpersonation(){const token=localStorage.getItem("admin_sessi
         </article>
         <p v-if="!usage.length" class="quiet empty-copy">暂无用量记录</p>
       </section>
-      <section v-if="products.length" class="product-list">
+      <section v-if="page === 'deploy' && products.length" class="product-list">
         <div class="section-heading">
           <div>
             <p class="eyebrow">应用模板</p>
             <h2>产品目录</h2>
           </div>
-          <span
+          <div class="deploy-catalog-actions"><input ref="templateInput" class="visually-hidden" type="file" accept="application/json,.json" @change="importTemplate"/><button class="secondary compact" @click="openTemplateImport"><FileDown :size="16"/>从模板导入</button><span
             >{{
               products.filter((value) => value.deployable).length
             }}
-            个可部署版本</span
-          >
+            个可部署版本</span></div>
         </div>
         <article
           v-for="product in products"
@@ -827,6 +810,30 @@ async function exitImpersonation(){const token=localStorage.getItem("admin_sessi
           </button>
         </article>
       </section>
+      <section v-if="page === 'recharge'" class="recharge-page">
+        <div class="recharge-metrics">
+          <article><span class="product-icon"><CreditCard :size="20" /></span><div><small>当前余额</small><strong>¥{{ (balance / 100).toFixed(2) }}</strong><p>可用于全部按量费用</p></div></article>
+          <article><span class="product-icon"><Receipt :size="20" /></span><div><small>累计消费</small><strong>¥{{ (totalSpend / 100).toFixed(2) }}</strong><p>历史钱包支出</p></div></article>
+          <article><span class="product-icon"><FileDown :size="20" /></span><div><small>充值订单</small><strong>{{ orders.length }}</strong><p>全部充值记录</p></div></article>
+        </div>
+        <section class="recharge-panel">
+          <div class="section-heading"><div><p class="eyebrow">添加资金</p><h2>选择充值金额</h2></div><span>{{ paymentProviders.some(item=>item.provider==='epay'&&item.enabled)?'在线支付':'暂未开通' }}</span></div>
+          <form @submit.prevent="createOrder">
+            <div class="topup-options">
+              <button v-for="amount in topupOptions" :key="amount" type="button" :class="{selected:selectedTopup===amount}" @click="chooseTopup(amount)"><strong>¥{{amount}}</strong><small>充值 {{amount}} 元</small></button>
+            </div>
+            <label>自定义金额（元）<input v-model.number="topup" type="number" min="1" max="1000000" step="0.01" @input="selectedTopup=0" required /></label>
+            <div class="payment-choice"><strong>付款方式</strong><div><span :class="['payment-method',{active:paymentProviders.some(item=>item.provider==='epay'&&item.enabled)}]"><CreditCard :size="19"/>在线支付（支付宝）</span></div><p v-if="!paymentProviders.some(item=>item.provider==='epay'&&item.enabled)" class="quiet">在线支付未开通，余额由管理员在用户编辑栏调整。</p></div>
+            <div class="recharge-submit"><span>待支付金额 <strong>¥{{ Number(topup||0).toFixed(2) }}</strong></span><button class="primary" :disabled="writeLocked || topup<=0 || !paymentProviders.some(item=>item.provider==='epay'&&item.enabled)"><CreditCard :size="18"/>确认充值</button></div>
+          </form>
+          <div v-if="orders.length" class="order-list recharge-orders"><div class="ledger-heading"><strong>订单历史</strong><span>最近 {{Math.min(orders.length,8)}} 条</span></div><article v-for="order in orders.slice(0,8)" :key="order.id"><span>¥ {{(order.amountCents/100).toFixed(2)}}</span><small>{{order.status==='paid'?'已入账':order.status==='refunded'?'已退款':'处理中'}} · {{new Date(order.createdAt).toLocaleString()}}</small></article></div>
+        </section>
+      </section>
+      <section v-if="page === 'checkin'" class="checkin-page">
+        <div class="checkin-hero"><span class="checkin-icon"><CalendarCheck :size="28"/></span><div><p class="eyebrow">北京时间 · 每日一次</p><h2>签到领取余额奖励</h2><p>每天获得 ¥{{((checkin?.minRewardCents||0)/100).toFixed(2)}}–¥{{((checkin?.maxRewardCents||0)/100).toFixed(2)}}，直接进入钱包余额。</p></div><button class="primary" :disabled="writeLocked || busy==='checkin' || !checkin?.enabled || checkin?.checkedInToday" @click="doCheckin"><Gift :size="18"/>{{!checkin?.enabled?'签到已暂停':checkin?.checkedInToday?'今日已签到':'立即签到'}}</button></div>
+        <div class="checkin-metrics"><article><small>累计签到</small><strong>{{checkin?.totalCheckins||0}}<em> 次</em></strong></article><article><small>本月获得</small><strong>¥{{((checkin?.monthRewardCents||0)/100).toFixed(2)}}</strong></article><article><small>累计获得</small><strong>¥{{((checkin?.totalRewardCents||0)/100).toFixed(2)}}</strong></article></div>
+        <div class="checkin-calendar"><header><button class="icon-action" title="上个月" @click="changeCheckinMonth(-1)"><ChevronLeft :size="18"/></button><div><strong>{{checkinMonth.replace('-', ' 年 ')}} 月</strong><small>黑色日期表示已签到</small></div><button class="icon-action" title="下个月" @click="changeCheckinMonth(1)"><ChevronRight :size="18"/></button></header><div class="calendar-week"><span v-for="label in ['一','二','三','四','五','六','日']" :key="label">{{label}}</span></div><div class="calendar-grid"><span v-for="(day,index) in calendarDays" :key="index" :class="{blank:!day,checked:day&&isChecked(day),today:day&&isToday(day)}"><template v-if="day">{{day}}<Check v-if="isChecked(day)" :size="12"/></template></span></div></div>
+      </section>
     </main>
   <div v-if="deployProduct" class="modal-backdrop" @click.self="closeDeploy">
     <section class="secret-dialog deploy-dialog">
@@ -836,9 +843,18 @@ async function exitImpersonation(){const token=localStorage.getItem("admin_sessi
       </header>
       <form @submit.prevent="deploy">
         <label>应用标识<input v-model="deploySlug" required pattern="[a-z0-9][a-z0-9-]{0,62}" autocomplete="off" /></label>
-        <div v-if="deployProduct.runtimeSpec?.dependencies?.length" class="deploy-dependencies">
-          <div class="deploy-secret-heading"><Link2 :size="17" /><div><strong>内部依赖</strong><small>同一账户内的稳定服务地址</small></div></div>
-          <article v-for="dependency in deployProduct.runtimeSpec.dependencies" :key="dependency.key"><div><strong>{{ dependency.key }}</strong><small>{{ dependency.required ? '必须运行' : '可选' }}</small></div><code>{{ dependencyEndpoint(dependency) }}</code></article>
+        <div class="deploy-resource-grid">
+          <label>CPU 核心<input v-model.number="deployCPU" type="number" :min="deployProduct.runtimeSpec?.cpuCores||0.1" max="64" step="0.1" required/><small>最低 {{deployProduct.runtimeSpec?.cpuCores||1}} 核</small></label>
+          <label>内存 MiB<input v-model.number="deployMemory" type="number" :min="deployProduct.runtimeSpec?.memoryMiB||64" max="262144" step="64" required/><small>最低 {{deployProduct.runtimeSpec?.memoryMiB||512}} MiB</small></label>
+          <label>系统盘 GiB<input v-model.number="deploySystemDisk" type="number" :min="deployProduct.runtimeSpec?.systemDiskGiB||1" max="1024" step="1" required/><small>最低 {{deployProduct.runtimeSpec?.systemDiskGiB||5}} GiB</small></label>
+          <label>应用内部端口<input v-model.number="deployPort" type="number" min="1" max="65535" step="1" :readonly="!deployProduct.routeSpec?.portEditable" required/><small>{{deployProduct.routeSpec?.portEditable ? `模板允许修改${deployProduct.routeSpec.portEnvVar ? `，同步到 ${deployProduct.routeSpec.portEnvVar}` : ''}` : '由模板和镜像决定，网关自动转发'}}</small></label>
+        </div>
+        <label v-for="volume in deployProduct.runtimeSpec?.volumes||[]" :key="volume.name">{{volume.name}} 数据卷 GiB<input v-model.number="deployVolumes[volume.name]" type="number" :min="volume.sizeGiB" max="16384" step="1" required/><small>挂载 {{volume.mountPath}}，最低 {{volume.sizeGiB}} GiB</small></label>
+        <label>启动命令<input v-model="deployCommand" placeholder="留空使用镜像默认命令" autocomplete="off"/><small>按空格拆分参数；复杂参数建议由镜像入口脚本处理</small></label>
+        <div class="deploy-custom-list"><div class="deploy-secret-heading"><Settings2 :size="17"/><div><strong>环境变量</strong><small>仅管理员标记为可编辑的字段可提交；平台不会擅自注入 PORT</small></div><button type="button" class="secondary compact" @click="addEnvironment"><Plus :size="15"/>添加</button></div><div v-for="(item,index) in deployEnvironment" :key="index" class="deploy-key-value"><input v-model="item.key" placeholder="变量名" pattern="[A-Za-z_][A-Za-z0-9_]{0,127}"/><input v-model="item.value" placeholder="值"/><button type="button" class="icon-action" title="删除" @click="removeEnvironment(index)"><X :size="16"/></button></div></div>
+        <div class="deploy-dependencies">
+          <div class="deploy-secret-heading"><Link2 :size="17" /><div><strong>内部依赖</strong><small>选择同一账户内需要连接的应用产品</small></div><button type="button" class="secondary compact" @click="addDependency"><Plus :size="15"/>添加</button></div>
+          <article v-for="(dependency,index) in deployDependencies" :key="dependency.key+index"><div><input v-model="dependency.key" placeholder="依赖标识"/><select v-model="dependency.productId"><option v-for="product in products" :key="product.id" :value="product.id">{{product.name}}</option></select><input v-model="dependency.serviceSlug" placeholder="服务名"/></div><code>{{ dependencyEndpoint(dependency) }}</code><button type="button" class="icon-action" title="删除依赖" @click="removeDependency(index)"><X :size="16"/></button></article>
         </div>
         <template v-if="deployProduct.runtimeSpec?.secretKeys?.length">
           <div class="deploy-secret-heading"><KeyRound :size="17" /><div><strong>部署 Secret</strong><small>加密保存，提交后不会再次显示</small></div></div>
@@ -891,16 +907,6 @@ async function exitImpersonation(){const token=localStorage.getItem("admin_sessi
         </button>
       </form>
       <p v-else class="secret-empty quiet">此产品的已发布版本没有声明可配置的 Secret。</p>
-    </section>
-  </div>
-  <div v-if="pendingPlan" class="modal-backdrop" @click.self="pendingPlan = null">
-    <section class="purchase-dialog">
-      <header><div><p class="eyebrow">确认套餐交易</p><h2>{{ pendingPlan.name }} · {{ subscriptionAction(pendingPlan.purchaseAction) }}</h2></div><button class="icon-action" title="关闭" @click="pendingPlan = null"><X :size="18" /></button></header>
-      <div class="purchase-amount"><span>本次钱包扣款</span><strong>¥{{ (pendingPlan.payableCents / 100).toFixed(2) }}</strong></div>
-      <dl><div><dt>周期价格</dt><dd>¥{{ (pendingPlan.cyclePriceCents / 100).toFixed(2) }}</dd></div><div><dt>操作</dt><dd>{{ subscriptionAction(pendingPlan.purchaseAction) }}</dd></div><div><dt>扣款后余额</dt><dd>¥{{ ((balance - pendingPlan.payableCents) / 100).toFixed(2) }}</dd></div></dl>
-      <p class="transaction-note">套餐不会自动续费。升级仅收取当前有效周期的正差价；降级或更换低价套餐不退还已经支付的费用。</p>
-      <p v-if="balance < pendingPlan.payableCents" class="message">钱包余额不足，请先充值。</p>
-      <footer><button class="secondary compact" @click="pendingPlan = null">取消</button><button class="primary compact" :disabled="busy === 'subscription' || balance < pendingPlan.payableCents" @click="confirmPurchase"><BadgeDollarSign :size="16" />确认扣款</button></footer>
     </section>
   </div>
 </template>

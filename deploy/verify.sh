@@ -24,9 +24,11 @@ fi
 LATEST_MIGRATION="$(find migrations -maxdepth 1 -type f -name '*.up.sql' -printf '%f\n' | sed -E 's/^0*([0-9]+)_.*/\1/' | sort -n | tail -n 1)"
 [[ -n "$LATEST_MIGRATION" ]] || { echo 'no migrations found' >&2; exit 1; }
 PORT="${PLATFORM_PORT:-$(awk -F= '$1=="PLATFORM_PORT" {print $2}' .env | tail -n 1)}"
+PORT="${PORT%$'\r'}"
 PORT="${PORT:-8080}"
 BIND_IP="${PLATFORM_BIND_IP:-127.0.0.1}"
 ALLOWED_HOST="${PLATFORM_ALLOWED_HOST:-$(awk -F= '$1=="PLATFORM_ALLOWED_HOST" {print $2}' .env | tail -n 1)}"
+ALLOWED_HOST="${ALLOWED_HOST%$'\r'}"
 [[ -n "$ALLOWED_HOST" ]] || { echo 'PLATFORM_ALLOWED_HOST is required' >&2; exit 1; }
 wait_for_healthy() {
   local service container_id status

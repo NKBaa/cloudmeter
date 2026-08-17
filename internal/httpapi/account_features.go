@@ -280,14 +280,15 @@ func (s *Server) sendVerificationCode(w http.ResponseWriter, r *http.Request) {
 func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.db.Query(r.Context(), `SELECT u.id,u.email,u.display_name,u.status,u.created_at,
 		coalesce(array_agg(DISTINCT r.code) FILTER (WHERE r.code IS NOT NULL),'{}'),
-		coalesce(us.status,''),coalesce(p.name,''),us.ends_at,us.grace_ends_at
+		coalesce(us.status,''),coalesce(p.name,''),us.ends_at,us.grace_ends_at,coalesce(w.balance_cents,0)
 		FROM users u
 		LEFT JOIN user_roles ur ON ur.user_id=u.id
 		LEFT JOIN roles r ON r.id=ur.role_id
 		LEFT JOIN user_subscriptions us ON us.user_id=u.id
 		LEFT JOIN plan_versions pv ON pv.id=us.plan_version_id
 		LEFT JOIN plans p ON p.id=pv.plan_id
-		GROUP BY u.id,us.status,p.name,us.ends_at,us.grace_ends_at
+		LEFT JOIN wallets w ON w.user_id=u.id
+		GROUP BY u.id,us.status,p.name,us.ends_at,us.grace_ends_at,w.balance_cents
 		ORDER BY u.created_at DESC`)
 	if err != nil {
 		s.internalError(w, err)
@@ -301,11 +302,12 @@ func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 		var subscriptionStatus, planName string
 		var endsAt, graceEndsAt *time.Time
 		var roles []string
-		if err := rows.Scan(&id, &email, &name, &status, &created, &roles, &subscriptionStatus, &planName, &endsAt, &graceEndsAt); err != nil {
+		var balanceCents int64
+		if err := rows.Scan(&id, &email, &name, &status, &created, &roles, &subscriptionStatus, &planName, &endsAt, &graceEndsAt, &balanceCents); err != nil {
 			s.internalError(w, err)
 			return
 		}
-		items = append(items, map[string]any{"id": id, "email": email, "displayName": name, "status": status, "roles": roles, "createdAt": created, "subscriptionStatus": subscriptionStatus, "planName": planName, "subscriptionEndsAt": endsAt, "graceEndsAt": graceEndsAt})
+		items = append(items, map[string]any{"id": id, "email": email, "displayName": name, "status": status, "roles": roles, "createdAt": created, "balanceCents": balanceCents})
 	}
 	writeJSON(w, 200, map[string]any{"users": items})
 }
