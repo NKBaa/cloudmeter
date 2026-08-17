@@ -1,0 +1,7 @@
+extends: []
+rules:
+  struct: error
+  no-unresolved-refs: error
+  path-parameters-defined: error
+  operation-operationId-unique: error
+  operation-parameters-unique: error

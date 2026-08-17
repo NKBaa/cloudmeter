@@ -1,0 +1,13 @@
+services:
+  worker:
+    environment:
+      DOCKER_EXECUTOR_ENABLED: "true"
+      DOCKER_SOCKET: /var/run/docker.sock
+    volumes:
+      - ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock
+    group_add:
+      - ${DOCKER_GID:-0}
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.web.prebuilt

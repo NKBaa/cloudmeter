@@ -1,0 +1,16 @@
+BEGIN;
+DROP FUNCTION IF EXISTS resolve_pricing_version(uuid,uuid,text,text,timestamptz);
+DROP TABLE IF EXISTS pricing_overrides;
+DROP INDEX IF EXISTS usage_billing_attempts_snapshot_uidx;
+ALTER TABLE usage_billing_attempts DROP COLUMN IF EXISTS user_app_id;
+ALTER TABLE usage_billing_attempts ADD CONSTRAINT usage_billing_attempts_user_id_usage_code_window_start_wind_key UNIQUE(user_id,usage_code,window_start,window_end,status,balance_cents);
+DROP INDEX IF EXISTS usage_charges_snapshot_uidx;
+ALTER TABLE usage_charges DROP COLUMN IF EXISTS user_app_id;
+ALTER TABLE usage_charges ADD CONSTRAINT usage_charges_user_id_usage_code_window_start_window_end_key UNIQUE(user_id,usage_code,window_start,window_end);
+DROP INDEX IF EXISTS usage_aggregates_snapshot_uidx;
+ALTER TABLE usage_aggregates DROP CONSTRAINT usage_aggregates_pkey;
+ALTER TABLE usage_aggregates DROP COLUMN IF EXISTS id;
+ALTER TABLE usage_aggregates DROP COLUMN IF EXISTS user_app_id;
+ALTER TABLE usage_aggregates DROP COLUMN IF EXISTS price_version_id;
+ALTER TABLE usage_aggregates ADD PRIMARY KEY(user_id,usage_code,window_start,window_end);
+COMMIT;

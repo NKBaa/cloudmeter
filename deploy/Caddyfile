@@ -1,0 +1,53 @@
+{
+    auto_https off
+    admin off
+    servers {
+        trusted_proxies static {$GATEWAY_TRUSTED_PROXY_CIDRS}
+        trusted_proxies_strict
+    }
+}
+
+:8080 {
+    @unknown_host {
+        not host {$PLATFORM_ALLOWED_HOST}
+    }
+    handle @unknown_host {
+        respond "misdirected request" 421
+    }
+    encode zstd gzip
+    handle /api/internal/* {
+        respond "not found" 404
+    }
+    @api path /api/* /payments/*
+    handle @api {
+        reverse_proxy {
+            dynamic a api 8081 {
+                refresh 1s
+                versions ipv4
+            }
+            header_up X-Forwarded-For {http.request.client_ip}
+            flush_interval -1
+        }
+    }
+    handle /apps/* {
+        # Resolve the Router for every request so a stateless Router recreate
+        # does not leave the gateway pointing at a stale Docker IP.
+        reverse_proxy {
+            dynamic a app-router 8082 {
+                refresh 5s
+                versions ipv4
+            }
+            header_up X-Forwarded-For {http.request.client_ip}
+            header_up X-CloudMeter-Router-Token {$ROUTER_INTERNAL_TOKEN}
+        }
+    }
+    handle {
+        reverse_proxy {
+            dynamic a web 8080 {
+                refresh 1s
+                versions ipv4
+            }
+            header_up X-Forwarded-For {http.request.client_ip}
+        }
+    }
+}

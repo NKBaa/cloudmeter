@@ -1,0 +1,15 @@
+BEGIN;
+DROP TRIGGER IF EXISTS app_secret_versions_no_truncate ON app_secret_versions;
+DROP TRIGGER IF EXISTS app_product_version_tests_no_truncate ON app_product_version_tests;
+DROP TRIGGER IF EXISTS app_product_versions_no_truncate ON app_product_versions;
+DROP TRIGGER IF EXISTS app_products_no_truncate ON app_products;
+DROP TRIGGER IF EXISTS app_releases_no_truncate ON app_releases;
+DROP TRIGGER IF EXISTS wallet_ledger_entries_no_truncate ON wallet_ledger_entries;
+DROP TRIGGER IF EXISTS app_secret_versions_no_update_delete ON app_secret_versions;
+DROP TRIGGER IF EXISTS app_product_version_tests_no_delete ON app_product_version_tests;
+DROP TRIGGER IF EXISTS app_product_versions_no_delete ON app_product_versions;
+DROP TRIGGER IF EXISTS app_products_no_delete ON app_products;
+DROP FUNCTION IF EXISTS deny_app_secret_version_mutation;
+DROP FUNCTION IF EXISTS deny_immutable_history_truncate;
+DROP FUNCTION IF EXISTS deny_immutable_history_delete;
+COMMIT;

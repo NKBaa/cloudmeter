@@ -1,0 +1,4 @@
+BEGIN;
+DROP TABLE IF EXISTS usage_aggregates;
+DROP TABLE IF EXISTS usage_events;
+COMMIT;

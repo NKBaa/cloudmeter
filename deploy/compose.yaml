@@ -1,0 +1,179 @@
+name: cloudmeter
+
+services:
+  gateway:
+    image: caddy:2.9-alpine
+    restart: unless-stopped
+    ports:
+      - "${PLATFORM_BIND_IP:-0.0.0.0}:${PLATFORM_PORT:-8080}:8080"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      api: {condition: service_healthy}
+      web: {condition: service_started}
+      app-router: {condition: service_healthy}
+    environment:
+      ROUTER_INTERNAL_TOKEN: ${ROUTER_INTERNAL_TOKEN:?ROUTER_INTERNAL_TOKEN is required}
+      PLATFORM_ALLOWED_HOST: ${PLATFORM_ALLOWED_HOST:?PLATFORM_ALLOWED_HOST is required}
+      GATEWAY_TRUSTED_PROXY_CIDRS: ${GATEWAY_TRUSTED_PROXY_CIDRS:?GATEWAY_TRUSTED_PROXY_CIDRS is required}
+    networks: [edge_network, platform_network]
+    security_opt: [no-new-privileges:true]
+
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.web
+    restart: unless-stopped
+    expose: ["8080"]
+    networks: [platform_network]
+    security_opt: [no-new-privileges:true]
+
+  egress-proxy:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.backend
+      args: {TARGET: egress-proxy}
+    restart: unless-stopped
+    environment:
+      EGRESS_INGEST_TOKEN: ${EGRESS_INGEST_TOKEN:?EGRESS_INGEST_TOKEN is required}
+      EGRESS_API_URL: http://api:8081
+    expose: ["3128"]
+    depends_on:
+      api: {condition: service_healthy}
+    networks: [edge_network, data_network]
+    healthcheck:
+      test: ["CMD", "/service", "healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    labels:
+      cloudmeter.owner: ${COMPOSE_PROJECT_NAME:-cloudmeter}
+    security_opt: [no-new-privileges:true]
+
+  app-router:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.backend
+      args: {TARGET: router}
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://cloudmeter:${POSTGRES_PASSWORD}@postgres:5432/cloudmeter?sslmode=disable
+      ROUTER_INTERNAL_TOKEN: ${ROUTER_INTERNAL_TOKEN:?ROUTER_INTERNAL_TOKEN is required}
+    expose: ["8082"]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+    networks: [platform_network, data_network]
+    healthcheck:
+      test: ["CMD", "/service", "healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    labels:
+      cloudmeter.owner: ${COMPOSE_PROJECT_NAME:-cloudmeter}
+    security_opt: [no-new-privileges:true]
+
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.backend
+      args: {TARGET: api}
+    restart: unless-stopped
+    environment:
+      API_ADDR: :8081
+      DATABASE_URL: postgres://cloudmeter:${POSTGRES_PASSWORD}@postgres:5432/cloudmeter?sslmode=disable
+      SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-24}
+      TRUSTED_PROXY_CIDRS: ${API_TRUSTED_PROXY_CIDRS:-172.16.0.0/12}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+      SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY:?SECRETS_ENCRYPTION_KEY is required}
+      EGRESS_INGEST_TOKEN: ${EGRESS_INGEST_TOKEN:?EGRESS_INGEST_TOKEN is required}
+      RUNTIME_OWNER: ${COMPOSE_PROJECT_NAME:-cloudmeter}
+    expose: ["8081"]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+    networks: [platform_network, data_network]
+    healthcheck:
+      test: ["CMD", "/service", "healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    security_opt: [no-new-privileges:true]
+
+  worker:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.backend
+      args: {TARGET: worker}
+    restart: unless-stopped
+    # The worker is the only service allowed to access Docker Engine. Run it
+    # as root inside this narrowly scoped container so socket ACLs are honored.
+    user: "0:0"
+    environment:
+      DATABASE_URL: postgres://cloudmeter:${POSTGRES_PASSWORD}@postgres:5432/cloudmeter?sslmode=disable
+      DOCKER_SOCKET: ${DOCKER_SOCKET:-/var/run/docker.sock}
+      DOCKER_EXECUTOR_ENABLED: ${DOCKER_EXECUTOR_ENABLED:-false}
+      RUNTIME_OWNER: ${COMPOSE_PROJECT_NAME:-cloudmeter}
+      ROUTER_CONTAINER_NAME: ${COMPOSE_PROJECT_NAME:-cloudmeter}-app-router-1
+      EGRESS_PROXY_CONTAINER_NAME: ${COMPOSE_PROJECT_NAME:-cloudmeter}-egress-proxy-1
+      BACKUP_STORAGE_VOLUME: ${BACKUP_STORAGE_VOLUME:-cloudmeter_backup_data}
+      BACKUP_HELPER_IMAGE: ${BACKUP_HELPER_IMAGE:-nginx@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10}
+      SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY:?SECRETS_ENCRYPTION_KEY is required}
+      EGRESS_INGEST_TOKEN: ${EGRESS_INGEST_TOKEN:?EGRESS_INGEST_TOKEN is required}
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+      egress-proxy: {condition: service_healthy}
+    volumes:
+      - ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock
+    networks: [data_network]
+    security_opt: [no-new-privileges:true]
+
+  migrate:
+    image: migrate/migrate:v4.18.1
+    command: ["-path", "/migrations", "-database", "postgres://cloudmeter:${POSTGRES_PASSWORD}@postgres:5432/cloudmeter?sslmode=disable", "up"]
+    volumes:
+      - ../migrations:/migrations:ro
+    depends_on:
+      postgres: {condition: service_healthy}
+    networks: [data_network]
+    restart: "no"
+
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: cloudmeter
+      POSTGRES_USER: cloudmeter
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    expose: ["5432"]
+    networks: [data_network]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cloudmeter -d cloudmeter"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD}"]
+    volumes:
+      - redis_data:/data
+    expose: ["6379"]
+    networks: [data_network]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+networks:
+  edge_network: {}
+  platform_network: {internal: true}
+  data_network: {internal: true}
+
+volumes:
+  postgres_data: {}
+  redis_data: {}

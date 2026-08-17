@@ -1,0 +1,11 @@
+BEGIN;
+DROP TRIGGER IF EXISTS app_routes_integrity_guard ON app_routes;
+DROP TRIGGER IF EXISTS user_apps_identity_immutable ON user_apps;
+DROP TRIGGER IF EXISTS users_public_identity_immutable ON users;
+DROP FUNCTION IF EXISTS enforce_app_route_integrity;
+DROP FUNCTION IF EXISTS protect_user_app_identity;
+DROP FUNCTION IF EXISTS protect_user_public_identity;
+ALTER TABLE user_apps DROP CONSTRAINT IF EXISTS user_apps_service_slug_format_check;
+ALTER TABLE user_apps DROP CONSTRAINT IF EXISTS user_apps_slug_format_check;
+ALTER TABLE users DROP CONSTRAINT IF EXISTS users_slug_format_check;
+COMMIT;

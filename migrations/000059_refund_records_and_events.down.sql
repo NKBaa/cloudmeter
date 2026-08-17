@@ -1,0 +1,14 @@
+BEGIN;
+DROP TRIGGER IF EXISTS payment_orders_refund_alignment ON payment_orders;
+DROP TRIGGER IF EXISTS refunds_order_alignment ON refunds;
+DROP FUNCTION IF EXISTS enforce_refund_order_alignment;
+DROP TRIGGER IF EXISTS refund_events_refund_alignment ON refund_events;
+DROP TRIGGER IF EXISTS refunds_event_alignment ON refunds;
+DROP FUNCTION IF EXISTS enforce_refund_event_alignment;
+DROP TRIGGER IF EXISTS refund_events_no_update_delete ON refund_events;
+DROP FUNCTION IF EXISTS deny_refund_event_mutation;
+DROP TRIGGER IF EXISTS refunds_protect_update_delete ON refunds;
+DROP FUNCTION IF EXISTS protect_refund_record;
+DROP TABLE IF EXISTS refund_events;
+DROP TABLE IF EXISTS refunds;
+COMMIT;

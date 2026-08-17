@@ -1,0 +1,1121 @@
+openapi: 3.1.0
+info:
+  title: CloudMeter API
+  version: 0.1.0
+servers:
+  - url: /api
+paths:
+  /healthz:
+    get:
+      operationId: health
+      responses:
+        '200': {description: Healthy}
+  /setup/status:
+    get:
+      operationId: setupStatus
+      responses:
+        '200':
+          description: Initialization state
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SetupStatus'}
+  /setup/initialize:
+    post:
+      operationId: initialize
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/InitializeRequest'}
+      responses:
+        '201':
+          description: Initialized and authenticated
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [initialized, token, expiresAt]
+                properties:
+                  initialized: {type: boolean}
+                  token: {type: string}
+                  expiresAt: {type: string, format: date-time}
+        '409': {description: Already initialized}
+  /auth/login:
+    post:
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/LoginRequest'}
+      responses:
+        '200': {description: Authenticated}
+        '401': {description: Invalid credentials}
+  /auth/logout:
+    post:
+      operationId: logout
+      security: [{bearerAuth: []}]
+      responses:
+        '204': {description: Current session revoked}
+        '401': {description: Session invalid or expired}
+  /auth/register:
+    post:
+      operationId: register
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/RegisterRequest'}
+      responses:
+        '201': {description: Registered}
+        '409': {description: Registration unavailable or email already exists}
+  /auth/registration-policy:
+    get:
+      operationId: registrationPolicy
+      responses:
+        '200': {description: Public registration and email policy}
+  /auth/verification-code:
+    post:
+      operationId: sendVerificationCode
+      responses:
+        '200': {description: Verification code sent}
+        '403': {description: Email policy rejected}
+        '429': {description: Per-email or per-IP verification rate limit exceeded}
+        '503': {description: SMTP is not configured}
+  /auth/oauth/providers:
+    get:
+      operationId: oauthProviders
+      responses:
+        '200': {description: Enabled OAuth providers}
+  /auth/oauth/{provider}/start:
+    post:
+      operationId: oauthStart
+      parameters:
+        - {name: provider, in: path, required: true, schema: {type: string, enum: [github, linuxdo]}}
+      responses:
+        '200': {description: Authorization URL}
+        '503': {description: Provider is not configured}
+  /auth/oauth/exchange:
+    post:
+      operationId: oauthExchange
+      responses:
+        '200': {description: Authenticated}
+        '401': {description: OAuth result invalid or expired}
+  /internal/egress/{appID}:
+    post:
+      operationId: ingestEgressSample
+      parameters:
+        - {name: appID, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: X-CloudMeter-Egress-Token, in: header, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sampleId, byteDelta, source]
+              properties:
+                sampleId: {type: string}
+                byteDelta: {type: integer, format: int64, minimum: 0}
+                observedAt: {type: string, format: date-time}
+                source: {type: string, enum: [egress_gateway, egress_proxy]}
+      responses:
+        '202': {description: Accepted or idempotent duplicate}
+        '403': {description: Collector authentication failed}
+  /me:
+    get:
+      operationId: me
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: Current user}
+        '401': {description: Unauthenticated}
+  /impersonation:
+    delete:
+      operationId: endImpersonation
+      responses:
+        '200': {description: Impersonation session revoked}
+        '409': {description: Current session is not an impersonation session}
+  /announcements:
+    get:
+      operationId: announcements
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: Active platform announcements}
+  /notifications:
+    get:
+      operationId: listNotifications
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: Current user billing notifications}
+  /notifications/{notificationID}/read:
+    patch:
+      operationId: readNotification
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: notificationID, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200': {description: Notification marked read}
+        '404': {description: Notification not found}
+  /admin/summary:
+    get:
+      operationId: adminSummary
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: Administration summary}
+        '403': {description: Admin role required}
+  /admin/audit-logs:
+    get:
+      operationId: adminAuditLogs
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: before, in: query, schema: {type: integer, format: int64, minimum: 1}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 50}}
+        - {name: action, in: query, schema: {type: string}}
+        - {name: identity, in: query, schema: {type: string}}
+      responses:
+        '200': {description: Cursor-paginated immutable audit records}
+        '403': {description: Super administrator required}
+  /billing/summary:
+    get:
+      operationId: billingSummary
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: Wallet balance and current plan}
+  /billing/ledger:
+    get:
+      operationId: billingLedger
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: Wallet ledger entries}
+  /billing/usage:
+    get:
+      operationId: billingUsage
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: Usage windows with billing status; windows without a price are sealed as unpriced and are never charged retroactively}
+  /billing/bills:
+    get:
+      operationId: listBillingStatements
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: Monthly billing statements for the current user}
+  /billing/bills/{billID}:
+    get:
+      operationId: billingStatementDetail
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: billID, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200': {description: Immutable billing statement items and pricing snapshots}
+        '404': {description: Statement not found for current user}
+  /billing/bills/{billID}/export:
+    get:
+      operationId: exportBillingStatement
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: billID, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: UTF-8 CSV billing statement
+          content:
+            text/csv:
+              schema: {type: string}
+        '404': {description: Statement not found for current user}
+  /billing/credits:
+    get:
+      operationId: listCredits
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: Available credit grants and immutable consumption history}
+  /subscriptions/plans:
+    get:
+      operationId: subscriptionPlans
+      description: Returns the latest effective version of every self-service plan plus the current user's plan even when it is no longer publicly purchasable, together with the current subscription, transaction quote, and immutable purchase history. Subscription renewal is always user initiated; the platform does not auto-renew.
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: Purchasable plans and current subscription lifecycle}
+  /subscriptions/purchases:
+    post:
+      operationId: purchaseSubscription
+      description: Atomically purchases, renews, or changes a subscription using wallet balance. Active upgrades charge only the positive paid price difference; downgrades do not refund prior charges.
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [planVersionId, idempotencyKey]
+              properties:
+                planVersionId: {type: string, format: uuid}
+                idempotencyKey: {type: string, minLength: 1, maxLength: 128}
+      responses:
+        '201': {description: "Subscription transaction committed with wallet ledger, statement item, notification, and audit record"}
+        '200': {description: Existing successful purchase returned for the same idempotency key}
+        '400': {description: Request validation failed}
+        '404': {description: Latest effective plan version unavailable or plan is not enabled for this user's self-service purchase}
+        '409': {description: Insufficient wallet balance or idempotency conflict}
+  /apps:
+    get:
+      operationId: listApps
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: User applications including active publicPath}
+    post:
+      operationId: createApp
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [productId, versionId, slug, idempotencyKey]
+              properties:
+                productId: {type: string, format: uuid}
+                versionId: {type: string, format: uuid}
+                slug: {type: string, pattern: '^[a-z0-9][a-z0-9-]{0,62}$'}
+                idempotencyKey: {type: string, minLength: 1, maxLength: 128}
+                secrets:
+                  type: object
+                  additionalProperties: {type: string, minLength: 1, maxLength: 65536}
+                  description: Values for every Secret key declared by the selected product version. Values are encrypted and never returned.
+      responses:
+        '201': {description: "Application, encrypted initial Secrets, immutable release, and deployment job created atomically"}
+        '400': {description: "Invalid resources, slug, or missing or undeclared initial Secrets"}
+        '403': {description: Product is not included in the current plan}
+        '409': {description: "Subscription, application, deployment concurrency, CPU, memory, system disk, or data disk quota exceeded; or a required product dependency is unavailable"}
+  /apps/{appID}/route:
+    get:
+      operationId: appRoute
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: appID, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200': {description: Active application route}
+        '404': {description: Route not active}
+  /apps/{appID}/stop:
+    post:
+      operationId: stopApp
+      summary: Stop an application
+      description: Atomically removes the public route and queues idempotent runtime cleanup. Persistent volumes are retained and remain billable.
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: appID, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [idempotencyKey]
+              properties:
+                idempotencyKey: {type: string, minLength: 1, maxLength: 128}
+      responses:
+        '202': {description: Application route removed and stop task queued}
+        '200': {description: Existing stop result returned idempotently}
+        '404': {description: Application not found}
+        '409': {description: "Application is suspended, busy, not running, or required by another running application"}
+  /apps/{appID}/start:
+    post:
+      operationId: startApp
+      summary: Start an application
+      description: Creates a new immutable release from the last successful snapshot and runs the normal health-check and route-switch workflow.
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: appID, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [idempotencyKey]
+              properties:
+                idempotencyKey: {type: string, minLength: 1, maxLength: 128}
+      responses:
+        '202': {description: Application start deployment queued}
+        '200': {description: Existing start deployment returned idempotently}
+        '403': {description: Product is no longer included in the current plan}
+        '404': {description: Application not found}
+        '409': {description: "Application state, subscription, dependency, Secret, deployment concurrency, ingress, or resource entitlement prevents start"}
+  /apps/{appID}/backups:
+    get:
+      operationId: listAppBackups
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: appID, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200': {description: Declared volumes and backup history}
+        '404': {description: App not found}
+    post:
+      operationId: createAppBackup
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: appID, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [volumeKey]
+              properties:
+                volumeKey: {type: string, minLength: 1}
+      responses:
+        '202': {description: Volume backup queued}
+        '409': {description: "Backup already in progress, or storage/monthly operation quota exceeded"}
+  /apps/{appID}/backups/{backupID}/restore:
+    post:
+      operationId: restoreAppBackup
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: appID, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: backupID, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [idempotencyKey]
+              properties:
+                idempotencyKey: {type: string, minLength: 1, maxLength: 128}
+      responses:
+        '202': {description: Restore queued and app entered maintenance state}
+        '409': {description: Restore already in progress or idempotency key conflict}
+  /admin/plans:
+    get:
+      operationId: adminPlans
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: Plans and immutable versions}
+    post:
+      operationId: createPlan
+      security: [{bearerAuth: []}]
+      responses:
+        '201': {description: Plan created}
+        '409': {description: Plan code already exists}
+  /admin/plans/{planID}/versions:
+    post:
+      operationId: createPlanVersion
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: planID, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [cyclePriceCents, apps, cpuCores, memoryGiB, systemDiskGiB, dataDiskGiB, backupStorageGiB, backupOperationsPerMonth, concurrentDeployments, publicIngresses, ingressOverageEnabled, egressGiB, egressOverageEnabled, creditGrantCents, effectiveAt]
+              properties:
+                cyclePriceCents: {type: integer, minimum: 0, maximum: 1000000000000}
+                apps: {type: integer, minimum: 1}
+                cpuCores: {type: number, exclusiveMinimum: 0}
+                memoryGiB: {type: integer, minimum: 1}
+                systemDiskGiB: {type: number, exclusiveMinimum: 0}
+                dataDiskGiB: {type: number, minimum: 0}
+                backupStorageGiB: {type: number, minimum: 0}
+                backupOperationsPerMonth: {type: integer, minimum: 0}
+                concurrentDeployments: {type: integer, minimum: 1}
+                publicIngresses: {type: integer, minimum: 0}
+                ingressOverageEnabled: {type: boolean}
+                egressGiB: {type: number, minimum: 0}
+                egressOverageEnabled: {type: boolean}
+                creditGrantCents: {type: integer, minimum: 0, description: Monthly UTC credit allowance in cents}
+                allowedProductIds: {type: array, items: {type: string, format: uuid}}
+                effectiveAt: {type: string, format: date-time}
+      responses:
+        '201': {description: Immutable plan version created}
+        '404': {description: Plan not found}
+  /admin/plans/{planID}/availability:
+    patch:
+      operationId: updatePlanAvailability
+      description: Enables or disables a plan for self-service purchase. A disabled plan remains renewable by users who already hold that plan.
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: planID, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled: {type: boolean}
+      responses:
+        '200': {description: Self-service purchase availability updated and audited}
+        '400': {description: Invalid plan ID or request body}
+        '404': {description: Plan not found}
+  /admin/users/{userID}/subscription:
+    put:
+      operationId: assignSubscription
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: userID, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [planVersionId]
+              properties:
+                planVersionId: {type: string, format: uuid}
+                endsAt: {type: [string, "null"], format: date-time}
+      responses:
+        '200': {description: Subscription assigned; optional endsAt starts a three-day grace period when reached}
+        '400': {description: endsAt is not in the future}
+        '404': {description: User or plan version not found}
+  /admin/users/{userID}/impersonation:
+    post:
+      operationId: startUserImpersonation
+      parameters:
+        - {name: userID, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [writeEnabled, confirmation]
+              properties:
+                writeEnabled: {type: boolean}
+                confirmation: {type: string}
+      responses:
+        '201': {description: Short-lived impersonation session created}
+        '400': {description: Target email confirmation required for write access}
+        '403': {description: Super administrator required or target is privileged}
+        '404': {description: User not found}
+  /admin/pricing:
+    get:
+      operationId: adminPricing
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: Immutable pricing items and versions}
+        '403': {description: Super administrator required}
+  /admin/pricing/items:
+    post:
+      operationId: createPricingItem
+      security: [{bearerAuth: []}]
+      responses:
+        '201': {description: Pricing item created}
+        '409': {description: Pricing item already exists}
+  /admin/pricing/items/{itemID}/versions:
+    post:
+      operationId: createPricingVersion
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: itemID, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '201': {description: Immutable pricing version created}
+        '404': {description: Pricing item not found}
+  /admin/pricing/overrides:
+    get:
+      operationId: adminPricingOverrides
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: "User, product and plan pricing overrides"}
+    put:
+      operationId: upsertPricingOverride
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: Pricing override created or replaced}
+        '404': {description: Pricing version or scope target not found}
+  /admin/pricing/overrides/{overrideID}:
+    delete:
+      operationId: deletePricingOverride
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: overrideID, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200': {description: Pricing override deleted}
+        '404': {description: Pricing override not found}
+  /payments/orders:
+    get:
+      operationId: listPaymentOrders
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: Current user's payment orders}
+    post:
+      operationId: createPaymentOrder
+      security: [{bearerAuth: []}]
+      responses:
+        '201': {description: Manual payment order created}
+        '503': {description: Payment provider unavailable}
+  /payments/providers:
+    get:
+      operationId: listPaymentProviders
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: Enabled payment providers available to the current user}
+  /payments/epay/callback:
+    post:
+      operationId: epayCallback
+      description: Provider callback verified by merchant configuration and HMAC signature.
+      responses:
+        '200': {description: Callback accepted or already processed}
+        '403': {description: Signature or merchant rejected}
+  /apps/{appID}/releases:
+    post:
+      operationId: createAppRelease
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: appID, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '202': {description: Update deployment queued}
+        '404': {description: App or version not found}
+        '409': {description: "Deployment in progress, entitlement exceeded, required dependency unavailable, required Secret missing, or required volume backup missing"}
+    get:
+      operationId: appReleases
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: appID, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200': {description: Immutable release history for the application}
+        '404': {description: App not found}
+  /apps/{appID}/rollback:
+    post:
+      operationId: rollbackApp
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: appID, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '202': {description: Rollback deployment queued}
+        '404': {description: Release not found}
+        '409': {description: "Deployment in progress, entitlement exceeded, required dependency unavailable, required Secret missing, or required volume backup missing"}
+  /admin/payments/orders:
+    get:
+      operationId: adminPaymentOrders
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: Payment orders for verification}
+        '403': {description: Super administrator required}
+  /admin/settings/auth:
+    get:
+      operationId: getAuthPolicy
+      security: [{bearerAuth: []}]
+      responses: {'200': {description: Registration policy settings}}
+    put:
+      operationId: updateAuthPolicy
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: Registration policy updated}
+        '400': {description: Email domain whitelist contains an invalid domain}
+        '409': {description: Email verification requires a saved and enabled SMTP configuration}
+  /admin/settings/mail:
+    get:
+      operationId: getMailSettings
+      security: [{bearerAuth: []}]
+      responses: {'200': {description: SMTP settings without secret}}
+    put:
+      operationId: updateMailSettings
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: SMTP settings updated and readiness returned}
+        '409': {description: SMTP cannot be disabled or invalidated while email verification is required}
+  /auth/oauth/{provider}/callback:
+    get:
+      operationId: oauthCallback
+      parameters:
+        - {name: provider, in: path, required: true, schema: {type: string, enum: [github, linuxdo]}}
+      responses: {'302': {description: Redirect to the OAuth completion view}}
+  /products:
+    get:
+      operationId: listProducts
+      security: [{bearerAuth: []}]
+      responses: {'200': {description: "Published products including structured runtime, dependency, route, health, update, required Secret, deployable, and missingDependencies metadata"}}
+  /apps/{appID}/deployments:
+    get:
+      operationId: appDeployments
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: appID, in: path, required: true, schema: {type: string, format: uuid}}
+      responses: {'200': {description: Deployment jobs owned by the current user}}
+  /apps/{appID}/secrets:
+    get:
+      operationId: listAppSecrets
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: appID, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: Secret metadata and the published product versions' allowed Secret keys, without plaintext values
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AppSecretList'}
+        '400': {description: Invalid application identifier}
+        '404': {description: Application not found or not owned by the current user}
+  /apps/{appID}/secrets/{key}:
+    put:
+      operationId: putAppSecret
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: appID, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: key, in: path, required: true, schema: {type: string, pattern: '^[A-Z_][A-Z0-9_]{0,127}$'}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PutAppSecretRequest'}
+      responses:
+        '201':
+          description: Encrypted immutable Secret version created for a key declared by a published product version
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AppSecretVersionCreated'}
+        '400': {description: Invalid value or secret_not_declared when no published version of the application's product declares the key}
+        '404': {description: Application not found or not owned by the current user}
+  /admin/payments/orders/{orderID}/mark-paid:
+    post:
+      operationId: markPaymentPaid
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: orderID, in: path, required: true, schema: {type: string, format: uuid}}
+      responses: {'200': {description: Manual payment credited exactly once}}
+  /admin/payments/orders/{orderID}/refund:
+    post:
+      operationId: refundPayment
+      description: Creates one full-refund record per paid manual order and atomically reverses the credited wallet amount. Concurrent or repeated requests return the same immutable refund without another wallet debit. External-provider orders remain unchanged until that provider's verified refund operation is configured.
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: orderID, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                reason: {type: string, minLength: 1, maxLength: 500, default: administrator full refund}
+      responses:
+        '200':
+          description: Payment refunded or the existing refund returned
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RefundResult'}
+        '400': {description: Order ID or refund reason is invalid}
+        '409': {description: "Order is not paid, refund is in progress, or the credited wallet amount has already been spent"}
+        '503': {description: The external payment provider refund operation is not configured; the order and wallet remain unchanged}
+  /admin/payments/refunds:
+    get:
+      operationId: adminRefunds
+      description: Returns immutable refund records and their append-only event timelines for financial operations.
+      security: [{bearerAuth: []}]
+      responses:
+        '200':
+          description: Most recent refund records
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [refunds]
+                properties:
+                  refunds:
+                    type: array
+                    items: {$ref: '#/components/schemas/RefundRecord'}
+  /admin/payments/orders/{orderID}/query:
+    post:
+      operationId: queryPayment
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: orderID, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200': {description: Provider status queried and operation recorded}
+        '503': {description: Provider query operation is not configured}
+  /admin/payments/orders/{orderID}/close:
+    post:
+      operationId: closePayment
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: orderID, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200': {description: Pending payment order closed after provider confirmation}
+        '503': {description: Provider close operation is not configured}
+  /admin/settings/payments:
+    get:
+      operationId: getPaymentSettings
+      security: [{bearerAuth: []}]
+      responses: {'200': {description: Payment provider settings without secrets}}
+  /admin/settings/payments/{provider}:
+    put:
+      operationId: updatePaymentSettings
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: provider, in: path, required: true, schema: {type: string, enum: [manual, epay]}}
+      responses: {'200': {description: Encrypted payment provider settings updated}}
+  /admin/products:
+    get:
+      operationId: adminListProducts
+      security: [{bearerAuth: []}]
+      responses: {'200': {description: Product catalog including unpublished versions}}
+    post:
+      operationId: createProduct
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [slug, name]
+              properties:
+                slug: {type: string, pattern: '^[a-z0-9][a-z0-9-]{0,62}$'}
+                name: {type: string, minLength: 1, maxLength: 120}
+      responses:
+        '201': {description: Product created with an immutable slug and audit record}
+        '409': {description: Product slug already exists}
+  /admin/products/{productID}:
+    patch:
+      operationId: updateProduct
+      description: Updates the display name while preserving the product slug and all immutable versions.
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: productID, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: {type: string, minLength: 1, maxLength: 120}
+      responses:
+        '200': {description: Product name updated idempotently and audited when changed}
+        '404': {description: Product not found}
+  /admin/products/{productID}/availability:
+    patch:
+      operationId: updateProductAvailability
+      description: Soft-retires or restores a product without deleting deployed applications or immutable releases.
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: productID, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled: {type: boolean}
+      responses:
+        '200': {description: Product availability updated idempotently and audited when changed}
+        '404': {description: Product not found}
+        '409': {description: "Active test or a published dependent product prevents retirement, or dependencies prevent restoration"}
+  /admin/products/{productID}/versions:
+    post:
+      operationId: createProductVersion
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: productID, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateProductVersionRequest'}
+      responses:
+        '201': {description: Immutable structured product version created}
+        '400': {description: "Image, runtime, dependency, route, health, or update policy validation failed"}
+  /admin/products/{productID}/versions/{versionID}/publish:
+    post:
+      operationId: publishProductVersion
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: productID, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: versionID, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200': {description: Product version published}
+        '409': {description: Successful test missing or product dependency graph changed and is now invalid}
+  /admin/products/{productID}/versions/{versionID}/tests:
+    post:
+      operationId: startProductVersionTest
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: productID, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: versionID, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                secrets:
+                  type: object
+                  additionalProperties: {type: string}
+      responses:
+        '202': {description: Isolated product-version test deployment queued}
+        '400': {description: Required test secrets are missing or invalid}
+        '409': {description: A test is already running or the version is already published}
+  /admin/users:
+    get:
+      operationId: listUsers
+      security: [{bearerAuth: []}]
+      responses: {'200': {description: Administration user list}}
+    post:
+      operationId: adminCreateUser
+      security: [{bearerAuth: []}]
+      responses: {'201': {description: User or administrator account created}}
+  /admin/users/{userID}/status:
+    patch:
+      operationId: updateUserStatus
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: userID, in: path, required: true, schema: {type: string, format: uuid}}
+      responses: {'200': {description: User status updated}}
+  /admin/users/{userID}/wallet/adjust:
+    post:
+      operationId: adjustWallet
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: userID, in: path, required: true, schema: {type: string, format: uuid}}
+      responses: {'200': {description: Idempotent immutable wallet adjustment recorded}}
+  /admin/users/{userID}/credits:
+    post:
+      operationId: grantCredit
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: userID, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '201': {description: Expiring or permanent credit grant created}
+        '200': {description: Identical business reference replayed idempotently}
+        '403': {description: Super administrator required}
+        '409': {description: Business reference conflicts with different parameters}
+  /admin/settings/mail/test:
+    post:
+      operationId: testMailSettings
+      security: [{bearerAuth: []}]
+      responses: {'200': {description: SMTP test message sent}}
+  /admin/settings/oauth:
+    get:
+      operationId: getOAuthSettings
+      security: [{bearerAuth: []}]
+      responses: {'200': {description: OAuth settings without secrets}}
+  /admin/settings/oauth/{provider}:
+    put:
+      operationId: updateOAuthSettings
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: provider, in: path, required: true, schema: {type: string, enum: [github, linuxdo]}}
+      responses:
+        '200': {description: Encrypted OAuth settings and LinuxDo trust policy updated}
+        '409': {description: PUBLIC_BASE_URL is required before enabling OAuth}
+  /admin/announcements/{announcementID}:
+    patch:
+      operationId: updateAnnouncement
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: announcementID, in: path, required: true, schema: {type: string, format: uuid}}
+      responses: {'200': {description: Announcement publication state updated}}
+  /admin/announcements:
+    get:
+      operationId: adminAnnouncements
+      security: [{bearerAuth: []}]
+      responses: {'200': {description: Announcement list}}
+    post:
+      operationId: createAnnouncement
+      security: [{bearerAuth: []}]
+      responses:
+        '201': {description: Announcement created and audited}
+        '400': {description: "Invalid title, content, or severity"}
+components:
+  securitySchemes:
+    bearerAuth: {type: http, scheme: bearer}
+  schemas:
+    RefundResult:
+      type: object
+      required: [orderId, status, balanceCents, refundId, refundStatus, idempotent]
+      properties:
+        orderId: {type: string, format: uuid}
+        status: {type: string, const: refunded}
+        balanceCents: {type: integer, format: int64}
+        refundId: {type: string, format: uuid}
+        refundStatus: {type: string, const: succeeded}
+        ledgerEntryId: {type: integer, format: int64}
+        completedAt: {type: string, format: date-time}
+        idempotent: {type: boolean}
+    RefundEvent:
+      type: object
+      required: [id, toStatus, message, metadata, createdAt]
+      properties:
+        id: {type: integer, format: int64}
+        fromStatus: {type: [string, 'null'], enum: [processing, null]}
+        toStatus: {type: string, enum: [processing, succeeded, failed]}
+        message: {type: string}
+        metadata: {type: object, additionalProperties: true}
+        createdAt: {type: string, format: date-time}
+    RefundRecord:
+      type: object
+      required: [id, orderId, userId, email, displayName, provider, amountCents, status, reason, requestId, failureMessage, createdAt, events]
+      properties:
+        id: {type: string, format: uuid}
+        orderId: {type: string, format: uuid}
+        userId: {type: string, format: uuid}
+        email: {type: string, format: email}
+        displayName: {type: string}
+        provider: {type: string, enum: [manual, epay]}
+        amountCents: {type: integer, format: int64, minimum: 1}
+        status: {type: string, enum: [processing, succeeded, failed]}
+        reason: {type: string, minLength: 1, maxLength: 500}
+        ledgerEntryId: {type: [integer, 'null'], format: int64}
+        requestedBy: {type: [string, 'null'], format: uuid}
+        requestedByEmail: {type: string}
+        requestId: {type: string}
+        failureMessage: {type: string}
+        createdAt: {type: string, format: date-time}
+        completedAt: {type: [string, 'null'], format: date-time}
+        events:
+          type: array
+          items: {$ref: '#/components/schemas/RefundEvent'}
+    SetupStatus:
+      type: object
+      required: [initialized, checks]
+      properties:
+        initialized: {type: boolean}
+        platformName: {type: string}
+        checks:
+          type: object
+          additionalProperties: {type: boolean}
+    InitializeRequest:
+      type: object
+      required: [email, password, displayName]
+      properties:
+        email: {type: string, format: email}
+        password: {type: string, minLength: 12, maxLength: 128}
+        displayName: {type: string, minLength: 1, maxLength: 80}
+        registrationEnabled: {type: boolean}
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: {type: string, format: email}
+        password: {type: string}
+    RegisterRequest:
+      type: object
+      required: [email, password, displayName]
+      properties:
+        email: {type: string, format: email}
+        password: {type: string, minLength: 12, maxLength: 128}
+        displayName: {type: string, minLength: 1, maxLength: 80}
+        code: {type: string, pattern: '^[0-9]{6}$', description: Required when registration email verification is enabled}
+    AppSecretMetadata:
+      type: object
+      additionalProperties: false
+      required: [key, version, createdAt]
+      properties:
+        key: {type: string, pattern: '^[A-Z_][A-Z0-9_]{0,127}$'}
+        version: {type: integer, minimum: 1}
+        createdAt: {type: string, format: date-time}
+    AppSecretList:
+      type: object
+      additionalProperties: false
+      required: [secrets, allowedKeys]
+      properties:
+        secrets:
+          type: array
+          items: {$ref: '#/components/schemas/AppSecretMetadata'}
+        allowedKeys:
+          type: array
+          uniqueItems: true
+          description: Sorted union of Secret keys declared by published versions of this application's product
+          items: {type: string, pattern: '^[A-Z_][A-Z0-9_]{0,127}$'}
+    PutAppSecretRequest:
+      type: object
+      additionalProperties: false
+      required: [value]
+      properties:
+        value: {type: string, minLength: 1, maxLength: 65536, writeOnly: true}
+    AppSecretVersionCreated:
+      type: object
+      additionalProperties: false
+      required: [key, version]
+      properties:
+        key: {type: string, pattern: '^[A-Z_][A-Z0-9_]{0,127}$'}
+        version: {type: integer, minimum: 1}
+    CreateProductVersionRequest:
+      type: object
+      additionalProperties: false
+      required: [imageDigest, runtimeSpec, routeSpec, healthSpec, updateSpec]
+      properties:
+        imageDigest:
+          type: string
+          pattern: '^[A-Za-z0-9][A-Za-z0-9./:_-]*@sha256:[0-9a-f]{64}$'
+        runtimeSpec: {$ref: '#/components/schemas/ProductRuntimeSpec'}
+        routeSpec: {$ref: '#/components/schemas/ProductRouteSpec'}
+        healthSpec: {$ref: '#/components/schemas/ProductHealthSpec'}
+        updateSpec: {$ref: '#/components/schemas/ProductUpdateSpec'}
+    ProductRuntimeSpec:
+      type: object
+      additionalProperties: false
+      required: [cpuCores, memoryMiB, systemDiskGiB, volumes, env, secretKeys]
+      properties:
+        cpuCores: {type: number, minimum: 0.1, maximum: 64}
+        memoryMiB: {type: number, minimum: 64, maximum: 262144}
+        systemDiskGiB: {type: number, minimum: 1, maximum: 1024}
+        command:
+          type: array
+          maxItems: 64
+          items: {type: string, minLength: 1, maxLength: 4096}
+        env:
+          type: object
+          maxProperties: 128
+          propertyNames: {pattern: '^[A-Za-z_][A-Za-z0-9_]{0,127}$'}
+          additionalProperties: {type: string, maxLength: 4096}
+        secretKeys:
+          type: array
+          maxItems: 64
+          uniqueItems: true
+          items: {type: string, pattern: '^[A-Z_][A-Z0-9_]{0,127}$'}
+        dependencies:
+          type: array
+          maxItems: 32
+          items: {$ref: '#/components/schemas/ProductDependency'}
+        volumes:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [name, mountPath, sizeGiB]
+            properties:
+              name: {type: string, pattern: '^[a-z][a-z0-9-]{0,31}$'}
+              mountPath: {type: string, pattern: '^/'}
+              sizeGiB: {type: number, minimum: 1, maximum: 16384}
+    ProductDependency:
+      type: object
+      additionalProperties: false
+      required: [key, productId, serviceSlug, required]
+      properties:
+        key: {type: string, pattern: '^[a-z][a-z0-9-]{0,31}$'}
+        productId: {type: string, format: uuid}
+        serviceSlug: {type: string, pattern: '^[a-z0-9][a-z0-9-]{0,62}$'}
+        required: {type: boolean}
+    ProductRouteSpec:
+      type: object
+      additionalProperties: false
+      required: [containerPort, basePath, stripPrefix, websocket, sse, cookiePath]
+      properties:
+        containerPort: {type: integer, minimum: 1, maximum: 65535}
+        basePath: {type: string, pattern: '^/', maxLength: 512}
+        stripPrefix: {type: boolean}
+        websocket: {type: boolean}
+        sse: {type: boolean}
+        cookiePath: {type: string, pattern: '^/|^$', maxLength: 512}
+    ProductHealthSpec:
+      type: object
+      additionalProperties: false
+      required: [path, intervalSeconds, timeoutSeconds]
+      properties:
+        path: {type: string, pattern: '^/|^$', maxLength: 512}
+        intervalSeconds: {type: integer, minimum: 1, maximum: 120}
+        timeoutSeconds: {type: integer, minimum: 1, maximum: 30}
+    ProductUpdateSpec:
+      type: object
+      additionalProperties: false
+      required: [dataPolicy]
+      properties:
+        dataPolicy: {type: string, enum: [stateless, volume_compatible, backup_required]}

@@ -1,0 +1,11 @@
+.env
+.docker/
+.gocache/
+.npm-cache/
+.tools/
+artifacts/
+node_modules/
+apps/web/dist/
+apps/web/*.tsbuildinfo
+coverage/
+*.log

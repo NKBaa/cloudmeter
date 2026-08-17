@@ -1,0 +1,3 @@
+BEGIN;
+ALTER TABLE app_egress_samples ADD CONSTRAINT app_egress_samples_user_app_id_cumulative_bytes_key UNIQUE(user_app_id,cumulative_bytes);
+COMMIT;

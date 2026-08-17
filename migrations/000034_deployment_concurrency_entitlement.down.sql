@@ -1,0 +1,4 @@
+BEGIN;
+ALTER TABLE user_subscriptions DROP CONSTRAINT IF EXISTS user_subscriptions_deployment_concurrency_snapshot_check;
+ALTER TABLE plan_versions DROP CONSTRAINT IF EXISTS plan_versions_deployment_concurrency_check;
+COMMIT;

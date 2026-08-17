@@ -1,0 +1,4 @@
+BEGIN;
+DROP TABLE IF EXISTS app_restore_jobs;
+DROP TABLE IF EXISTS app_backups;
+COMMIT;

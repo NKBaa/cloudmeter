@@ -1,0 +1,13 @@
+BEGIN;
+DROP TABLE IF EXISTS deployment_jobs;
+DROP TABLE IF EXISTS user_apps;
+DROP TABLE IF EXISTS app_releases;
+DROP TABLE IF EXISTS app_product_versions, app_products;
+DROP TRIGGER IF EXISTS wallet_ledger_no_update_delete ON wallet_ledger_entries;
+DROP FUNCTION IF EXISTS deny_release_mutation;
+DROP FUNCTION IF EXISTS deny_ledger_mutation;
+DROP TABLE IF EXISTS wallet_ledger_entries, wallets, pricing_versions, pricing_items, plan_versions, plans;
+DROP TABLE IF EXISTS audit_logs, sessions, user_roles, roles;
+ALTER TABLE IF EXISTS system_state DROP CONSTRAINT IF EXISTS system_state_initializer_fk;
+DROP TABLE IF EXISTS users, system_state;
+COMMIT;

@@ -1,0 +1,66 @@
+import { createApp } from 'vue'
+import { createRouter, createWebHistory } from 'vue-router'
+import App from './App.vue'
+import SetupView from './views/SetupView.vue'
+import LoginView from './views/LoginView.vue'
+import RegisterView from './views/RegisterView.vue'
+import ConsoleView from './views/ConsoleView.vue'
+import AdminView from './views/AdminView.vue'
+import OAuthCallbackView from './views/OAuthCallbackView.vue'
+import ProductsAdminView from './views/ProductsAdminView.vue'
+import PaymentsAdminView from './views/PaymentsAdminView.vue'
+import PricingAdminView from './views/PricingAdminView.vue'
+import PaymentSettingsView from './views/PaymentSettingsView.vue'
+import ReleasesView from './views/ReleasesView.vue'
+import BackupsView from './views/BackupsView.vue'
+import PlansAdminView from './views/PlansAdminView.vue'
+import AuditAdminView from './views/AuditAdminView.vue'
+import './styles.css'
+
+const router = createRouter({
+  history: createWebHistory(),
+  routes: [
+    { path: '/', redirect: '/console' },
+    { path: '/setup', component: SetupView },
+    { path: '/login', component: LoginView },
+    { path: '/register', component: RegisterView },
+    { path: '/oauth/callback', component: OAuthCallbackView },
+    { path: '/console/releases', component: ReleasesView },
+    { path: '/console/backups', component: BackupsView },
+    { path: '/console/:pathMatch(.*)*', component: ConsoleView },
+    { path: '/admin/products', component: ProductsAdminView, meta: { admin: true } },
+    { path: '/admin/payments', component: PaymentsAdminView, meta: { superAdmin: true } },
+    { path: '/admin/pricing', component: PricingAdminView, meta: { superAdmin: true } },
+    { path: '/admin/payment-settings', component: PaymentSettingsView, meta: { superAdmin: true } },
+    { path: '/admin/plans', component: PlansAdminView, meta: { superAdmin: true } },
+    { path: '/admin/audit', component: AuditAdminView, meta: { superAdmin: true } },
+    { path: '/admin/:pathMatch(.*)*', component: AdminView, meta: { admin: true } },
+  ],
+})
+
+router.beforeEach(async (to) => {
+  try {
+    const response = await fetch('/api/setup/status')
+    const status = await response.json() as { initialized?: boolean; hasAdmin?: boolean }
+    if (!status.initialized && to.path !== '/setup') return '/setup'
+    if (status.initialized && status.hasAdmin && to.path === '/setup') return '/login'
+  } catch { /* Let the page surface service availability errors. */ }
+  if (!['/setup', '/login', '/register', '/oauth/callback'].includes(to.path) && !localStorage.getItem('session_token')) return '/login'
+  if (to.meta.admin || to.meta.superAdmin) {
+    try {
+      const token = localStorage.getItem('session_token')
+      const response = await fetch('/api/me', { headers: { Authorization: `Bearer ${token}` } })
+      if (!response.ok) throw new Error('session unavailable')
+      const current = await response.json() as { Roles?: string[] }
+      const roles = current.Roles || []
+      if (to.meta.superAdmin && !roles.includes('super_admin')) return '/admin'
+      if (!roles.some(role => role === 'admin' || role === 'super_admin')) return '/console'
+    } catch {
+      localStorage.removeItem('admin_session_token')
+      localStorage.removeItem('session_token')
+      return '/login'
+    }
+  }
+})
+
+createApp(App).use(router).mount('#app')

@@ -1,0 +1,11 @@
+<script setup lang="ts">
+import { onMounted, ref } from 'vue'
+import { AppWindow, ArrowLeft, CheckCircle2, LogOut, RefreshCw } from '@lucide/vue'
+import { api, logout } from '../api'
+import BrandMark from '../components/BrandMark.vue'
+type App={id:string;slug:string;status:string;productSlug:string};type Release={id:string;releaseNumber:number;productVersionId:string;state:string;createdAt:string;jobState?:string;jobId?:string}
+const apps=ref<App[]>([]), releases=ref<Record<string,Release[]>>({}), error=ref('')
+async function load(){try{const data=await api<{apps:App[]}>('/apps');apps.value=data.apps;const pairs=await Promise.all(apps.value.map(async app=>[app.id,(await api<{releases:Release[]}>('/apps/'+app.id+'/releases')).releases] as const));releases.value=Object.fromEntries(pairs)}catch(e){error.value=(e as Error).message}}
+onMounted(load)
+</script>
+<template><div class="app-shell"><aside><BrandMark/><nav><a href="/console"><ArrowLeft :size="18"/>控制台</a><a class="active"><AppWindow :size="18"/>版本历史</a></nav><button class="icon-text" @click="logout"><LogOut :size="17"/>退出</button></aside><main class="workspace admin-workspace"><header><div><p class="eyebrow">发布审计</p><h1>应用版本历史</h1></div><button class="secondary compact" @click="load"><RefreshCw :size="16"/>刷新</button></header><p v-if="error" class="message">{{error}}</p><section v-for="app in apps" :key="app.id" class="release-list"><div class="section-heading"><div><p class="eyebrow">{{app.productSlug}}</p><h2>{{app.slug}}</h2></div><span>{{(releases[app.id]||[]).length}} 个 Release</span></div><article v-for="release in releases[app.id]||[]" :key="release.id" class="release-row"><span class="version-number">v{{release.releaseNumber}}</span><div><strong>{{release.state==='active'?'当前版本':release.state}}</strong><small>{{release.productVersionId}} · {{release.jobState||'无任务'}} · {{new Date(release.createdAt).toLocaleString()}}</small></div><span :class="['status-pill',release.state==='active'?'active':'suspended']">{{release.state}}</span><CheckCircle2 v-if="release.state==='active'" class="ok" :size="19"/></article><p v-if="!(releases[app.id]||[]).length" class="quiet empty-copy">暂无发布记录</p></section><p v-if="!apps.length" class="quiet empty-copy">暂无应用</p></main></div></template>
