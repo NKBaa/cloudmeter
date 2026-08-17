@@ -529,24 +529,6 @@ async function exitImpersonation(){const token=localStorage.getItem("admin_sessi
 </script>
 
 <template>
-  <div class="app-shell">
-    <aside>
-      <BrandMark />
-      <nav>
-        <a class="active"><Gauge :size="18" />概览</a>
-        <div class="nav-group">应用管理</div>
-        <a href="#apps"><AppWindow :size="18" />我的应用</a>
-        <a href="/console/releases"><Rocket :size="18" />版本历史</a>
-        <a href="/console/backups"><ArchiveRestore :size="18" />备份与恢复</a>
-        <div class="nav-group">财务管理</div>
-        <a href="#billing"><CreditCard :size="18" />余额与账单</a>
-        <a href="#usage"><CreditCard :size="18" />用量明细</a>
-        <a href="#subscription"><BadgeDollarSign :size="18" />套餐订阅</a>
-      </nav>
-      <button class="icon-text" @click="logout">
-        <LogOut :size="17" />退出
-      </button>
-    </aside>
     <main class="workspace">
       <section v-if="impersonation.active" class="impersonation-banner"><div><strong>{{impersonation.actorName}} 正在查看此账户</strong><span>{{impersonation.readOnly?'只读模式，所有写操作已由后端阻止':'代操作模式，所有写操作都会记录审计'}}</span></div><button class="secondary compact" @click="exitImpersonation">返回管理后台</button></section>
       <header>
@@ -846,7 +828,6 @@ async function exitImpersonation(){const token=localStorage.getItem("admin_sessi
         </article>
       </section>
     </main>
-  </div>
   <div v-if="deployProduct" class="modal-backdrop" @click.self="closeDeploy">
     <section class="secret-dialog deploy-dialog">
       <header>

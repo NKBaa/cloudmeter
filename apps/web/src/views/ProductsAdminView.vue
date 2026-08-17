@@ -245,12 +245,6 @@ function dataPolicyLabel(value?: string) {
 </script>
 
 <template>
-  <div class="app-shell">
-    <aside>
-      <BrandMark />
-      <nav><a href="/admin"><ArrowLeft :size="18" />平台设置</a><a class="active"><AppWindow :size="18" />产品管理</a></nav>
-      <button class="icon-text" @click="logout"><LogOut :size="17" />退出</button>
-    </aside>
     <main class="workspace admin-workspace">
       <header><div><p class="eyebrow">应用目录</p><h1>产品与版本</h1></div></header>
       <p v-if="error" class="message">{{ error }}</p><p v-if="message" class="status-ok">{{ message }}</p>
@@ -390,5 +384,4 @@ function dataPolicyLabel(value?: string) {
         <div class="deploy-dialog-actions"><button type="button" class="secondary compact" @click="closeProductAvailability">取消</button><button :class="['compact', lifecycleProduct.status === 'retired' ? 'primary' : 'secondary danger-button']" :disabled="busy === 'product-availability'" @click="updateProductAvailability"><RotateCcw v-if="lifecycleProduct.status === 'retired'" :size="16" /><Archive v-else :size="16" />{{ lifecycleProduct.status === 'retired' ? '确认恢复' : '确认下架' }}</button></div>
       </section>
     </div>
-  </div>
 </template>

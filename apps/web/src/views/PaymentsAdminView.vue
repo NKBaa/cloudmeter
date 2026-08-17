@@ -197,15 +197,6 @@ function refundStatusLabel(status: string) {
 </script>
 
 <template>
-  <div class="app-shell">
-    <aside>
-      <BrandMark />
-      <nav>
-        <a href="/admin"><ArrowLeft :size="18" />平台设置</a>
-        <a class="active"><ReceiptText :size="18" />资金流水</a>
-      </nav>
-      <button class="icon-text" @click="logout"><LogOut :size="17" />退出</button>
-    </aside>
 
     <main class="workspace admin-workspace">
       <header>
@@ -297,7 +288,6 @@ function refundStatusLabel(status: string) {
         <p v-if="!refunds.length" class="quiet empty-copy">暂无退款记录</p>
       </section>
     </main>
-  </div>
 
   <Teleport to="body">
     <div v-if="refundTarget" class="dialog-backdrop" @click.self="cancelRefund">

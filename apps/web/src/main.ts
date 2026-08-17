@@ -1,6 +1,7 @@
 import { createApp } from 'vue'
 import { createRouter, createWebHistory } from 'vue-router'
 import App from './App.vue'
+import AppShell from './components/AppShell.vue'
 import SetupView from './views/SetupView.vue'
 import LoginView from './views/LoginView.vue'
 import RegisterView from './views/RegisterView.vue'
@@ -19,22 +20,39 @@ import './styles.css'
 
 const router = createRouter({
   history: createWebHistory(),
+  scrollBehavior(to) {
+    if (to.hash) {
+      return new Promise((resolve) => {
+        setTimeout(() => {
+          const el = document.querySelector(to.hash)
+          resolve(el ? { el: to.hash, top: 18, behavior: 'smooth' } : {})
+        }, 60)
+      })
+    }
+    return { top: 0 }
+  },
   routes: [
-    { path: '/', redirect: '/console' },
     { path: '/setup', component: SetupView },
     { path: '/login', component: LoginView },
     { path: '/register', component: RegisterView },
     { path: '/oauth/callback', component: OAuthCallbackView },
-    { path: '/console/releases', component: ReleasesView },
-    { path: '/console/backups', component: BackupsView },
-    { path: '/console/:pathMatch(.*)*', component: ConsoleView },
-    { path: '/admin/products', component: ProductsAdminView, meta: { admin: true } },
-    { path: '/admin/payments', component: PaymentsAdminView, meta: { superAdmin: true } },
-    { path: '/admin/pricing', component: PricingAdminView, meta: { superAdmin: true } },
-    { path: '/admin/payment-settings', component: PaymentSettingsView, meta: { superAdmin: true } },
-    { path: '/admin/plans', component: PlansAdminView, meta: { superAdmin: true } },
-    { path: '/admin/audit', component: AuditAdminView, meta: { superAdmin: true } },
-    { path: '/admin/:pathMatch(.*)*', component: AdminView, meta: { admin: true } },
+    {
+      path: '/',
+      component: AppShell,
+      children: [
+        { path: '', redirect: '/console' },
+        { path: 'console', component: ConsoleView },
+        { path: 'console/releases', component: ReleasesView },
+        { path: 'console/backups', component: BackupsView },
+        { path: 'admin', component: AdminView, meta: { admin: true } },
+        { path: 'admin/products', component: ProductsAdminView, meta: { admin: true } },
+        { path: 'admin/payments', component: PaymentsAdminView, meta: { superAdmin: true } },
+        { path: 'admin/pricing', component: PricingAdminView, meta: { superAdmin: true } },
+        { path: 'admin/payment-settings', component: PaymentSettingsView, meta: { superAdmin: true } },
+        { path: 'admin/plans', component: PlansAdminView, meta: { superAdmin: true } },
+        { path: 'admin/audit', component: AuditAdminView, meta: { superAdmin: true } },
+      ],
+    },
   ],
 })
 

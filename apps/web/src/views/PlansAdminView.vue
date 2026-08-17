@@ -205,17 +205,6 @@ function subscriptionLabel(user: User) {
 }
 </script>
 <template>
-  <div class="app-shell">
-    <aside>
-      <BrandMark />
-      <nav>
-        <a href="/admin"><ArrowLeft :size="18" />平台设置</a
-        ><a class="active"><BadgeDollarSign :size="18" />套餐管理</a>
-      </nav>
-      <button class="icon-text" @click="logout">
-        <LogOut :size="17" />退出
-      </button>
-    </aside>
     <main class="workspace admin-workspace">
       <header>
         <div>
@@ -474,5 +463,4 @@ function subscriptionLabel(user: User) {
         </div>
       </div>
     </main>
-  </div>
 </template>
