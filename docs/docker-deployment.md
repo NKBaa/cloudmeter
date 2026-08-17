@@ -37,16 +37,73 @@ docker compose version
 
 > **注意（Linux 用户）**：请确保将当前部署用户加入 `docker` 用户组（`sudo usermod -aG docker $USER`），避免运行 Compose 时出现权限不足问题。
 
+### 国内网络加速（2026-08 空环境实测）
+
+**1) Ubuntu apt 软件源换源**
+
+在全新 Ubuntu 24.04 上实测：官方源非常缓慢，阿里云镜像部分区域超时，清华镜像返回 403，**中科大镜像可用**：
+
+```bash
+# Ubuntu 24.04 源文件为 /etc/apt/sources.list.d/ubuntu.sources
+sudo cp /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list.d/ubuntu.sources.bak
+sudo sed -i \
+  -e 's|http://archive.ubuntu.com/ubuntu/|https://mirrors.ustc.edu.cn/ubuntu/|g' \
+  -e 's|http://security.ubuntu.com/ubuntu/|https://mirrors.ustc.edu.cn/ubuntu/|g' \
+  /etc/apt/sources.list.d/ubuntu.sources
+sudo apt update && sudo apt upgrade -y
+```
+
+**2) Docker 镜像加速器**
+
+在 `/etc/docker/daemon.json` 中配置镜像加速器（实测加速源 `https://344722f97d707e184cea555f0aefe248.d.1ms.run`，配置后 `docker pull alpine` 约 13 秒拉完）：
+
+```bash
+sudo mkdir -p /etc/docker
+sudo tee /etc/docker/daemon.json > /dev/null <<'EOF'
+{
+  "registry-mirrors": ["https://344722f97d707e184cea555f0aefe248.d.1ms.run"]
+}
+EOF
+sudo systemctl daemon-reload && sudo systemctl restart docker
+# WSL 未启用 systemd 时改用: sudo service docker restart
+```
+
+验证加速器已生效：
+
+```bash
+docker info | grep -A 3 'Registry Mirrors'
+docker pull alpine
+```
+
 ---
 
 ## 2. 代码获取与密钥配置
 
-### 2.1 克隆代码仓库
+### 2.1 获取源码（私有仓库，无预构建镜像）
 
-```bash
-git clone https://github.com/NKBaa/cloudmeter.git
-cd cloudmeter
-```
+仓库 `NKBaa/cloudmeter` 为**私有仓库**，且 GitHub 上**未发布预构建镜像**（`docker pull` 不可用）。因此所有镜像必须在部署机上**从源码本地构建**——Compose 中每个服务均声明了 `build:` 上下文，`up -d --build` 会自动完成构建。
+
+获取源码二选一：
+
+- **方式 A（推荐，私有仓库）**：在本地将项目源码打包（排除 `.git`、`node_modules`、`apps/web/dist` 等产物），复制到部署机后解压，再执行 `cd cloudmeter`。
+
+  ```bash
+  # Windows 侧示例：项目根目录打包
+  tar --exclude='.git' --exclude='node_modules' --exclude='apps/web/dist' -czf cloudmeter-src.tar.gz -C C:/Users/www34/Desktop/云部署 .
+
+  # 复制并解压到 WSL
+  wsl -d Ubuntu-24.04 -e cp /mnt/c/Users/www34/Desktop/云部署/cloudmeter-src.tar.gz /opt/
+  wsl -d Ubuntu-24.04 -e bash -lc "mkdir -p /opt/cloudmeter && tar -xzf /opt/cloudmeter-src.tar.gz -C /opt/cloudmeter && cd /opt/cloudmeter"
+  ```
+
+- **方式 B**：部署机上已配置 GitHub 凭据后直接克隆：
+
+  ```bash
+  git clone https://github.com/NKBaa/cloudmeter.git
+  cd cloudmeter
+  ```
+
+> **提示**：Compose 文件位于 `deploy/` 子目录，**所有 compose 命令都必须显式指定 `--env-file .env`**，否则会因找不到变量而报 `required variable ... is missing a value`。首次 `--build` 会本地构建 api / web / gateway / app-router / egress-proxy 等镜像，耗时约 5–15 分钟（视网络而定），之后增量构建仅需数秒。
 
 ### 2.2 准备配置文件 `.env`
 
@@ -81,8 +138,18 @@ openssl rand -base64 32 | tr -d '=\n'
 | `SECRETS_ENCRYPTION_KEY` | 静态加密主密钥（主加密密码，务必离线备份） | 32-Byte Base64 无填充 |
 | `PLATFORM_ALLOWED_HOST` | 平台访问 Host 名（仅主机名，无协议端口路径） | `cloud.example.com` 或 `127.0.0.1` |
 | `PUBLIC_BASE_URL` | 用户访问平台的完整 URL 根路径 | `https://cloud.example.com` |
+| `PLATFORM_PORT` | Gateway 对外映射端口（本机验证可直接改此端口） | `18085` |
 
-> ⚠️ **警告**：`SECRETS_ENCRYPTION_KEY` 用于加密保存平台的第三方凭据（如 SMTP 密码、OAuth Client Secret、支付通道密钥和用户应用敏感环境变量）。部署后请务必保存备份！一旦丢失，数据库内存存的加密字段将不可解密。
+> **警告**：`SECRETS_ENCRYPTION_KEY` 用于加密保存平台的第三方凭据（如 SMTP 密码、OAuth Client Secret、支付通道密钥和用户应用敏感环境变量）。部署后请务必保存备份！一旦丢失，数据库内存存的加密字段将不可解密。
+
+> **本次空环境验收实测参考值（WSL Ubuntu 24.04 root 用户）**：
+
+| 环境变量 | 实测值 | 说明 |
+| :--- | :--- | :--- |
+| `PLATFORM_PORT` | `18085` | 平台对外单一端口 |
+| `PLATFORM_ALLOWED_HOST` | `127.0.0.1` | WSL2 自动端口转发，Windows 宿主机直接访问 `http://127.0.0.1:18085` |
+| `PUBLIC_BASE_URL` | `http://127.0.0.1:18085` | 无域名时的完整访问根路径 |
+| `DOCKER_GID` | `0` | WSL root 用户下 docker.sock 属组为 root(0) |
 
 ---
 
@@ -113,6 +180,8 @@ stat -c '%g' /var/run/docker.sock
 ```dotenv
 DOCKER_GID=998
 ```
+
+> **WSL root 用户环境**：`stat -c '%g' /var/run/docker.sock` 返回 `0`，因此 `DOCKER_GID=0` 即可让 Worker 正常访问 Docker Socket。
 
 > **安全提示**：请勿将 Docker Socket 挂载到 API、Web 控制台或任何用户容器中。拥有 Docker Socket 权限等同于宿主机的 root 权限。
 
@@ -169,6 +238,19 @@ http://<PLATFORM_ALLOWED_HOST>:<PLATFORM_PORT>/setup
 2. 提交后，后端使用 PostgreSQL `SERIALIZABLE` 隔离级别与 Advisory Lock 全局串行化锁，在同一个原子事务中创建首个**超级管理员账号**、初始化钱包账本与系统审计记录。
 3. **初始化完成后，setup 写接口将永久关闭**，后续任何重复调用均会被服务端拒绝。
 
+### 管理员与普通用户入口
+平台**不区分两套登录页**——管理员与普通用户**共用 `/login`**。管理员界面不是独立站点，而是在普通用户界面上扩展（普通用户导航 + 平台管理菜单），因此登录后看到的菜单是超集关系。
+
+| 页面 | 地址 |
+| :--- | :--- |
+| 登录页（管理员 / 普通用户共用） | `http://<host>:<port>/login` |
+| 首次初始化页（仅未初始化时可用） | `http://<host>:<port>/setup` |
+| 控制台（登录后） | `http://<host>:<port>/console` |
+
+普通用户导航：概览、我的应用、版本历史、备份恢复、余额账单、用量、套餐订阅。
+
+管理员额外导航：平台总览、用户、产品、定价、套餐、支付、公告、OAuth、SMTP、审计。
+
 ---
 
 ## 6. 外层反向代理与 HTTPS
@@ -204,7 +286,7 @@ docker compose --env-file .env -f deploy/compose.yaml run --rm migrate
 docker compose --env-file .env -f deploy/compose.yaml up -d --build api worker app-router egress-proxy web gateway
 ```
 
-> ⚠️ **警告**：生产升级**切勿使用 `docker compose down -v`** 命令！带 `-v` 参数会直接清空 PostgreSQL 数据库卷和 Redis 缓存卷！
+> **警告**：生产升级**切勿使用 `docker compose down -v`** 命令！带 `-v` 参数会直接清空 PostgreSQL 数据库卷和 Redis 缓存卷！
 
 ---
 
@@ -225,16 +307,29 @@ powershell -ExecutionPolicy Bypass -File deploy/verify.ps1
 ### 8.2 常见问题速查
 
 1. **端口冲突 (`port is already allocated`)**
-   修改 `.env` 中的 `PLATFORM_PORT`（例如改为 `8088`），或停止占用该端口的宿主机其他进程。
+   修改 `.env` 中的 `PLATFORM_PORT`（例如改为 `18085` 或 `8088`），或停止占用该端口的宿主机其他进程。
 
 2. **421 请求错误 (`421 Misdirected Request`)**
    请求中的 HTTP `Host` 报头与 `.env` 中定义的 `PLATFORM_ALLOWED_HOST` 不一致。检查反向代理是否正确透传了原 Host 报头。
 
 3. **Worker 无法部署应用**
-   检查宿主机 Docker Socket 路径与权限，确认 `.env` 中 `DOCKER_EXECUTOR_ENABLED=true` 且 `DOCKER_GID` 与宿主机 `stat -c '%g' /var/run/docker.sock` 一致。
+   检查宿主机 Docker Socket 路径与权限，确认 `.env` 中 `DOCKER_EXECUTOR_ENABLED=true` 且 `DOCKER_GID` 与宿主机 `stat -c '%g' /var/run/docker.sock` 一致（WSL root 用户为 `0`）。
 
 4. **数据库 Migration 报错**
    运行 `docker compose --env-file .env -f deploy/compose.yaml logs migrate` 查看具体的 SQL 错误，绝不要手动修改或乱动 PostgreSQL 中的 `schema_migrations` 表。
+
+5. **Compose 报 `required variable ... is missing a value`**
+   compose 文件位于 `deploy/` 子目录，未指定 `--env-file .env` 时默认只读取当前目录下的 `.env`。所有命令务必使用 `docker compose --env-file .env -f deploy/compose.yaml ...`。
+
+6. **GitHub 无预构建镜像 / 私有仓库无法 `docker pull`**
+   本项目所有镜像均由部署机从源码本地构建（`up -d --build`），不要尝试从 GitHub Container Registry 拉取。
+
+7. **WSL 重启后容器未自动恢复**
+   Windows 重启或 WSL 发行版被关闭后，容器不会自动拉起。可参照 [operations.md](operations.md) 中的 WSL 常驻保活方案（Windows 计划任务自动拉起），或手动恢复：
+
+   ```bash
+   wsl -d Ubuntu-24.04 -u root -e bash -lc "cd /opt/cloudmeter && docker compose --env-file .env -f deploy/compose.yaml up -d"
+   ```
 
 ---
 
