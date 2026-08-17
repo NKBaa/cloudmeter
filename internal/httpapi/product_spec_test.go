@@ -23,12 +23,11 @@ func TestNormalizeRouteSpecPortConfiguration(t *testing.T) {
 	if err := normalizeRouteSpec(spec); err != nil {
 		t.Fatal(err)
 	}
-	if spec["portEditable"] != true || spec["portEnvVar"] != "SERVER_PORT" {
-		t.Fatalf("spec=%v", spec)
+	if _, exists := spec["portEditable"]; exists {
+		t.Fatalf("legacy port override retained: %v", spec)
 	}
-	invalid := map[string]any{"containerPort": 8080.0, "portEditable": true, "portEnvVar": "BAD-KEY"}
-	if err := normalizeRouteSpec(invalid); err == nil {
-		t.Fatal("expected invalid port environment variable to fail")
+	if _, exists := spec["portEnvVar"]; exists {
+		t.Fatalf("legacy port environment variable retained: %v", spec)
 	}
 }
 

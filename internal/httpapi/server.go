@@ -710,7 +710,6 @@ type selectedResources struct {
 	Command       []string             `json:"command"`
 	Environment   map[string]string    `json:"environment"`
 	Dependencies  []selectedDependency `json:"dependencies"`
-	ContainerPort *int                 `json:"containerPort"`
 }
 
 type selectedDependency struct {
@@ -813,34 +812,16 @@ func selectedRouteSpec(template map[string]any, selected selectedResources) (map
 	if err = json.Unmarshal(encoded, &result); err != nil {
 		return nil, err
 	}
-	if selected.ContainerPort != nil {
-		templatePort, _ := exactInteger(result["containerPort"])
-		portEditable, _ := result["portEditable"].(bool)
-		if *selected.ContainerPort != templatePort && !portEditable {
-			return nil, fmt.Errorf("container port is fixed by the product template")
-		}
-		result["containerPort"] = float64(*selected.ContainerPort)
-	}
 	if err = normalizeRouteSpec(result); err != nil {
 		return nil, err
 	}
 	return result, nil
 }
 
-func bindRuntimePort(runtimeSpec, routeSpec map[string]any) error {
+func validateInternalRoutePort(runtimeSpec, routeSpec map[string]any) error {
 	port, ok := exactInteger(routeSpec["containerPort"])
 	if !ok || port < 1 || port > 65535 {
 		return fmt.Errorf("container port must be between 1 and 65535")
-	}
-	if portEditable, _ := routeSpec["portEditable"].(bool); portEditable {
-		if key, _ := routeSpec["portEnvVar"].(string); key != "" {
-			environment, _ := runtimeSpec["env"].(map[string]any)
-			if environment == nil {
-				environment = map[string]any{}
-			}
-			environment[key] = fmt.Sprint(port)
-			runtimeSpec["env"] = environment
-		}
 	}
 	return runtimepolicy.ValidateRuntimeSpec(runtimeSpec)
 }
@@ -978,7 +959,7 @@ func (s *Server) createApp(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "invalid_deployment_configuration", err.Error())
 		return
 	}
-	if err = bindRuntimePort(runtimeSpec, routeSpec); err != nil {
+	if err = validateInternalRoutePort(runtimeSpec, routeSpec); err != nil {
 		writeError(w, 400, "invalid_deployment_configuration", err.Error())
 		return
 	}

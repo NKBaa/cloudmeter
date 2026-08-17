@@ -3,13 +3,10 @@ package httpapi
 import (
 	"fmt"
 	"math"
-	"regexp"
 	"strings"
 )
 
 const defaultDataPolicy = "volume_compatible"
-
-var productPortEnvKeyPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
 
 func normalizeProductVersionSpecs(runtimeSpec, routeSpec, healthSpec, updateSpec map[string]any) error {
 	if err := normalizeRouteSpec(routeSpec); err != nil {
@@ -36,25 +33,8 @@ func normalizeRouteSpec(spec map[string]any) error {
 		return fmt.Errorf("route containerPort must be an integer from 1 to 65535")
 	}
 	spec["containerPort"] = float64(port)
-	portEditable, err := normalizedBoolean(spec, "portEditable", false)
-	if err != nil {
-		return err
-	}
-	portEnvVar := ""
-	if raw, exists := spec["portEnvVar"]; exists {
-		value, ok := raw.(string)
-		if !ok {
-			return fmt.Errorf("route portEnvVar must be a string")
-		}
-		portEnvVar = strings.TrimSpace(value)
-	}
-	if portEditable && portEnvVar != "" && !productPortEnvKeyPattern.MatchString(portEnvVar) {
-		return fmt.Errorf("route portEnvVar must be a valid environment variable name")
-	}
-	if !portEditable {
-		portEnvVar = ""
-	}
-	spec["portEditable"], spec["portEnvVar"] = portEditable, portEnvVar
+	delete(spec, "portEditable")
+	delete(spec, "portEnvVar")
 	basePath, err := normalizedAbsolutePath(spec["basePath"], "route basePath", false)
 	if err != nil {
 		return err

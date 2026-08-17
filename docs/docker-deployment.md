@@ -328,7 +328,11 @@ powershell -ExecutionPolicy Bypass -File deploy/verify.ps1
 
 CloudMeter 不会为每个用户应用创建宿主机 `-p` 映射，也不会假设所有镜像都支持 `PORT` 环境变量。产品版本中的“应用内部监听端口”必须与镜像实际监听端口一致，统一由平台 Gateway 通过 `/apps/{user_slug}/{app_slug}` 转发，因此宿主机始终只需开放 `PLATFORM_PORT`。
 
-若某个镜像确实支持动态监听端口，管理员可在产品版本中显式开启“允许用户修改内部端口”，并按镜像文档指定 `PORT`、`SERVER_PORT` 等真实环境变量；平台仅在该模板明确声明后同步用户选择，不会向其他镜像擅自注入端口变量。
+该端口是不可由用户覆盖的容器内网路由元数据。平台不会向应用注入 `PORT`、`SERVER_PORT` 等端口环境变量，也不会为用户应用创建 Docker `ports` 映射。同一用户的依赖容器通过固定服务名和该内网端口互访；不同用户网络彼此隔离。
+
+生产入口应为 `Browser -> OpenResty -> SERVER_IP:PLATFORM_PORT -> gateway -> 平台 Web/API 或用户应用容器`。管理员只需准备一个二级域名（例如 `cloud.example.com`），由外部 OpenResty 负责 HTTPS、证书、DNS 和反向代理。OpenResty 必须透传 `Host`、`X-Forwarded-*`、WebSocket `Upgrade`，并为 SSE/流式响应关闭代理缓冲；可直接使用 [`deploy/openresty.conf.example`](../deploy/openresty.conf.example) 作为起点。
+
+Compose 中只有 `gateway` 使用 `ports`；PostgreSQL、Redis、API、Worker、应用路由器和用户应用容器均只在 Docker 内网可达。平台路由约定为 `/`、`/setup`、`/login`、`/register`、`/console/*`、`/admin/*`、`/api/*`、`/payments/*` 与 `/apps/{user_slug}/{app_slug}/*`。
 
 7. **WSL 重启后容器未自动恢复**
    Windows 重启或 WSL 发行版被关闭后，容器不会自动拉起。可参照 [operations.md](operations.md) 中的 WSL 常驻保活方案（Windows 计划任务自动拉起），或手动恢复：
