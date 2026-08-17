@@ -1,241 +1,241 @@
-# Docker 部署指南
+# CloudMeter Docker 部署指南 (Docker Deployment Guide)
 
-本文说明如何使用 Docker Compose 从空环境部署、初始化、验证和升级 CloudMeter。生产环境只需要对外开放 `gateway` 的一个端口；PostgreSQL、Redis、API、Worker、Web、应用 Router 和出口代理都保留在 Docker 内部网络。
+本指南介绍如何在 Linux、macOS 或 Windows（WSL2 / Docker Desktop）系统上，使用 Docker Compose 从零构建并运行生产级 CloudMeter 平台。
 
-## 1. 准备环境
+CloudMeter 采用**单公网端口拓扑设计**：除了入口 Gateway 之外，数据库（PostgreSQL）、缓存（Redis）、后端 API 服务、路由分发（App Router）、后台 Worker 及所有用户应用容器均在 Docker 内部网络运行，不对外直接暴露任何端口。
 
-安装以下软件：
+---
 
-- Docker Engine 或 Docker Desktop；
-- Docker Compose v2（能够执行 `docker compose version`）；
-- Git；
-- OpenSSL，用于生成随机密码和主密钥。
+## 目录
+1. [环境准备](#1-环境准备)
+2. [代码获取与密钥配置](#2-代码获取与密钥配置)
+3. [Worker 权限与 Docker Socket 配置](#3-worker-权限与-docker-socket-配置)
+4. [启动服务栈](#4-启动服务栈)
+5. [超级管理员初始化](#5-超级管理员初始化)
+6. [外层反向代理与 HTTPS](#6-外层反向代理与-https)
+7. [平台升级与数据平滑迁移](#7-平台升级与数据平滑迁移)
+8. [日常运维与故障排查](#8-日常运维与故障排查)
 
-确认 Docker 可用：
+---
+
+## 1. 环境准备
+
+### 基础软件依赖
+- **Docker Engine**: v24.0+ 或 **Docker Desktop**
+- **Docker Compose**: v2.20+ (`docker compose version`)
+- **Git**
+- **OpenSSL**: 用于生成安全的随机密码和主加密密钥
+
+### 运行环境检查
+
+在终端运行以下命令确认 Docker 环境正常：
 
 ```bash
 docker version
 docker compose version
 ```
 
-Linux 上需要让部署用户能够访问 Docker Engine。使用 Docker Desktop 的 WSL 发行版时，应先在 Docker Desktop 中启用对应发行版的 WSL Integration。
+> **注意（Linux 用户）**：请确保将当前部署用户加入 `docker` 用户组（`sudo usermod -aG docker $USER`），避免运行 Compose 时出现权限不足问题。
 
-## 2. 获取代码并创建配置
+---
+
+## 2. 代码获取与密钥配置
+
+### 2.1 克隆代码仓库
 
 ```bash
 git clone https://github.com/NKBaa/cloudmeter.git
 cd cloudmeter
+```
+
+### 2.2 准备配置文件 `.env`
+
+基于配置模板创建 `.env` 文件：
+
+```bash
 cp configs/.env.example .env
 ```
 
-`.env` 已被 Git 忽略，不应提交到仓库。至少替换以下值：
+`.env` 文件包含所有的环境变量和密码配置，已自动列入 `.gitignore`，**请勿将生产 `.env` 提交至 Git 仓库**。
+
+### 2.3 生成加密密钥
+
+运行以下命令生成安全随机密钥：
 
 ```bash
-openssl rand -hex 32       # 可分别用于 PostgreSQL、Redis、Router 和出口计量令牌
-openssl rand -base64 32 | tr -d '=\n'  # 用于 SECRETS_ENCRYPTION_KEY
+# 生成各类服务内部通信密码与令牌
+openssl rand -hex 32
+
+# 生成 SECRETS_ENCRYPTION_KEY (32 字节 Base64，无填充)
+openssl rand -base64 32 | tr -d '=\n'
 ```
 
-在 `.env` 中配置：
+编辑 `.env` 文件，替换以下核心字段：
 
-```dotenv
-POSTGRES_PASSWORD=<独立的长随机密码>
-REDIS_PASSWORD=<另一个长随机密码>
-ROUTER_INTERNAL_TOKEN=<至少 32 字符的随机令牌>
-EGRESS_INGEST_TOKEN=<至少 32 字符的随机令牌>
-SECRETS_ENCRYPTION_KEY=<上面生成的无填充 Base64 主密钥>
-```
+| 环境变量 | 说明 | 示例 / 提示 |
+| :--- | :--- | :--- |
+| `POSTGRES_PASSWORD` | PostgreSQL 数据库独立高强度密码 | 独立随机字符串 |
+| `REDIS_PASSWORD` | Redis 缓存服务密码 | 独立随机字符串 |
+| `ROUTER_INTERNAL_TOKEN` | Gateway 与 Router 通信令牌（最少 32 位） | 独立随机字符串 |
+| `EGRESS_INGEST_TOKEN` | Worker 与出口代理通信令牌 | 独立随机字符串 |
+| `SECRETS_ENCRYPTION_KEY` | 静态加密主密钥（主加密密码，务必离线备份） | 32-Byte Base64 无填充 |
+| `PLATFORM_ALLOWED_HOST` | 平台访问 Host 名（仅主机名，无协议端口路径） | `cloud.example.com` 或 `127.0.0.1` |
+| `PUBLIC_BASE_URL` | 用户访问平台的完整 URL 根路径 | `https://cloud.example.com` |
 
-`SECRETS_ENCRYPTION_KEY` 用于加密 SMTP、OAuth、支付和应用 Secret。部署后必须与数据库备份一起离线保存；丢失或直接更换会导致已有密文无法解密。
+> ⚠️ **警告**：`SECRETS_ENCRYPTION_KEY` 用于加密保存平台的第三方凭据（如 SMTP 密码、OAuth Client Secret、支付通道密钥和用户应用敏感环境变量）。部署后请务必保存备份！一旦丢失，数据库内存存的加密字段将不可解密。
 
-### 本机直接访问
+---
 
-仅在本机验收时，可以使用：
+## 3. Worker 权限与 Docker Socket 配置
 
-```dotenv
-PLATFORM_BIND_IP=127.0.0.1
-PLATFORM_PORT=8080
-PLATFORM_ALLOWED_HOST=127.0.0.1
-PUBLIC_BASE_URL=http://127.0.0.1:8080
-```
+CloudMeter 的 Worker 是平台内**唯一**需要访问宿主机 Docker Engine 的服务，用于按需创建和管理用户的隔离应用容器。
 
-浏览器访问 `http://127.0.0.1:8080/setup`。
+### 3.1 启用容器执行引擎
 
-### 域名和反向代理
-
-生产环境示例：
-
-```dotenv
-PLATFORM_BIND_IP=127.0.0.1
-PLATFORM_PORT=8080
-PLATFORM_ALLOWED_HOST=cloud.example.com
-PUBLIC_BASE_URL=https://cloud.example.com
-GATEWAY_TRUSTED_PROXY_CIDRS=172.16.0.0/12
-```
-
-`PLATFORM_ALLOWED_HOST` 只能填写主机名，不能包含协议、端口或路径。`PUBLIC_BASE_URL` 填写用户实际访问的源地址，不能带路径、查询或片段。TLS 由宿主机上的 Nginx/OpenResty、Caddy 或云负载均衡器终止；[OpenResty 示例](../deploy/openresty.conf.example)可作为外层反向代理起点。
-
-`GATEWAY_TRUSTED_PROXY_CIDRS` 只应包含可信反向代理到容器入口时使用的源网段。部署后根据实际 Docker bridge 地址尽量收窄，不要设置为任意公网来源。
-
-## 3. 配置应用容器执行权限
-
-只使用账户、计费和管理功能时可以保留：
-
-```dotenv
-DOCKER_EXECUTOR_ENABLED=false
-```
-
-需要实际部署用户应用时设置：
-
-```bash
-stat -c '%g' /var/run/docker.sock
-```
-
-将输出的组 ID 写入 `.env`：
+在 `.env` 中设置：
 
 ```dotenv
 DOCKER_EXECUTOR_ENABLED=true
 DOCKER_SOCKET=/var/run/docker.sock
 DOCKER_SOCKET_PATH=/var/run/docker.sock
-DOCKER_GID=<Docker Socket 的组 ID>
 ```
 
-Docker Socket 只挂载到 Worker；不要把它挂载到 API、Web、Router 或用户应用容器。访问 Docker Socket 等同于获得宿主机上的高权限，应限制服务器登录权限并保护 `.env`。
+### 3.2 确认 Docker Socket 组 ID (Linux)
 
-## 4. 首次启动
+在 Linux 宿主机上获取 Docker Socket 的 Group ID：
 
-检查最终 Compose 配置，然后构建并启动：
+```bash
+stat -c '%g' /var/run/docker.sock
+```
+
+将返回的数字填入 `.env` 中的 `DOCKER_GID`：
+
+```dotenv
+DOCKER_GID=998
+```
+
+> **安全提示**：请勿将 Docker Socket 挂载到 API、Web 控制台或任何用户容器中。拥有 Docker Socket 权限等同于宿主机的 root 权限。
+
+---
+
+## 4. 启动服务栈
+
+### 4.1 配置语法校验与容器构建
+
+在启动前，可先验证配置文件格式是否正确：
 
 ```bash
 docker compose --env-file .env -f deploy/compose.yaml config --quiet
+```
+
+一键构建并启动所有服务栈：
+
+```bash
 docker compose --env-file .env -f deploy/compose.yaml up -d --build
+```
+
+### 4.2 检查服务运行状态
+
+查看所有容器是否正常运行：
+
+```bash
 docker compose --env-file .env -f deploy/compose.yaml ps
 ```
 
-首次构建会下载基础镜像、编译后端和前端、创建 PostgreSQL/Redis 数据卷，并由 `migrate` 服务自动执行全部数据库迁移。正常状态下：
+健康的服务栈状态应该如下：
+- `postgres`, `redis`, `api`, `app-router`, `egress-proxy` 状态显示为 `healthy`；
+- `migrate` 自动执行完数据迁移后显示为 `Exited (0)`；
+- `gateway` 为唯一映射宿主机端口的服务；
+- `worker` 与 `web` 处于持续运行状态 (`Up`)。
 
-- `postgres`、`redis`、`api`、`app-router` 和 `egress-proxy` 显示 `healthy`；
-- `migrate` 显示 `Exited (0)`；
-- `gateway` 是唯一映射宿主机端口的业务服务；
-- `worker`、`web` 和 `gateway` 保持运行。
-
-如需查看启动过程：
-
-```bash
-docker compose --env-file .env -f deploy/compose.yaml logs -f --tail=200
-```
-
-健康检查：
+查看启动实时日志：
 
 ```bash
-curl -H "Host: ${PLATFORM_ALLOWED_HOST}" \
-  "http://127.0.0.1:${PLATFORM_PORT}/api/healthz"
+docker compose --env-file .env -f deploy/compose.yaml logs -f --tail=100
 ```
 
-如果 `.env` 没有导出到当前 Shell，可把命令中的主机名和端口替换为实际值。
+---
 
-## 5. 首次初始化
+## 5. 超级管理员初始化
 
-打开：
+容器启动成功后，通过浏览器访问平台初始化页面：
 
 ```text
-http://<服务器地址>:<PLATFORM_PORT>/setup
+http://<PLATFORM_ALLOWED_HOST>:<PLATFORM_PORT>/setup
 ```
 
-使用 HTTPS 反向代理时打开 `https://<域名>/setup`。填写管理员姓名、邮箱和至少 12 位密码。初始化采用数据库事务锁，只允许一个请求创建唯一的首个超级管理员；完成后初始化写入口会永久关闭。
+### 初始化规则与并发锁
+1. 首次打开 `/setup` 页面，输入管理员姓名、邮箱以及至少 12 位的复杂密码。
+2. 提交后，后端使用 PostgreSQL `SERIALIZABLE` 隔离级别与 Advisory Lock 全局串行化锁，在同一个原子事务中创建首个**超级管理员账号**、初始化钱包账本与系统审计记录。
+3. **初始化完成后，setup 写接口将永久关闭**，后续任何重复调用均会被服务端拒绝。
 
-## 6. 部署后验收
+---
 
-Linux/WSL：
+## 6. 外层反向代理与 HTTPS
+
+在生产环境中，平台通常会部署在域名（如 `https://cloud.example.com`）之后，由外层的 Nginx / OpenResty / Caddy 或云厂商负载均衡器终止 TLS 并转发至平台的 `gateway` 端口。
+
+### 配置要求
+- 平台 `.env` 中 `PUBLIC_BASE_URL` 设置为 `https://cloud.example.com`。
+- `PLATFORM_ALLOWED_HOST` 设置为 `cloud.example.com`。
+- `GATEWAY_TRUSTED_PROXY_CIDRS` 设置为外层反向代理服务器所在的源 IP 网段（例如 `172.16.0.0/12` 或具体 IP）。
+
+相关反向代理配置范例请参考仓库中的 [`deploy/openresty.conf.example`](../deploy/openresty.conf.example)。
+
+---
+
+## 7. 平台升级与数据平滑迁移
+
+当平台发布新版本需要升级时，请按照以下标准步骤操作：
+
+### 7.1 数据与配置备份
+在升级前，强烈建议备份 PostgreSQL 数据库卷、应用数据卷以及当前 `.env` 配置文件。
+
+### 7.2 执行平滑升级
 
 ```bash
-bash deploy/verify.sh
+# 1. 拉取最新代码
+git pull origin main
+
+# 2. 预先运行数据库迁移任务
+docker compose --env-file .env -f deploy/compose.yaml run --rm migrate
+
+# 3. 重新构建并平滑重启业务服务
+docker compose --env-file .env -f deploy/compose.yaml up -d --build api worker app-router egress-proxy web gateway
 ```
 
-Windows Docker Desktop：
+> ⚠️ **警告**：生产升级**切勿使用 `docker compose down -v`** 命令！带 `-v` 参数会直接清空 PostgreSQL 数据库卷和 Redis 缓存卷！
 
-```powershell
+---
+
+## 8. 日常运维与故障排查
+
+### 8.1 部署状态验收
+
+平台内置了全套自动化状态检查脚本，升级或运维后可直接执行验收：
+
+```bash
+# Linux / WSL
+bash deploy/verify.sh
+
+# Windows Docker Desktop
 powershell -ExecutionPolicy Bypass -File deploy/verify.ps1
 ```
 
-基础脚本验证 Compose、迁移版本、OpenAPI、Host 白名单、Docker Socket 隔离，以及服务重启后的健康状态。更多账户、应用、计费和支付专项脚本见[运维与验收文档](operations.md)。专项脚本会写入隔离的验收记录，建议在测试环境执行。
+### 8.2 常见问题速查
 
-## 7. 升级
+1. **端口冲突 (`port is already allocated`)**
+   修改 `.env` 中的 `PLATFORM_PORT`（例如改为 `8088`），或停止占用该端口的宿主机其他进程。
 
-升级前备份 PostgreSQL、`.env`、`SECRETS_ENCRYPTION_KEY`、应用数据卷和备份卷。获取新代码后执行：
+2. **421 请求错误 (`421 Misdirected Request`)**
+   请求中的 HTTP `Host` 报头与 `.env` 中定义的 `PLATFORM_ALLOWED_HOST` 不一致。检查反向代理是否正确透传了原 Host 报头。
 
-```bash
-docker compose --env-file .env -f deploy/compose.yaml run --rm migrate
-docker compose --env-file .env -f deploy/compose.yaml up -d --build \
-  api worker app-router egress-proxy web gateway
-docker compose --env-file .env -f deploy/compose.yaml ps
-```
+3. **Worker 无法部署应用**
+   检查宿主机 Docker Socket 路径与权限，确认 `.env` 中 `DOCKER_EXECUTOR_ENABLED=true` 且 `DOCKER_GID` 与宿主机 `stat -c '%g' /var/run/docker.sock` 一致。
 
-升级完成后重新运行 `deploy/verify.sh` 或 `deploy/verify.ps1`。升级和普通重启不要使用 `docker compose down -v`，因为 `-v` 会删除 PostgreSQL 和 Redis 数据卷。
+4. **数据库 Migration 报错**
+   运行 `docker compose --env-file .env -f deploy/compose.yaml logs migrate` 查看具体的 SQL 错误，绝不要手动修改或乱动 PostgreSQL 中的 `schema_migrations` 表。
 
-## 8. 停止、启动与故障排查
+---
 
-保留数据停止：
-
-```bash
-docker compose --env-file .env -f deploy/compose.yaml stop
-```
-
-再次启动：
-
-```bash
-docker compose --env-file .env -f deploy/compose.yaml start
-```
-
-查看单个服务日志：
-
-```bash
-docker compose --env-file .env -f deploy/compose.yaml logs --tail=200 api
-docker compose --env-file .env -f deploy/compose.yaml logs --tail=200 worker
-docker compose --env-file .env -f deploy/compose.yaml logs --tail=200 gateway
-```
-
-常见问题：
-
-- `port is already allocated`：修改 `.env` 中的 `PLATFORM_PORT`，或停止占用该端口的服务；
-- `421 Misdirected Request`：请求的 `Host` 与 `PLATFORM_ALLOWED_HOST` 不一致；
-- Worker 无法创建容器：确认 `DOCKER_EXECUTOR_ENABLED=true`、Socket 路径和 `DOCKER_GID`；
-- `migrate` 非零退出：先查看迁移日志，不要强制修改 `schema_migrations` 或删除数据卷；
-- OAuth 回调或支付返回地址错误：检查 `PUBLIC_BASE_URL` 是否与用户访问地址完全一致。
-
-## 9. WSL 隔离验收
-
-Windows 与 WSL 共用 Docker Engine 时，为避免与已有环境共享容器名、网络、卷和端口，应使用独立项目名和端口：
-
-```bash
-export COMPOSE_PROJECT_NAME=cloudmeter-wsl-acceptance
-export PLATFORM_PORT=18080
-export PLATFORM_ALLOWED_HOST=127.0.0.1
-export PUBLIC_BASE_URL=http://127.0.0.1:18080
-export DOCKER_GID="$(stat -c '%g' /var/run/docker.sock)"
-
-docker compose --env-file .env -f deploy/compose.yaml up -d --build
-bash deploy/verify.sh
-```
-
-正式栈和验收栈不得使用同一个 `COMPOSE_PROJECT_NAME`。需要删除验收数据时，先用 `docker compose ... ps` 确认当前项目名和资源范围，再仅对验收项目执行清理。
-
-### 防止 WSL 空闲自动关机
-
-WSL2 发行版空闲约 60 秒会被自动关机（`vmIdleTimeout`），导致 Docker 引擎和全部容器周期性掉线。若平台长期运行在 Windows 的 WSL Ubuntu 中，请修改 `C:\Users\<用户名>\.wslconfig`：
-
-```ini
-[wsl2]
-localhostForwarding=true
-vmIdleTimeout=86400000
-```
-
-然后创建 Windows 计划任务（登录时自启），常驻一个 WSL 会话防止空闲关机。保活脚本示例：
-
-```powershell
-while ($true) {
-  & 'C:\Windows\System32\wsl.exe' -d Ubuntu-24.04 -- bash -lc 'while true; do sleep 3600; done'
-  Start-Sleep -Seconds 10
-}
-```
-
-同时确保 Docker Desktop 未与 Ubuntu 本地引擎同时运行同一批容器，避免双引擎互相抢占端口和资源；Ubuntu 本地 `docker.service` 应保持 enabled。保活任务保持常驻后，`wsl --shutdown` 也会在约 25 秒内被计划任务重新拉起，服务自动恢复。
+祝使用愉快！如遇到问题欢迎在 GitHub 仓库提交 [Issue](https://github.com/NKBaa/cloudmeter/issues)。

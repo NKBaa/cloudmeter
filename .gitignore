@@ -25,3 +25,5 @@ _wsl_backup_*/
 *_screenshot*.png
 *.tar
 *.tar.gz
+
+_wsl_deploy_env/
