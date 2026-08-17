@@ -51,7 +51,7 @@ const users = ref<Target[]>([]),
   products = ref<Target[]>([]);
 const item = reactive({ code: "app.runtime.minutes", unit: "minute" });
 const version = reactive({
-  unitPriceMicros: 1000000,
+  unitPriceYuan: 0.01,
   precisionScale: 6,
   roundingMode: "half_up",
   minimumQuantity: "0",
@@ -113,7 +113,11 @@ async function createVersion() {
     await api("/admin/pricing/items/" + selected.value + "/versions", {
       method: "POST",
       body: JSON.stringify({
-        ...version,
+        unitPriceMicros: Math.round(version.unitPriceYuan * 100000000),
+        precisionScale: version.precisionScale,
+        roundingMode: version.roundingMode,
+        minimumQuantity: version.minimumQuantity,
+        freeQuantity: version.freeQuantity,
         effectiveAt: version.effectiveAt
           ? new Date(version.effectiveAt).toISOString()
           : new Date().toISOString(),
@@ -164,7 +168,7 @@ async function removeOverride(id: string) {
   }
 }
 function price(v: Version) {
-  return (v.unitPriceMicros / 1000000).toFixed(6);
+  return (v.unitPriceMicros / 100000000).toFixed(8).replace(/0+$/, "").replace(/\.$/, "");
 }
 </script>
 <template>
@@ -215,12 +219,13 @@ function price(v: Version) {
           <form @submit.prevent="createVersion">
             <div class="field-row">
               <label
-                >每单位价格（微分）<input
-                  v-model.number="version.unitPriceMicros"
+                >每单位价格（元）<input
+                  v-model.number="version.unitPriceYuan"
                   type="number"
                   min="0"
+                  step="0.00000001"
                   required
-                /><small>1,000,000 微分 = 1 分</small></label
+                /><small>统一以人民币元录入，最多支持 8 位小数</small></label
               ><label
                 >生效时间<input
                   v-model="version.effectiveAt"
@@ -284,7 +289,7 @@ function price(v: Version) {
                   :key="v.id"
                   :value="v.id"
                 >
-                  v{{ v.version }} · {{ price(v) }} 分
+                  v{{ v.version }} · ¥ {{ price(v) }}
                 </option>
               </select></label
             ><button class="secondary compact" :disabled="busy === 'override'">
@@ -340,7 +345,7 @@ function price(v: Version) {
             <span class="version-number">v{{ v.version }}</span>
             <div>
               <strong
-                >{{ price(v) }} 分 / {{ usageUnitLabel(entry.unit) }}</strong
+                >¥ {{ price(v) }} / {{ usageUnitLabel(entry.unit) }}</strong
               ><small
                 >{{ new Date(v.effectiveAt).toLocaleString() }} 生效 · 免费
                 {{ v.freeQuantity }}</small

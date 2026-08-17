@@ -16,6 +16,8 @@ import ReleasesView from './views/ReleasesView.vue'
 import BackupsView from './views/BackupsView.vue'
 import AuditAdminView from './views/AuditAdminView.vue'
 import CheckinSettingsView from './views/CheckinSettingsView.vue'
+import HomeView from './views/HomeView.vue'
+import HomeSettingsView from './views/HomeSettingsView.vue'
 import './styles.css'
 
 const router = createRouter({
@@ -36,11 +38,11 @@ const router = createRouter({
     { path: '/login', component: LoginView },
     { path: '/register', component: RegisterView },
     { path: '/oauth/callback', component: OAuthCallbackView },
+    { path: '/', component: HomeView },
     {
       path: '/',
       component: AppShell,
       children: [
-        { path: '', redirect: '/console' },
         { path: 'console', component: ConsoleView, props: { page: 'overview' } },
         { path: 'console/deploy', component: ConsoleView, props: { page: 'deploy' } },
         { path: 'console/apps', component: ConsoleView, props: { page: 'apps' } },
@@ -62,6 +64,7 @@ const router = createRouter({
         { path: 'admin/payment-settings', component: PaymentSettingsView, meta: { superAdmin: true } },
         { path: 'admin/checkin-settings', component: CheckinSettingsView, meta: { superAdmin: true } },
         { path: 'admin/audit', component: AuditAdminView, meta: { superAdmin: true } },
+        { path: 'admin/homepage', component: HomeSettingsView, meta: { superAdmin: true } },
       ],
     },
   ],
@@ -74,7 +77,7 @@ router.beforeEach(async (to) => {
     if (!status.initialized && to.path !== '/setup') return '/setup'
     if (status.initialized && status.hasAdmin && to.path === '/setup') return '/login'
   } catch { /* Let the page surface service availability errors. */ }
-  if (!['/setup', '/login', '/register', '/oauth/callback'].includes(to.path) && !localStorage.getItem('session_token')) return '/login'
+  if (!['/', '/setup', '/login', '/register', '/oauth/callback'].includes(to.path) && !localStorage.getItem('session_token')) return '/login'
   if (to.meta.admin || to.meta.superAdmin) {
     try {
       const token = localStorage.getItem('session_token')

@@ -12,6 +12,7 @@ import {
   Gauge,
   KeyRound,
   LayoutDashboard,
+  PanelsTopLeft,
   LogOut,
   Package,
   Receipt,
@@ -119,6 +120,7 @@ function isAnchorActive(path: string, hash: string): boolean {
           <RouterLink to="/admin/announcements" active-class="active"
             ><Settings2 :size="18" />公告管理</RouterLink
           >
+          <RouterLink v-if="isSuperAdmin" to="/admin/homepage" active-class="active"><PanelsTopLeft :size="18" />首页设置</RouterLink>
           <RouterLink
             v-if="isSuperAdmin"
             to="/admin/registration"

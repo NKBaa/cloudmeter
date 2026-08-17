@@ -42,6 +42,7 @@ type RuntimeSpec = {
   command?: string[];
   env?: Record<string, string>;
   editableEnvKeys?: string[];
+  envDescriptions?: Record<string, string>;
   secretKeys?: string[];
   volumes?: Volume[];
   dependencies?: Dependency[];
@@ -84,7 +85,7 @@ type Product = {
   status: string;
   versions: Version[];
 };
-type KeyValue = { key: string; value: string; editable: boolean };
+type KeyValue = { key: string; value: string; editable: boolean; description: string };
 type VersionForm = {
   imageDigest: string;
   cpuCores: number;
@@ -122,6 +123,10 @@ const editName = ref("");
 const lifecycleProduct = ref<Product | null>(null);
 const templateInput = ref<HTMLInputElement | null>(null);
 const templateSummary = ref<string[]>([]);
+const showTemplateExample = ref(false);
+const templateExample = JSON.stringify({ product: { name: "示例应用", slug: "example-app" }, version: { imageDigest: "ghcr.io/example/app@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", runtimeSpec: { cpuCores: 1, memoryMiB: 512, systemDiskGiB: 5, command: ["server", "--production"], env: { APP_MODE: "production", LOG_LEVEL: "info" }, envDescriptions: { APP_MODE: "应用运行模式", LOG_LEVEL: "日志级别，可选 debug/info/warn/error" }, editableEnvKeys: ["LOG_LEVEL"], secretKeys: ["API_KEY"], volumes: [{ name: "data", mountPath: "/data", sizeGiB: 10 }], dependencies: [] }, routeSpec: { containerPort: 3000, basePath: "/", stripPrefix: true, websocket: true, sse: true, cookiePath: "/" }, healthSpec: { path: "/health", intervalSeconds: 10, timeoutSeconds: 5 }, updateSpec: { dataPolicy: "volume_compatible" } } }, null, 2);
+async function copyTemplateExample() { await navigator.clipboard.writeText(templateExample); done("示例模板已复制"); }
+function downloadTemplateExample() { const link=document.createElement("a"); link.href=URL.createObjectURL(new Blob([templateExample],{type:"application/json"})); link.download="cloudmeter-product-template.example.json"; link.click(); URL.revokeObjectURL(link.href); }
 let pollTimer: number | undefined;
 const selectedProduct = computed(() =>
   products.value.find((item) => item.id === selected.value),
@@ -219,6 +224,7 @@ async function importTemplate(event: Event) {
         key,
         value: String(value),
         editable: editable.has(key),
+        description: String(runtime.envDescriptions?.[key] || ""),
       })),
       secrets: (Array.isArray(secretSource)
         ? secretSource
@@ -448,6 +454,7 @@ function editableEnvironmentKeys() {
     .filter((entry) => entry.editable && entry.key.trim())
     .map((entry) => entry.key.trim());
 }
+function environmentDescriptions() { return Object.fromEntries(versionForm.environment.filter((entry) => entry.key.trim() && entry.description.trim()).map((entry) => [entry.key.trim(), entry.description.trim()])); }
 function secretKeys() {
   const values = versionForm.secrets
     .map((entry) => entry.key.trim().toUpperCase())
@@ -487,6 +494,7 @@ async function createVersion() {
       })),
       env: uniqueEntries(versionForm.environment),
       editableEnvKeys: editableEnvironmentKeys(),
+      envDescriptions: environmentDescriptions(),
       secretKeys: secretKeys(),
       dependencies: dependencies(),
     };
@@ -631,6 +639,7 @@ function dataPolicyLabel(value?: string) {
         >
           <FileDown :size="16" />从模板导入
         </button>
+        <button class="secondary compact" type="button" @click="showTemplateExample = true">查看示例</button>
       </div>
     </header>
     <p v-if="error" class="message">{{ error }}</p>
@@ -845,6 +854,7 @@ function dataPolicyLabel(value?: string) {
                       key: '',
                       value: '',
                       editable: false,
+                      description: '',
                     })
                   "
                 >
@@ -865,6 +875,7 @@ function dataPolicyLabel(value?: string) {
                       v-model="entry.editable"
                       type="checkbox"
                     />用户可改</label
+                  ><input v-model="entry.description" class="env-description" placeholder="注释：帮助用户理解该变量"
                   ><button
                     type="button"
                     class="icon-action"
@@ -1155,7 +1166,7 @@ function dataPolicyLabel(value?: string) {
               >
                 重置</button
               ><button class="primary compact" :disabled="busy === 'version'">
-                <Plus :size="16" />创建不可变版本
+                <Plus :size="16" />创建
               </button>
             </div>
           </form>
@@ -1453,6 +1464,13 @@ function dataPolicyLabel(value?: string) {
           }}
         </button>
       </div>
+    </section>
+  </div>
+  <div v-if="showTemplateExample" class="modal-backdrop" @click.self="showTemplateExample = false">
+    <section class="modal template-example-modal">
+      <header><div><p class="eyebrow">产品模板</p><h2>完整示例</h2></div><button class="icon-action" @click="showTemplateExample = false"><X :size="18" /></button></header>
+      <pre>{{ templateExample }}</pre>
+      <div class="builder-actions"><button class="secondary compact" @click="downloadTemplateExample">下载 JSON</button><button class="primary compact" @click="copyTemplateExample">复制示例</button></div>
     </section>
   </div>
 </template>

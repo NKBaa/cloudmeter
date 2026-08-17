@@ -126,6 +126,15 @@ func ValidateRuntimeSpec(spec map[string]any) error {
 			seen[key] = true
 		}
 	}
+	if raw, exists := spec["envDescriptions"]; exists {
+		values, ok := raw.(map[string]any)
+		if !ok { return fmt.Errorf("envDescriptions must be an object") }
+		if len(values) > 128 { return fmt.Errorf("envDescriptions may contain at most 128 entries") }
+		for key, rawDescription := range values {
+			description, ok := rawDescription.(string)
+			if !ok || !environmentKeyPattern.MatchString(key) || len(description) > 500 { return fmt.Errorf("environment description is invalid") }
+		}
+	}
 	secretKeys, err := RuntimeSecretKeys(spec)
 	if err != nil {
 		return err

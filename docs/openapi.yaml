@@ -5,6 +5,11 @@ info:
 servers:
   - url: /api
 paths:
+  /homepage:
+    get:
+      operationId: getHomepage
+      responses:
+        '200': {description: Public sanitized homepage source content}
   /healthz:
     get:
       operationId: health
@@ -767,6 +772,22 @@ paths:
       responses:
         '200': {description: Daily check-in settings updated}
         '400': {description: Invalid reward range}
+  /admin/settings/homepage:
+    put:
+      operationId: updateHomepage
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [contentHtml]
+              properties:
+                contentHtml: {type: string, maxLength: 100000}
+      responses:
+        '200': {description: Homepage content updated}
+        '400': {description: Invalid homepage content}
   /admin/settings/payments/{provider}:
     put:
       operationId: updatePaymentSettings

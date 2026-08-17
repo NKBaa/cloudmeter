@@ -53,6 +53,7 @@ type Product = {
     command?: string[];
     env?: Record<string, string>;
     editableEnvKeys?: string[];
+    envDescriptions?: Record<string, string>;
     secretKeys?: string[];
     dependencies?: Dependency[];
     volumes?: Volume[];
@@ -71,6 +72,12 @@ type App = {
   jobState?: string;
   previousReleaseId?: string;
   publicPath?: string;
+  cpuCores?: number;
+  memoryMiB?: number;
+  cpuUsageCores?: number;
+  memoryUsageMiB?: number;
+  estimatedMonthlyCents?: number;
+  estimateComplete?: boolean;
 };
 type Usage = {
   usageCode: string;
@@ -833,6 +840,10 @@ async function exitImpersonation() {
         ><span>管理员已发布</span>
       </article>
     </section>
+    <section v-if="page === 'overview'" class="overview-apps">
+      <div class="section-heading"><div><p class="eyebrow">已部署资源</p><h2>应用概要</h2></div><RouterLink class="secondary compact" to="/console/apps">查看全部</RouterLink></div>
+      <div class="overview-app-grid"><article v-for="app in apps" :key="app.id" class="overview-app-card"><div class="overview-app-title"><span class="app-icon"><AppWindow :size="18" /></span><div><strong>{{ app.slug }}</strong><small>{{ app.productSlug }}</small></div><span :class="['status-pill', app.status === 'running' ? 'active' : 'pending']">{{ app.status === 'running' ? '运行中' : app.status }}</span></div><div class="app-resource-bars"><div><span>CPU 占用</span><b>{{ (app.cpuUsageCores || 0).toFixed(2) }} / {{ app.cpuCores || 0 }} 核</b><i><em :style="{width: Math.min(100, (app.cpuUsageCores || 0) / Math.max(app.cpuCores || 1, 0.1) * 100) + '%'}"></em></i></div><div><span>内存占用</span><b>{{ Math.round(app.memoryUsageMiB || 0) }} / {{ app.memoryMiB || 0 }} MiB</b><i><em :style="{width: Math.min(100, (app.memoryUsageMiB || 0) / Math.max(app.memoryMiB || 1, 1) * 100) + '%'}"></em></i></div></div><footer><div><small>预计每月</small><strong>¥ {{ ((app.estimatedMonthlyCents || 0) / 100).toFixed(2) }}</strong><small v-if="!app.estimateComplete">（不含未定价项与流量）</small></div><a v-if="app.publicPath" :href="app.publicPath" target="_blank" rel="noopener">访问应用<ExternalLink :size="14" /></a><span v-else class="quiet">尚无公网地址</span></footer></article><p v-if="!apps.length" class="quiet empty-copy">还没有部署应用，可从“部署应用”选择管理员发布的产品。</p></div>
+    </section>
     <section
       v-if="
         page === 'overview' && (notifications.length || announcements.length)
@@ -1520,6 +1531,7 @@ async function exitImpersonation() {
               >
                 <X :size="16" />
               </button>
+              <small class="env-help">{{ deployProduct.runtimeSpec?.envDescriptions?.[item.key] || "管理员未提供说明" }}</small>
             </div>
           </div>
           <div class="deploy-dependencies">

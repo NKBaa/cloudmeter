@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/mail"
 	"regexp"
@@ -173,6 +174,7 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/healthz", s.health)
 	s.mux.HandleFunc("GET /api/setup/status", s.setupStatus)
+	s.mux.HandleFunc("GET /api/homepage", s.getHomepage)
 	s.mux.HandleFunc("POST /api/setup/initialize", s.initialize)
 	s.mux.HandleFunc("POST /api/auth/login", s.login)
 	s.mux.HandleFunc("POST /api/auth/register", s.register)
@@ -226,6 +228,7 @@ func (s *Server) routes() {
 	s.mux.Handle("POST /api/admin/payments/orders/{orderID}/close", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.closePayment))))
 	s.mux.Handle("GET /api/admin/settings/payments", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.getPaymentSettings))))
 	s.mux.Handle("GET /api/admin/settings/checkin", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.getCheckinSettings))))
+	s.mux.Handle("PUT /api/admin/settings/homepage", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.updateHomepage))))
 	s.mux.Handle("PUT /api/admin/settings/checkin", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.updateCheckinSettings))))
 	s.mux.Handle("PUT /api/admin/settings/payments/{provider}", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.updatePaymentSettings))))
 	s.mux.Handle("GET /api/admin/pricing", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.adminPricing))))
@@ -864,35 +867,90 @@ func allocateUserSlug(ctx context.Context, tx pgx.Tx, email string) (string, err
 	return "", fmt.Errorf("could not allocate user slug")
 }
 
+func (s *Server) estimatedMonthlyAppCents(ctx context.Context, userID, appID string, runtimeSpec map[string]any, hasIngress bool) (int64, bool) {
+	resources, err := runtimepolicy.RuntimeResources(runtimeSpec, false)
+	if err != nil {
+		return 0, false
+	}
+	storage, err := runtimepolicy.RuntimeStorage(runtimeSpec, false)
+	if err != nil {
+		return 0, false
+	}
+	quantities := []struct {
+		code, unit string
+		quantity   float64
+	}{
+		{"app.runtime.minutes", "minute", 730 * 60},
+		{"cpu.core_hours", "core_hour", resources.CPUCores * 730},
+		{"memory.gib_hours", "GiB_hour", resources.MemoryMiB / 1024 * 730},
+		{"storage.system.gib_days", "GiB_day", storage.SystemDiskGiB * 30},
+		{"storage.data.gib_days", "GiB_day", storage.DataDiskGiB * 30},
+	}
+	if hasIngress {
+		quantities = append(quantities, struct {
+			code, unit string
+			quantity   float64
+		}{"network.public_ingress", "ingress", 1})
+	}
+	total, complete := float64(0), true
+	for _, item := range quantities {
+		if item.quantity <= 0 {
+			continue
+		}
+		var price int64
+		err := s.db.QueryRow(ctx, `SELECT pv.unit_price_micros FROM pricing_versions pv WHERE pv.id=resolve_pricing_version($1,$2,$3,$4,now())`, userID, appID, item.code, item.unit).Scan(&price)
+		if err != nil {
+			complete = false
+			continue
+		}
+		total += item.quantity * float64(price) / 1000000
+	}
+	return int64(math.Round(total)), complete
+}
+
 func (s *Server) listApps(w http.ResponseWriter, r *http.Request) {
 	p, _ := r.Context().Value(principalKey).(principal)
-	rows, err := s.db.Query(r.Context(), "SELECT a.id,a.slug,a.service_slug,a.status,coalesce(a.suspension_reason,''),p.slug,coalesce(a.last_successful_release_id::text,''),coalesce(prev.id::text,''),coalesce(j.id::text,''),coalesce(j.state::text,''),coalesce(j.updated_at,a.created_at),coalesce(ar.public_path,'') FROM user_apps a JOIN app_products p ON p.id=a.product_id LEFT JOIN app_releases current_release ON current_release.id=a.last_successful_release_id LEFT JOIN app_routes ar ON ar.user_app_id=a.id AND ar.release_id=a.last_successful_release_id LEFT JOIN LATERAL (SELECT id FROM app_releases WHERE user_app_id=a.id AND state IN ('active','superseded') AND release_number < coalesce(current_release.release_number,2147483647) ORDER BY release_number DESC LIMIT 1) prev ON true LEFT JOIN LATERAL (SELECT id,state,updated_at FROM deployment_jobs WHERE user_app_id=a.id ORDER BY created_at DESC LIMIT 1) j ON true WHERE a.user_id=$1 ORDER BY a.created_at DESC", p.ID)
+	rows, err := s.db.Query(r.Context(), "SELECT a.id,a.slug,a.service_slug,a.status,coalesce(a.suspension_reason,''),p.slug,coalesce(a.last_successful_release_id::text,''),coalesce(prev.id::text,''),coalesce(j.id::text,''),coalesce(j.state::text,''),coalesce(j.updated_at,a.created_at),coalesce(ar.public_path,''),coalesce(current_release.immutable_snapshot->'runtime_spec','{}'::jsonb) FROM user_apps a JOIN app_products p ON p.id=a.product_id LEFT JOIN app_releases current_release ON current_release.id=a.last_successful_release_id LEFT JOIN app_routes ar ON ar.user_app_id=a.id AND ar.release_id=a.last_successful_release_id LEFT JOIN LATERAL (SELECT id FROM app_releases WHERE user_app_id=a.id AND state IN ('active','superseded') AND release_number < coalesce(current_release.release_number,2147483647) ORDER BY release_number DESC LIMIT 1) prev ON true LEFT JOIN LATERAL (SELECT id,state,updated_at FROM deployment_jobs WHERE user_app_id=a.id ORDER BY created_at DESC LIMIT 1) j ON true WHERE a.user_id=$1 ORDER BY a.created_at DESC", p.ID)
 	if err != nil {
 		s.internalError(w, err)
 		return
 	}
 	defer rows.Close()
 	type appView struct {
-		ID                string    `json:"id"`
-		Slug              string    `json:"slug"`
-		ServiceSlug       string    `json:"serviceSlug"`
-		Status            string    `json:"status"`
-		SuspensionReason  string    `json:"suspensionReason,omitempty"`
-		ProductSlug       string    `json:"productSlug"`
-		LastReleaseID     string    `json:"lastSuccessfulReleaseId"`
-		PreviousReleaseID string    `json:"previousReleaseId"`
-		JobID             string    `json:"jobId"`
-		JobState          string    `json:"jobState"`
-		UpdatedAt         time.Time `json:"updatedAt"`
-		PublicPath        string    `json:"publicPath,omitempty"`
+		ID                    string    `json:"id"`
+		Slug                  string    `json:"slug"`
+		ServiceSlug           string    `json:"serviceSlug"`
+		Status                string    `json:"status"`
+		SuspensionReason      string    `json:"suspensionReason,omitempty"`
+		ProductSlug           string    `json:"productSlug"`
+		LastReleaseID         string    `json:"lastSuccessfulReleaseId"`
+		PreviousReleaseID     string    `json:"previousReleaseId"`
+		JobID                 string    `json:"jobId"`
+		JobState              string    `json:"jobState"`
+		UpdatedAt             time.Time `json:"updatedAt"`
+		PublicPath            string    `json:"publicPath,omitempty"`
+		CPUCores              float64   `json:"cpuCores"`
+		MemoryMiB             float64   `json:"memoryMiB"`
+		CPUUsageCores         float64   `json:"cpuUsageCores"`
+		MemoryUsageMiB        float64   `json:"memoryUsageMiB"`
+		EstimatedMonthlyCents int64     `json:"estimatedMonthlyCents"`
+		EstimateComplete      bool      `json:"estimateComplete"`
 	}
 	items := make([]appView, 0)
 	for rows.Next() {
 		var item appView
-		if err := rows.Scan(&item.ID, &item.Slug, &item.ServiceSlug, &item.Status, &item.SuspensionReason, &item.ProductSlug, &item.LastReleaseID, &item.PreviousReleaseID, &item.JobID, &item.JobState, &item.UpdatedAt, &item.PublicPath); err != nil {
+		var runtimeSpec map[string]any
+		if err := rows.Scan(&item.ID, &item.Slug, &item.ServiceSlug, &item.Status, &item.SuspensionReason, &item.ProductSlug, &item.LastReleaseID, &item.PreviousReleaseID, &item.JobID, &item.JobState, &item.UpdatedAt, &item.PublicPath, &runtimeSpec); err != nil {
 			s.internalError(w, err)
 			return
 		}
+		if resources, resourceErr := runtimepolicy.RuntimeResources(runtimeSpec, false); resourceErr == nil {
+			item.CPUCores, item.MemoryMiB = resources.CPUCores, resources.MemoryMiB
+		}
+		_ = s.db.QueryRow(r.Context(), `SELECT
+			coalesce((SELECT quantity::float8*12 FROM usage_events WHERE user_app_id=$1 AND usage_code='cpu.core_hours' ORDER BY window_end DESC LIMIT 1),0),
+			coalesce((SELECT quantity::float8*12*1024 FROM usage_events WHERE user_app_id=$1 AND usage_code='memory.gib_hours' ORDER BY window_end DESC LIMIT 1),0)`, item.ID).Scan(&item.CPUUsageCores, &item.MemoryUsageMiB)
+		item.EstimatedMonthlyCents, item.EstimateComplete = s.estimatedMonthlyAppCents(r.Context(), p.ID, item.ID, runtimeSpec, item.PublicPath != "")
 		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {
