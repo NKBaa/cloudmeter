@@ -8,6 +8,7 @@ import {
   CheckCircle2,
   CircleAlert,
   Database,
+  FileDown,
   HeartPulse,
   KeyRound,
   Link2,
@@ -119,6 +120,8 @@ const testSecrets = reactive<Record<string, string>>({});
 const editingProduct = ref<Product | null>(null);
 const editName = ref("");
 const lifecycleProduct = ref<Product | null>(null);
+const templateInput = ref<HTMLInputElement | null>(null);
+const templateSummary = ref<string[]>([]);
 let pollTimer: number | undefined;
 const selectedProduct = computed(() =>
   products.value.find((item) => item.id === selected.value),
@@ -154,6 +157,140 @@ function defaultVersionForm(): VersionForm {
 }
 function resetVersionForm() {
   Object.assign(versionForm, defaultVersionForm());
+  templateSummary.value = [];
+}
+function numberValue(value: unknown, fallback: number) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+function openTemplateImport() {
+  templateInput.value?.click();
+}
+async function importTemplate(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file) return;
+  try {
+    const data = JSON.parse(await file.text()) as Record<string, any>;
+    const productData = data.product || data.application || {};
+    const productSlug = String(
+      productData.slug || data.productSlug || data.slug || "",
+    )
+      .trim()
+      .toLowerCase();
+    const productName = String(
+      productData.name || data.productName || data.name || "",
+    ).trim();
+    const existing = products.value.find(
+      (item) => item.id === data.productId || item.slug === productSlug,
+    );
+    if (existing) selected.value = existing.id;
+    else {
+      selected.value = "";
+      product.name = productName;
+      product.slug = productSlug;
+    }
+
+    const source = data.version || data;
+    const runtime =
+      source.runtimeSpec || source.runtime || source.resources || {};
+    const route = source.routeSpec || source.route || {};
+    const health = source.healthSpec || source.health || {};
+    const update = source.updateSpec || source.update || {};
+    const env = runtime.env || runtime.environment || {};
+    const editable = new Set(
+      Array.isArray(runtime.editableEnvKeys)
+        ? runtime.editableEnvKeys.map(String)
+        : [],
+    );
+    const secretSource = runtime.secretKeys || runtime.secrets || [];
+    const volumeSource = runtime.volumes || [];
+    const dependencySource = runtime.dependencies || [];
+
+    Object.assign(versionForm, {
+      imageDigest: String(source.imageDigest || source.image || ""),
+      cpuCores: numberValue(runtime.cpuCores, 1),
+      memoryMiB: numberValue(runtime.memoryMiB, 512),
+      systemDiskGiB: numberValue(runtime.systemDiskGiB, 5),
+      command: Array.isArray(runtime.command)
+        ? runtime.command.map((value: unknown) => ({ value: String(value) }))
+        : [],
+      environment: Object.entries(env).map(([key, value]) => ({
+        key,
+        value: String(value),
+        editable: editable.has(key),
+      })),
+      secrets: (Array.isArray(secretSource)
+        ? secretSource
+        : Object.keys(secretSource)
+      ).map((key: unknown) => ({ key: String(key) })),
+      volumes: Array.isArray(volumeSource)
+        ? volumeSource.map((volume: any) => ({
+            name: String(volume.name || "data"),
+            mountPath: String(volume.mountPath || "/data"),
+            sizeGiB: numberValue(volume.sizeGiB, 10),
+          }))
+        : [],
+      containerPort: numberValue(
+        route.containerPort ?? runtime.containerPort,
+        8080,
+      ),
+      basePath: String(route.basePath || "/"),
+      stripPrefix: route.stripPrefix !== false,
+      websocket: route.websocket !== false,
+      sse: route.sse !== false,
+      cookiePath: String(route.cookiePath ?? "/"),
+      healthPath: String(health.path ?? "/health"),
+      intervalSeconds: numberValue(health.intervalSeconds, 10),
+      timeoutSeconds: numberValue(health.timeoutSeconds, 5),
+      dataPolicy: [
+        "stateless",
+        "volume_compatible",
+        "backup_required",
+      ].includes(update.dataPolicy)
+        ? update.dataPolicy
+        : "volume_compatible",
+    });
+    versionForm.dependencies = Array.isArray(dependencySource)
+      ? dependencySource.flatMap((dependency: any) => {
+          const target = products.value.find(
+            (item) =>
+              item.id === dependency.productId ||
+              item.slug === dependency.productSlug,
+          );
+          return target
+            ? [
+                {
+                  key: String(dependency.key || target.slug),
+                  productId: target.id,
+                  serviceSlug: String(dependency.serviceSlug || target.slug),
+                  required: dependency.required !== false,
+                },
+              ]
+            : [];
+        })
+      : [];
+    if (versionForm.dataPolicy === "stateless") versionForm.volumes = [];
+
+    templateSummary.value = [
+      source.imageDigest || source.image ? "镜像" : "镜像待填写",
+      `资源 ${versionForm.cpuCores} 核 / ${versionForm.memoryMiB} MiB / ${versionForm.systemDiskGiB} GiB`,
+      `环境变量 ${versionForm.environment.length} 项`,
+      `Secret ${versionForm.secrets.length} 项`,
+      `数据卷 ${versionForm.volumes.length} 项`,
+      `依赖 ${versionForm.dependencies.length} 项`,
+      `容器内网端口 ${versionForm.containerPort}`,
+    ];
+    done(
+      existing
+        ? `模板已导入到 ${existing.name} 的新版本表单，请检查后创建`
+        : "模板已解析，请先创建产品，再检查并创建版本",
+    );
+  } catch (value) {
+    failed(value);
+  } finally {
+    input.value = "";
+  }
 }
 function done(value: string) {
   message.value = value;
@@ -479,6 +616,22 @@ function dataPolicyLabel(value?: string) {
         <p class="eyebrow">应用目录</p>
         <h1>产品与版本</h1>
       </div>
+      <div class="admin-template-actions">
+        <input
+          ref="templateInput"
+          class="visually-hidden"
+          type="file"
+          accept="application/json,.json"
+          @change="importTemplate"
+        />
+        <button
+          class="secondary compact"
+          type="button"
+          @click="openTemplateImport"
+        >
+          <FileDown :size="16" />从模板导入
+        </button>
+      </div>
     </header>
     <p v-if="error" class="message">{{ error }}</p>
     <p v-if="message" class="status-ok">{{ message }}</p>
@@ -487,7 +640,7 @@ function dataPolicyLabel(value?: string) {
         <div class="section-heading">
           <div>
             <p class="eyebrow">产品</p>
-            <h2>模板目录</h2>
+            <h2>应用目录</h2>
           </div>
           <span>{{ products.length }}</span>
         </div>
@@ -570,6 +723,14 @@ function dataPolicyLabel(value?: string) {
                 /><Archive v-else :size="16" />
               </button>
             </div>
+          </div>
+          <div
+            v-if="templateSummary.length"
+            class="import-summary admin-import-summary"
+          >
+            <strong>模板配置已回填</strong>
+            <small>{{ templateSummary.join(" · ") }}</small>
+            <small>导入只填写管理员表单，不会自动创建、测试或发布。</small>
           </div>
           <div
             v-if="selectedProduct?.status === 'retired'"

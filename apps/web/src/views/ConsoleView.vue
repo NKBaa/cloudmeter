@@ -250,12 +250,6 @@ const deployCommand = ref("");
 const deployPort = ref(8080);
 const deployEnvironment = ref<{ key: string; value: string }[]>([]);
 const deployDependencies = ref<Dependency[]>([]);
-const templateInput = ref<HTMLInputElement | null>(null);
-const importSummary = ref<{
-  imported: string[];
-  ignored: string[];
-  required: string[];
-} | null>(null);
 const checkin = ref<CheckinSummary | null>(null),
   checkinMonth = ref(
     new Date()
@@ -345,93 +339,6 @@ function removeDependency(index: number) {
 function chooseTopup(amount: number) {
   selectedTopup.value = amount;
   topup.value = amount;
-}
-function openTemplateImport() {
-  templateInput.value?.click();
-}
-async function importTemplate(event: Event) {
-  const input = event.target as HTMLInputElement,
-    file = input.files?.[0];
-  if (!file) return;
-  try {
-    const data = JSON.parse(await file.text()) as any;
-    const product = products.value.find(
-      (item) => item.id === data.productId || item.slug === data.productSlug,
-    );
-    if (!product) throw new Error("模板中的产品当前不可部署");
-    openDeploy(product);
-    const imported: string[] = [],
-      ignored: string[] = [],
-      required: string[] = [];
-    if (data.slug) {
-      deploySlug.value = String(data.slug);
-      imported.push("应用标识");
-    }
-    const resources = data.resources || {};
-    if (resources.cpuCores != null) {
-      deployCPU.value = Number(resources.cpuCores);
-      imported.push("CPU");
-    }
-    if (resources.memoryMiB != null) {
-      deployMemory.value = Number(resources.memoryMiB);
-      imported.push("内存");
-    }
-    if (resources.systemDiskGiB != null) {
-      deploySystemDisk.value = Number(resources.systemDiskGiB);
-      imported.push("系统盘");
-    }
-    // Internal listening ports belong to the published product template.
-    // Imported files cannot override a port the image may not actually honor.
-    if (
-      resources.containerPort != null &&
-      Number(resources.containerPort) !==
-        (product.routeSpec?.containerPort || 8080)
-    )
-      ignored.push("模板端口（容器内网端口由管理员固定）");
-    if (resources.volumeSizes)
-      deployVolumes.value = {
-        ...deployVolumes.value,
-        ...resources.volumeSizes,
-      };
-    if (resources.volumeSizes) imported.push("数据卷");
-    if (Array.isArray(resources.command))
-      deployCommand.value = resources.command.join(" ");
-    if (Array.isArray(resources.command)) imported.push("启动命令");
-    if (resources.environment) {
-      const allowed = new Set(product.runtimeSpec?.editableEnvKeys || []);
-      const entries = Object.entries(resources.environment);
-      deployEnvironment.value = entries
-        .filter(([key]) => allowed.has(key))
-        .map(([key, value]) => ({ key, value: String(value) }));
-      if (deployEnvironment.value.length)
-        imported.push(`环境变量 ${deployEnvironment.value.length} 项`);
-      const denied = entries
-        .map(([key]) => key)
-        .filter((key) => !allowed.has(key));
-      if (denied.length) ignored.push(`未开放环境变量：${denied.join("、")}`);
-    }
-    if (Array.isArray(resources.dependencies)) {
-      const known = new Set(products.value.map((item) => item.id));
-      const valid = resources.dependencies.filter((item: Dependency) =>
-        known.has(item.productId),
-      );
-      deployDependencies.value = valid;
-      if (valid.length) imported.push(`依赖 ${valid.length} 项`);
-      if (valid.length !== resources.dependencies.length)
-        ignored.push("目录中不存在的依赖");
-    }
-    const secretCount = product.runtimeSpec?.secretKeys?.length || 0;
-    if (secretCount)
-      required.push(
-        `Secret ${secretCount} 项（安全原因不导入明文，请手动填写）`,
-      );
-    importSummary.value = { imported, ignored, required };
-    message.value = "配置模板已导入，请检查各项配置后部署";
-  } catch (e) {
-    error.value = (e as Error).message;
-  } finally {
-    input.value = "";
-  }
 }
 const labels: Record<string, string> = {
   queued: "排队中",
@@ -642,7 +549,6 @@ function openDeploy(p: Product) {
   deployDependencies.value = (p.runtimeSpec?.dependencies || []).map(
     (dependency) => ({ ...dependency }),
   );
-  importSummary.value = null;
 }
 function closeDeploy() {
   deployProduct.value = null;
@@ -946,7 +852,7 @@ async function exitImpersonation() {
         >
       </div>
       <p v-if="!products.length" class="quiet empty-copy">
-        暂无已发布应用。导入文件需要匹配管理员已发布的产品模板。
+        暂无可部署应用，请等待管理员创建、测试并发布应用。
       </p>
       <article
         v-for="item in notifications"
@@ -1224,15 +1130,7 @@ async function exitImpersonation() {
           <h2>产品目录</h2>
         </div>
         <div class="deploy-catalog-actions">
-          <input
-            ref="templateInput"
-            class="visually-hidden"
-            type="file"
-            accept="application/json,.json"
-            @change="importTemplate"
-          /><button class="secondary compact" @click="openTemplateImport">
-            <FileDown :size="16" />从模板导入</button
-          ><span
+          <span
             >{{
               products.filter((value) => value.deployable).length
             }}
@@ -1502,16 +1400,6 @@ async function exitImpersonation() {
           </button>
         </header>
         <form @submit.prevent="deploy">
-          <div v-if="importSummary" class="import-summary">
-            <strong>模板配置已解析</strong
-            ><small v-if="importSummary.imported.length"
-              >已导入：{{ importSummary.imported.join("、") }}</small
-            ><small v-if="importSummary.ignored.length"
-              >已忽略：{{ importSummary.ignored.join("；") }}</small
-            ><small v-if="importSummary.required.length"
-              >仍需填写：{{ importSummary.required.join("；") }}</small
-            >
-          </div>
           <label
             >应用标识<input
               v-model="deploySlug"
