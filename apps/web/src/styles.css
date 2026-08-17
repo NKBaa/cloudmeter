@@ -70,7 +70,7 @@ a { color: var(--accent); }
 }
 .quiet { font-size: 13px; color: var(--muted); }
 
-/* ── Auth (centered card on gradient) ─────────────── */
+/* ── Auth (light monochrome rounded) ──────────────── */
 .auth-shell {
   min-height: 100vh;
   display: flex;
@@ -78,18 +78,20 @@ a { color: var(--accent); }
   justify-content: center;
   padding: 28px 20px;
   background:
-    radial-gradient(ellipse 80% 60% at 50% 0%, rgba(0,0,0,.22), transparent),
-    linear-gradient(160deg, #0e0e10 0%, #25262a 45%, #060607 100%);
+    radial-gradient(ellipse 70% 55% at 18% -8%, rgba(0,0,0,.045), transparent),
+    radial-gradient(ellipse 70% 55% at 85% 110%, rgba(0,0,0,.05), transparent),
+    var(--canvas);
 }
 .auth-card {
   width: min(440px, 100%);
   background: var(--paper);
-  border-radius: 28px;
-  box-shadow: 0 28px 70px rgba(0,0,0,.28);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
   overflow: hidden;
 }
 .auth-brand {
-  padding: 36px 36px 18px;
+  padding: 40px 40px 22px;
   text-align: center;
 }
 .auth-brand .brand { justify-content: center; margin-bottom: 14px; }
@@ -108,19 +110,69 @@ a { color: var(--accent); }
 .auth-brand .eyebrow { margin: 14px 0 0; }
 .auth-form {
   display: grid;
-  gap: 16px;
-  padding: 10px 36px 8px;
+  gap: 14px;
+  padding: 8px 40px 12px;
   width: 100%;
 }
 .auth-form > p { margin: 0; color: var(--muted); font-size: 13.5px; }
 .auth-foot {
   display: block;
   text-align: center;
-  padding: 6px 36px 26px;
+  padding: 4px 40px 30px;
   color: var(--muted);
   font-size: 12px;
 }
 .auth-foot a { color: var(--accent); }
+
+.oauth-divider {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 6px 0 2px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.oauth-divider::before, .oauth-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+.oauth-button {
+  height: 46px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  background: #fff;
+  color: var(--ink);
+  font-weight: 700;
+  transition: background .15s, border-color .15s;
+}
+.oauth-button:hover { background: var(--accent-soft); border-color: #d4d6d9; }
+.oauth-button:disabled { opacity: 0.55; cursor: not-allowed; }
+.linuxdo-icon {
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--ink);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+}
+.code-field {
+  display: grid;
+  grid-template-columns: minmax(0,1fr) 118px;
+  align-items: end;
+  gap: 10px;
+}
+.code-field .send-btn { height: 44px; }
+@media (max-width: 480px) { .code-field { grid-template-columns: 1fr; } }
 
 /* ── Setup ────────────────────────────────────────── */
 .setup-shell {
@@ -1255,8 +1307,8 @@ textarea { resize: vertical; }
   display: flex;
   flex-direction: column;
   background:
-    radial-gradient(ellipse 80% 60% at 50% 0%, rgba(0,0,0,.2), transparent),
-    linear-gradient(160deg, #000000, #111113 40%, #101013);
+    radial-gradient(ellipse 70% 55% at 50% -5%, rgba(0,0,0,.04), transparent),
+    var(--canvas);
 }
 .callback-shell section { margin: auto; text-align: center; width: min(420px, 100%); }
 .callback-shell .brand { justify-content: center; color: #fff; margin-bottom: 20px; }
@@ -1264,6 +1316,11 @@ textarea { resize: vertical; }
 .callback-shell h1 { font-size: 25px; margin: 18px 0 8px; color: #fff; }
 .callback-shell section > p:not(.message) { color: rgba(255,255,255,.75); }
 .callback-link { text-decoration: none; margin-top: 18px; }
+.callback-shell .message { text-align: left; }
+.callback-shell .brand { justify-content: center; color: var(--ink); margin-bottom: 20px; }
+.callback-shell .brand-mark { background: var(--accent-soft); color: var(--accent); }
+.callback-shell h1 { font-size: 25px; margin: 18px 0 8px; color: var(--ink); }
+.callback-shell section > p:not(.message) { color: var(--muted); }
 .callback-shell .message { text-align: left; }
 
 /* ── Responsive ───────────────────────────────────── */

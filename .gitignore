@@ -9,3 +9,19 @@ apps/web/dist/
 apps/web/*.tsbuildinfo
 coverage/
 *.log
+
+# local acceptance / WSL ops artifacts
+_*.sh
+_*.ps1
+_*.js
+_*.mjs
+_*.txt
+_shots/
+_wsl_backup_*/
+*_mono.png
+*_mono_v*.png
+*_fresh.png
+*_latest.png
+*_screenshot*.png
+*.tar
+*.tar.gz
