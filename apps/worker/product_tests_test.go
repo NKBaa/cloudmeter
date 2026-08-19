@@ -2,6 +2,7 @@ package main
 
 import (
 	"cloudmeter/internal/secretbox"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -134,5 +135,24 @@ func TestScopedProductTestNames(t *testing.T) {
 	}
 	if productTestContainerName(id) == legacyProductTestContainerName(id) {
 		t.Fatal("scoped product test name did not change")
+	}
+}
+
+func TestProductTestFailureIsActionableAndRedacted(t *testing.T) {
+	failure := productTestFailure(
+		"拉取应用镜像",
+		"registry.example.com/team/app:v1",
+		errors.New(`docker POST https://user:pass@registry.example.com: unauthorized token=top-secret password=also-secret`),
+		[]string{"top-secret"},
+	).Error()
+	for _, expected := range []string{"测试阶段：拉取应用镜像", "Registry 拒绝访问镜像", "处理建议：", "技术详情（已脱敏）："} {
+		if !strings.Contains(failure, expected) {
+			t.Fatalf("failure missing %q: %s", expected, failure)
+		}
+	}
+	for _, secret := range []string{"user:pass", "top-secret", "also-secret"} {
+		if strings.Contains(failure, secret) {
+			t.Fatalf("failure leaked %q: %s", secret, failure)
+		}
 	}
 }

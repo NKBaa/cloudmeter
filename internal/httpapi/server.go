@@ -17,6 +17,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"cloudmeter/internal/config"
 	runtimepolicy "cloudmeter/internal/runtime"
@@ -190,6 +191,11 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/announcements", s.authenticate(http.HandlerFunc(s.listAnnouncements)))
 	s.mux.Handle("GET /api/notifications", s.authenticate(http.HandlerFunc(s.listNotifications)))
 	s.mux.Handle("PATCH /api/notifications/{notificationID}/read", s.authenticate(http.HandlerFunc(s.readNotification)))
+	s.mux.Handle("GET /api/tickets", s.authenticate(http.HandlerFunc(s.listTickets)))
+	s.mux.Handle("POST /api/tickets", s.authenticate(http.HandlerFunc(s.createTicket)))
+	s.mux.Handle("GET /api/tickets/{ticketID}", s.authenticate(http.HandlerFunc(s.getTicket)))
+	s.mux.Handle("POST /api/tickets/{ticketID}/messages", s.authenticate(http.HandlerFunc(s.replyTicket)))
+	s.mux.Handle("POST /api/tickets/{ticketID}/close", s.authenticate(http.HandlerFunc(s.closeTicket)))
 	s.mux.Handle("GET /api/admin/summary", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.adminSummary))))
 	s.mux.Handle("GET /api/admin/audit-logs", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.adminAuditLogs))))
 	s.mux.Handle("GET /api/products", s.authenticate(http.HandlerFunc(s.listProducts)))
@@ -219,6 +225,7 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/payments/providers", s.authenticate(http.HandlerFunc(s.listPaymentProviders)))
 	s.mux.Handle("POST /api/payments/orders", s.authenticate(http.HandlerFunc(s.createPaymentOrder)))
 	s.mux.HandleFunc("POST /api/payments/epay/callback", s.epayCallback)
+	s.mux.HandleFunc("GET /api/payments/epay/callback", s.epayCallback)
 	s.mux.HandleFunc("POST /api/internal/egress/{appID}", s.ingestEgressSample)
 	s.mux.Handle("POST /api/admin/payments/orders/{orderID}/mark-paid", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.markPaymentPaid))))
 	s.mux.Handle("POST /api/admin/payments/orders/{orderID}/refund", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.refundPayment))))
@@ -228,6 +235,12 @@ func (s *Server) routes() {
 	s.mux.Handle("POST /api/admin/payments/orders/{orderID}/close", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.closePayment))))
 	s.mux.Handle("GET /api/admin/settings/payments", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.getPaymentSettings))))
 	s.mux.Handle("GET /api/admin/settings/checkin", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.getCheckinSettings))))
+	// Docker runtime settings are operational controls for administrators.
+	// Keep the permission check on the API (rather than relying on the menu)
+	// so an administrator can configure image sources, registries and proxies
+	// while financial/platform-owner settings remain super-admin only.
+	s.mux.Handle("GET /api/admin/settings/docker", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.getDockerSettings))))
+	s.mux.Handle("PUT /api/admin/settings/docker", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.updateDockerSettings))))
 	s.mux.Handle("PUT /api/admin/settings/homepage", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.updateHomepage))))
 	s.mux.Handle("PUT /api/admin/settings/checkin", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.updateCheckinSettings))))
 	s.mux.Handle("PUT /api/admin/settings/payments/{provider}", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.updatePaymentSettings))))
@@ -243,12 +256,14 @@ func (s *Server) routes() {
 	s.mux.Handle("PUT /api/admin/pricing/overrides", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.upsertPricingOverride))))
 	s.mux.Handle("DELETE /api/admin/pricing/overrides/{overrideID}", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.deletePricingOverride))))
 	s.mux.Handle("POST /api/apps", s.authenticate(http.HandlerFunc(s.createApp)))
+	s.mux.Handle("DELETE /api/apps/{appID}", s.authenticate(http.HandlerFunc(s.deleteApp)))
 	s.mux.Handle("POST /api/apps/{appID}/releases", s.authenticate(http.HandlerFunc(s.createAppRelease)))
 	s.mux.Handle("POST /api/apps/{appID}/rollback", s.authenticate(http.HandlerFunc(s.rollbackApp)))
 	s.mux.Handle("POST /api/admin/products", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.createProduct))))
 	s.mux.Handle("GET /api/admin/products", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.adminListProducts))))
 	s.mux.Handle("PATCH /api/admin/products/{productID}", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.updateProduct))))
 	s.mux.Handle("PATCH /api/admin/products/{productID}/availability", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.updateProductAvailability))))
+	s.mux.Handle("DELETE /api/admin/products/{productID}", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.deleteProduct))))
 	s.mux.Handle("POST /api/admin/products/{productID}/versions", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.createProductVersion))))
 	s.mux.Handle("POST /api/admin/products/{productID}/versions/{versionID}/tests", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.startProductVersionTest))))
 	s.mux.Handle("POST /api/admin/products/{productID}/versions/{versionID}/publish", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.publishProductVersion))))
@@ -256,6 +271,7 @@ func (s *Server) routes() {
 	s.mux.Handle("POST /api/admin/users/{userID}/impersonation", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.startImpersonation))))
 	s.mux.Handle("POST /api/admin/users", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.adminCreateUser))))
 	s.mux.Handle("PATCH /api/admin/users/{userID}/status", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.updateUserStatus))))
+	s.mux.Handle("PATCH /api/admin/users/{userID}/role", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.updateUserRole))))
 	s.mux.Handle("POST /api/admin/users/{userID}/wallet/adjust", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.adjustWallet))))
 	s.mux.Handle("POST /api/admin/users/{userID}/credits", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.grantCredit))))
 	s.mux.Handle("GET /api/admin/settings/mail", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.getMailSettings))))
@@ -268,6 +284,10 @@ func (s *Server) routes() {
 	s.mux.Handle("PUT /api/admin/settings/auth", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.updateAuthPolicy))))
 	s.mux.Handle("GET /api/admin/settings/oauth", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.getOAuthSettings))))
 	s.mux.Handle("PUT /api/admin/settings/oauth/{provider}", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.updateOAuthSettings))))
+	s.mux.Handle("GET /api/admin/tickets", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.adminListTickets))))
+	s.mux.Handle("GET /api/admin/tickets/{ticketID}", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.adminGetTicket))))
+	s.mux.Handle("POST /api/admin/tickets/{ticketID}/messages", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.adminReplyTicket))))
+	s.mux.Handle("PATCH /api/admin/tickets/{ticketID}/status", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.adminUpdateTicketStatus))))
 }
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
@@ -637,23 +657,25 @@ func (s *Server) adminSummary(w http.ResponseWriter, r *http.Request) {
 }
 
 type createProductRequest struct {
-	Slug string `json:"slug"`
-	Name string `json:"name"`
+	Slug    string `json:"slug"`
+	Name    string `json:"name"`
+	IconURL string `json:"iconUrl"`
 }
 type createVersionRequest struct {
-	ImageDigest string         `json:"imageDigest"`
-	RuntimeSpec map[string]any `json:"runtimeSpec"`
-	RouteSpec   map[string]any `json:"routeSpec"`
-	HealthSpec  map[string]any `json:"healthSpec"`
-	UpdateSpec  map[string]any `json:"updateSpec"`
+	VersionLabel string         `json:"versionLabel"`
+	ImageDigest  string         `json:"imageDigest"`
+	RuntimeSpec  map[string]any `json:"runtimeSpec"`
+	RouteSpec    map[string]any `json:"routeSpec"`
+	HealthSpec   map[string]any `json:"healthSpec"`
+	UpdateSpec   map[string]any `json:"updateSpec"`
 }
 
 func (s *Server) listProducts(w http.ResponseWriter, r *http.Request) {
 	p, _ := r.Context().Value(principalKey).(principal)
-	rows, err := s.db.Query(r.Context(), `SELECT p.id,p.slug,p.name,pv.id,pv.version,pv.image_digest,pv.runtime_spec,pv.route_spec,pv.health_spec,pv.update_spec,
+	rows, err := s.db.Query(r.Context(), `SELECT p.id,p.slug,p.name,p.icon_url,pv.id,pv.version,pv.image_digest,pv.runtime_spec,pv.route_spec,pv.health_spec,pv.update_spec,
 		true AS deployable
 		FROM app_products p JOIN app_product_versions pv ON pv.product_id=p.id
-		WHERE p.status='published' AND pv.published_at IS NOT NULL ORDER BY p.name,pv.version DESC`)
+		WHERE p.status='published' AND p.deleted_at IS NULL AND pv.published_at IS NOT NULL ORDER BY p.name,pv.version DESC`)
 	if err != nil {
 		s.internalError(w, err)
 		return
@@ -663,6 +685,7 @@ func (s *Server) listProducts(w http.ResponseWriter, r *http.Request) {
 		ID                  string         `json:"id"`
 		Slug                string         `json:"slug"`
 		Name                string         `json:"name"`
+		IconURL             string         `json:"iconUrl"`
 		VersionID           string         `json:"versionId"`
 		Version             int            `json:"version"`
 		ImageDigest         string         `json:"imageDigest"`
@@ -676,7 +699,7 @@ func (s *Server) listProducts(w http.ResponseWriter, r *http.Request) {
 	items := make([]item, 0)
 	for rows.Next() {
 		var v item
-		if err := rows.Scan(&v.ID, &v.Slug, &v.Name, &v.VersionID, &v.Version, &v.ImageDigest, &v.RuntimeSpec, &v.RouteSpec, &v.HealthSpec, &v.UpdateSpec, &v.Deployable); err != nil {
+		if err := rows.Scan(&v.ID, &v.Slug, &v.Name, &v.IconURL, &v.VersionID, &v.Version, &v.ImageDigest, &v.RuntimeSpec, &v.RouteSpec, &v.HealthSpec, &v.UpdateSpec, &v.Deployable); err != nil {
 			s.internalError(w, err)
 			return
 		}
@@ -708,11 +731,24 @@ type createAppRequest struct {
 type selectedResources struct {
 	CPUCores      *float64             `json:"cpuCores"`
 	MemoryMiB     *float64             `json:"memoryMiB"`
-	SystemDiskGiB *float64             `json:"systemDiskGiB"`
+	DataVolumeGiB *float64             `json:"dataVolumeGiB"`
 	VolumeSizes   map[string]float64   `json:"volumeSizes"`
 	Command       []string             `json:"command"`
 	Environment   map[string]string    `json:"environment"`
 	Dependencies  []selectedDependency `json:"dependencies"`
+}
+
+func editableRuntimeOption(spec map[string]any, key string, legacyDefault bool) bool {
+	options, ok := spec["editableOptions"].(map[string]any)
+	if !ok {
+		return legacyDefault
+	}
+	value, exists := options[key]
+	if !exists {
+		return false
+	}
+	enabled, _ := value.(bool)
+	return enabled
 }
 
 type selectedDependency struct {
@@ -735,41 +771,58 @@ func selectedRuntimeSpec(template map[string]any, selected selectedResources) (m
 	if err != nil {
 		return nil, err
 	}
-	minimumStorage, err := runtimepolicy.RuntimeStorage(result, true)
-	if err != nil {
-		return nil, err
+	cpu, memory := minimumCompute.CPUCores, minimumCompute.MemoryMiB
+	if selected.CPUCores != nil && !editableRuntimeOption(result, "cpu", true) {
+		return nil, fmt.Errorf("CPU is not editable for this product")
 	}
-	cpu, memory, systemDisk := minimumCompute.CPUCores, minimumCompute.MemoryMiB, minimumStorage.SystemDiskGiB
 	if selected.CPUCores != nil {
 		cpu = *selected.CPUCores
+	}
+	if selected.MemoryMiB != nil && !editableRuntimeOption(result, "memory", true) {
+		return nil, fmt.Errorf("memory is not editable for this product")
 	}
 	if selected.MemoryMiB != nil {
 		memory = *selected.MemoryMiB
 	}
-	if selected.SystemDiskGiB != nil {
-		systemDisk = *selected.SystemDiskGiB
+	if cpu < minimumCompute.CPUCores || memory < minimumCompute.MemoryMiB {
+		return nil, fmt.Errorf("selected CPU and memory must meet the product minimum")
 	}
-	if cpu < minimumCompute.CPUCores || memory < minimumCompute.MemoryMiB || systemDisk < minimumStorage.SystemDiskGiB {
-		return nil, fmt.Errorf("selected CPU, memory and system disk must meet the product minimum")
+	result["cpuCores"], result["memoryMiB"], result["systemDiskGiB"] = cpu, memory, runtimepolicy.DefaultSystemDiskGiB
+	minimumVolume, _ := runtimepolicy.RuntimeDataVolumeGiB(result, false)
+	chosenVolume := minimumVolume
+	if selected.DataVolumeGiB != nil {
+		if !editableRuntimeOption(result, "dataVolume", true) {
+			return nil, fmt.Errorf("data volume capacity is not editable for this product")
+		}
+		chosenVolume = *selected.DataVolumeGiB
 	}
-	result["cpuCores"], result["memoryMiB"], result["systemDiskGiB"] = cpu, memory, systemDisk
+	// Accept the old per-volume request shape during rolling upgrades, but fold
+	// it into the one shared application volume capacity.
+	if len(selected.VolumeSizes) > 0 && !editableRuntimeOption(result, "dataVolume", true) {
+		return nil, fmt.Errorf("data volume capacity is not editable for this product")
+	}
+	for _, chosen := range selected.VolumeSizes {
+		if chosen > chosenVolume {
+			chosenVolume = chosen
+		}
+	}
+	if chosenVolume < minimumVolume {
+		return nil, fmt.Errorf("data volume capacity must be at least %.0f GiB", minimumVolume)
+	}
 	if volumes, ok := result["volumes"].([]any); ok {
 		for _, raw := range volumes {
 			volume, ok := raw.(map[string]any)
 			if !ok {
 				continue
 			}
-			name, _ := volume["name"].(string)
-			minimum, _ := volume["sizeGiB"].(float64)
-			if chosen, exists := selected.VolumeSizes[name]; exists {
-				if chosen < minimum {
-					return nil, fmt.Errorf("volume %s must be at least %.0f GiB", name, minimum)
-				}
-				volume["sizeGiB"] = chosen
-			}
+			volume["sizeGiB"] = chosenVolume
 		}
+		result["dataVolumeGiB"] = chosenVolume
 	}
 	if selected.Command != nil {
+		if !editableRuntimeOption(result, "command", false) {
+			return nil, fmt.Errorf("command is not editable for this product")
+		}
 		result["command"] = selected.Command
 	}
 	if selected.Environment != nil {
@@ -794,6 +847,9 @@ func selectedRuntimeSpec(template map[string]any, selected selectedResources) (m
 		result["env"] = environment
 	}
 	if selected.Dependencies != nil {
+		if !editableRuntimeOption(result, "dependencies", false) {
+			return nil, fmt.Errorf("dependencies are not editable for this product")
+		}
 		dependencies := make([]any, 0, len(selected.Dependencies))
 		for _, dependency := range selected.Dependencies {
 			dependencies = append(dependencies, map[string]any{"key": dependency.Key, "productId": dependency.ProductID, "serviceSlug": dependency.ServiceSlug, "required": dependency.Required})
@@ -883,7 +939,6 @@ func (s *Server) estimatedMonthlyAppCents(ctx context.Context, userID, appID str
 		{"app.runtime.minutes", "minute", 730 * 60},
 		{"cpu.core_hours", "core_hour", resources.CPUCores * 730},
 		{"memory.gib_hours", "GiB_hour", resources.MemoryMiB / 1024 * 730},
-		{"storage.system.gib_days", "GiB_day", storage.SystemDiskGiB * 30},
 		{"storage.data.gib_days", "GiB_day", storage.DataDiskGiB * 30},
 	}
 	if hasIngress {
@@ -910,7 +965,7 @@ func (s *Server) estimatedMonthlyAppCents(ctx context.Context, userID, appID str
 
 func (s *Server) listApps(w http.ResponseWriter, r *http.Request) {
 	p, _ := r.Context().Value(principalKey).(principal)
-	rows, err := s.db.Query(r.Context(), "SELECT a.id,a.slug,a.service_slug,a.status,coalesce(a.suspension_reason,''),p.slug,coalesce(a.last_successful_release_id::text,''),coalesce(prev.id::text,''),coalesce(j.id::text,''),coalesce(j.state::text,''),coalesce(j.updated_at,a.created_at),coalesce(ar.public_path,''),coalesce(current_release.immutable_snapshot->'runtime_spec','{}'::jsonb) FROM user_apps a JOIN app_products p ON p.id=a.product_id LEFT JOIN app_releases current_release ON current_release.id=a.last_successful_release_id LEFT JOIN app_routes ar ON ar.user_app_id=a.id AND ar.release_id=a.last_successful_release_id LEFT JOIN LATERAL (SELECT id FROM app_releases WHERE user_app_id=a.id AND state IN ('active','superseded') AND release_number < coalesce(current_release.release_number,2147483647) ORDER BY release_number DESC LIMIT 1) prev ON true LEFT JOIN LATERAL (SELECT id,state,updated_at FROM deployment_jobs WHERE user_app_id=a.id ORDER BY created_at DESC LIMIT 1) j ON true WHERE a.user_id=$1 ORDER BY a.created_at DESC", p.ID)
+	rows, err := s.db.Query(r.Context(), "SELECT a.id,a.slug,a.service_slug,a.status,coalesce(a.suspension_reason,''),p.slug,coalesce(a.last_successful_release_id::text,''),coalesce(prev.id::text,''),coalesce(j.id::text,''),coalesce(j.state::text,''),coalesce(j.last_error,''),coalesce(j.updated_at,a.created_at),coalesce(ar.public_path,''),coalesce(current_release.immutable_snapshot->'runtime_spec','{}'::jsonb) FROM user_apps a JOIN app_products p ON p.id=a.product_id LEFT JOIN app_releases current_release ON current_release.id=a.last_successful_release_id LEFT JOIN app_routes ar ON ar.user_app_id=a.id AND ar.release_id=a.last_successful_release_id LEFT JOIN LATERAL (SELECT id FROM app_releases WHERE user_app_id=a.id AND state IN ('active','superseded') AND release_number < coalesce(current_release.release_number,2147483647) ORDER BY release_number DESC LIMIT 1) prev ON true LEFT JOIN LATERAL (SELECT id,state,last_error,updated_at FROM deployment_jobs WHERE user_app_id=a.id ORDER BY created_at DESC LIMIT 1) j ON true WHERE a.user_id=$1 AND a.deleted_at IS NULL ORDER BY a.created_at DESC", p.ID)
 	if err != nil {
 		s.internalError(w, err)
 		return
@@ -927,6 +982,7 @@ func (s *Server) listApps(w http.ResponseWriter, r *http.Request) {
 		PreviousReleaseID     string    `json:"previousReleaseId"`
 		JobID                 string    `json:"jobId"`
 		JobState              string    `json:"jobState"`
+		JobLastError          string    `json:"jobLastError,omitempty"`
 		UpdatedAt             time.Time `json:"updatedAt"`
 		PublicPath            string    `json:"publicPath,omitempty"`
 		CPUCores              float64   `json:"cpuCores"`
@@ -940,7 +996,7 @@ func (s *Server) listApps(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var item appView
 		var runtimeSpec map[string]any
-		if err := rows.Scan(&item.ID, &item.Slug, &item.ServiceSlug, &item.Status, &item.SuspensionReason, &item.ProductSlug, &item.LastReleaseID, &item.PreviousReleaseID, &item.JobID, &item.JobState, &item.UpdatedAt, &item.PublicPath, &runtimeSpec); err != nil {
+		if err := rows.Scan(&item.ID, &item.Slug, &item.ServiceSlug, &item.Status, &item.SuspensionReason, &item.ProductSlug, &item.LastReleaseID, &item.PreviousReleaseID, &item.JobID, &item.JobState, &item.JobLastError, &item.UpdatedAt, &item.PublicPath, &runtimeSpec); err != nil {
 			s.internalError(w, err)
 			return
 		}
@@ -1322,7 +1378,12 @@ func (s *Server) createProduct(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	var id string
-	err = tx.QueryRow(r.Context(), `INSERT INTO app_products(slug,name) VALUES($1,$2) RETURNING id`, req.Slug, req.Name).Scan(&id)
+	req.IconURL, err = normalizeProductIconURL(req.IconURL)
+	if err != nil {
+		writeError(w, 400, "validation_failed", err.Error())
+		return
+	}
+	err = tx.QueryRow(r.Context(), `INSERT INTO app_products(slug,name,icon_url) VALUES($1,$2,$3) RETURNING id`, req.Slug, req.Name, req.IconURL).Scan(&id)
 	if err != nil {
 		if strings.Contains(err.Error(), "app_products_slug_key") {
 			writeError(w, 409, "slug_exists", "product slug already exists")
@@ -1343,28 +1404,29 @@ func (s *Server) createProduct(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) adminListProducts(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.db.Query(r.Context(), `SELECT p.id,p.slug,p.name,p.status,p.created_at,pv.id,pv.version,pv.image_digest,
+	rows, err := s.db.Query(r.Context(), `SELECT p.id,p.slug,p.name,p.icon_url,p.status,p.created_at,pv.id,pv.version,pv.version_label,pv.image_digest,
 		coalesce(pv.runtime_spec,'{}'::jsonb),coalesce(pv.route_spec,'{}'::jsonb),coalesce(pv.health_spec,'{}'::jsonb),coalesce(pv.update_spec,'{}'::jsonb),pv.published_at,
 		t.id::text,t.state,t.attempts,t.last_error,t.created_at,t.updated_at,t.completed_at
 		FROM app_products p
 		LEFT JOIN app_product_versions pv ON pv.product_id=p.id
 		LEFT JOIN LATERAL (SELECT id,state,attempts,last_error,created_at,updated_at,completed_at FROM app_product_version_tests WHERE product_version_id=pv.id ORDER BY created_at DESC LIMIT 1) t ON true
-		ORDER BY p.created_at DESC,pv.version DESC`)
+		WHERE p.deleted_at IS NULL ORDER BY p.created_at DESC,pv.version DESC`)
 	if err != nil {
 		s.internalError(w, err)
 		return
 	}
 	defer rows.Close()
 	type version struct {
-		ID          string         `json:"id"`
-		Version     int            `json:"version"`
-		ImageDigest string         `json:"imageDigest"`
-		RuntimeSpec map[string]any `json:"runtimeSpec"`
-		RouteSpec   map[string]any `json:"routeSpec"`
-		HealthSpec  map[string]any `json:"healthSpec"`
-		UpdateSpec  map[string]any `json:"updateSpec"`
-		PublishedAt *time.Time     `json:"publishedAt"`
-		LatestTest  *struct {
+		ID           string         `json:"id"`
+		Version      int            `json:"version"`
+		VersionLabel string         `json:"versionLabel"`
+		ImageDigest  string         `json:"imageDigest"`
+		RuntimeSpec  map[string]any `json:"runtimeSpec"`
+		RouteSpec    map[string]any `json:"routeSpec"`
+		HealthSpec   map[string]any `json:"healthSpec"`
+		UpdateSpec   map[string]any `json:"updateSpec"`
+		PublishedAt  *time.Time     `json:"publishedAt"`
+		LatestTest   *struct {
 			ID          string     `json:"id"`
 			State       string     `json:"state"`
 			Attempts    int        `json:"attempts"`
@@ -1378,6 +1440,7 @@ func (s *Server) adminListProducts(w http.ResponseWriter, r *http.Request) {
 		ID        string    `json:"id"`
 		Slug      string    `json:"slug"`
 		Name      string    `json:"name"`
+		IconURL   string    `json:"iconUrl"`
 		Status    string    `json:"status"`
 		CreatedAt time.Time `json:"createdAt"`
 		Versions  []version `json:"versions"`
@@ -1385,16 +1448,16 @@ func (s *Server) adminListProducts(w http.ResponseWriter, r *http.Request) {
 	items := []product{}
 	indexes := map[string]int{}
 	for rows.Next() {
-		var id, slug, name, status string
+		var id, slug, name, iconURL, status string
 		var created time.Time
-		var versionID, digest *string
+		var versionID, versionLabel, digest *string
 		var number *int
 		var runtimeSpec, routeSpec, healthSpec, updateSpec map[string]any
 		var published *time.Time
 		var testID, testState, testError *string
 		var testAttempts *int
 		var testCreated, testUpdated, testCompleted *time.Time
-		if err := rows.Scan(&id, &slug, &name, &status, &created, &versionID, &number, &digest, &runtimeSpec, &routeSpec, &healthSpec, &updateSpec, &published, &testID, &testState, &testAttempts, &testError, &testCreated, &testUpdated, &testCompleted); err != nil {
+		if err := rows.Scan(&id, &slug, &name, &iconURL, &status, &created, &versionID, &number, &versionLabel, &digest, &runtimeSpec, &routeSpec, &healthSpec, &updateSpec, &published, &testID, &testState, &testAttempts, &testError, &testCreated, &testUpdated, &testCompleted); err != nil {
 			s.internalError(w, err)
 			return
 		}
@@ -1402,10 +1465,10 @@ func (s *Server) adminListProducts(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			idx = len(items)
 			indexes[id] = idx
-			items = append(items, product{ID: id, Slug: slug, Name: name, Status: status, CreatedAt: created, Versions: []version{}})
+			items = append(items, product{ID: id, Slug: slug, Name: name, IconURL: iconURL, Status: status, CreatedAt: created, Versions: []version{}})
 		}
 		if versionID != nil {
-			item := version{ID: *versionID, Version: *number, ImageDigest: *digest, RuntimeSpec: runtimeSpec, RouteSpec: routeSpec, HealthSpec: healthSpec, UpdateSpec: updateSpec, PublishedAt: published}
+			item := version{ID: *versionID, Version: *number, VersionLabel: *versionLabel, ImageDigest: *digest, RuntimeSpec: runtimeSpec, RouteSpec: routeSpec, HealthSpec: healthSpec, UpdateSpec: updateSpec, PublishedAt: published}
 			if testID != nil {
 				item.LatestTest = &struct {
 					ID          string     `json:"id"`
@@ -1434,16 +1497,24 @@ func (s *Server) createProductVersion(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "invalid_request", err.Error())
 		return
 	}
-	if err := runtimepolicy.ValidateImageDigest(req.ImageDigest); err != nil {
-		writeError(w, 400, "validation_failed", err.Error())
+	req.VersionLabel = strings.TrimSpace(req.VersionLabel)
+	if utf8.RuneCountInString(req.VersionLabel) > 64 {
+		writeError(w, 400, "validation_failed", "versionLabel may contain at most 64 characters")
 		return
 	}
-	if err := runtimepolicy.ValidateRuntimeSpec(req.RuntimeSpec); err != nil {
+	if err := runtimepolicy.ValidateImageDigest(req.ImageDigest); err != nil {
 		writeError(w, 400, "validation_failed", err.Error())
 		return
 	}
 	if req.RuntimeSpec == nil {
 		req.RuntimeSpec = map[string]any{}
+	}
+	// The writable container layer is platform-managed. Keep a fixed internal
+	// limit for runtime/database compatibility, but never expose or bill it.
+	req.RuntimeSpec["systemDiskGiB"] = runtimepolicy.DefaultSystemDiskGiB
+	if err := runtimepolicy.ValidateRuntimeSpec(req.RuntimeSpec); err != nil {
+		writeError(w, 400, "validation_failed", err.Error())
+		return
 	}
 	if req.RouteSpec == nil {
 		req.RouteSpec = map[string]any{}
@@ -1490,7 +1561,7 @@ func (s *Server) createProductVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var id string
-	if err = tx.QueryRow(r.Context(), `INSERT INTO app_product_versions(product_id,version,image_digest,runtime_spec,route_spec,health_spec,update_spec) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id`, productID, version, req.ImageDigest, req.RuntimeSpec, req.RouteSpec, req.HealthSpec, req.UpdateSpec).Scan(&id); err != nil {
+	if err = tx.QueryRow(r.Context(), `INSERT INTO app_product_versions(product_id,version,version_label,image_digest,runtime_spec,route_spec,health_spec,update_spec) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`, productID, version, req.VersionLabel, req.ImageDigest, req.RuntimeSpec, req.RouteSpec, req.HealthSpec, req.UpdateSpec).Scan(&id); err != nil {
 		s.internalError(w, err)
 		return
 	}

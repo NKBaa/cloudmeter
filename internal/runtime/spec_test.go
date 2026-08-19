@@ -7,8 +7,15 @@ func TestValidateImageDigest(t *testing.T) {
 	if err := ValidateImageDigest(valid); err != nil {
 		t.Fatal(err)
 	}
-	if err := ValidateImageDigest("nginx:latest"); err == nil {
-		t.Fatal("floating tag accepted")
+	for _, image := range []string{"nginx:1.27", "ghcr.io/acme/model:v2.3.1", "registry.example.com:5000/team/app:2026.08", "nginx:latest"} {
+		if err := ValidateImageDigest(image); err != nil {
+			t.Fatalf("versioned image %q rejected: %v", image, err)
+		}
+	}
+	for _, image := range []string{"nginx", "nginx:", "https://registry.example.com/app:1.0", "app@sha256:short"} {
+		if err := ValidateImageDigest(image); err == nil {
+			t.Fatalf("invalid image %q accepted", image)
+		}
 	}
 }
 

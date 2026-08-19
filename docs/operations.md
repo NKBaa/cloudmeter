@@ -134,7 +134,7 @@ bash deploy/verify-plan-credit-grants.sh
 
 支付提供商主动操作在管理后台“充值订单”页面执行。`query` 只读取提供商状态并写入不可变 `payment_provider_operations`；`close` 只有在提供商确认后才把待处理订单转为 `closed`。人工支付已支持本地查询/关单；EPay 的主动查询/关单在未取得正式服务商协议前明确返回待配置，不会伪造成功。正式 EPay 协议接入时应将查询和关单端点接入同一 `PaymentProvider` 适配器，并保留验签、金额和商户校验。
 
-EPay 启用后，用户端会优先创建 EPay 订单并打开后端生成的签名支付 URL；未启用时继续使用人工充值。当前适配器使用 HMAC-SHA256 对非空字段按键名排序签名，回调会验证商户号、签名、金额、订单状态和服务商流水号，并对重复回调返回幂等成功。接入真实服务商前必须根据其正式文档核对字段名、签名算法、`sign_type`、成功响应正文和主动查询/关单接口，不应仅凭兼容 EPay 的名称假定协议完全一致。
+EPay 启用后，用户端会优先创建 EPay 订单并打开后端生成的签名支付 URL；未启用时继续使用人工充值。适配器按 New API 使用的 `go-epay` 兼容规则签名：过滤空值及 `sign`/`sign_type`，按键名排序为 `a=b&c=d`，末尾直接追加商户 KEY 后计算 MD5，并发送 `sign_type=MD5`。回调支持 GET/POST，成功时返回纯文本 `success`；平台还会验证商户号、签名、金额、订单状态和服务商流水号，并对重复回调幂等处理。主动查询、关单和退款仍须根据具体服务商文档另行接入。
 Windows 可执行 `powershell -ExecutionPolicy Bypass -File deploy/verify-epay.ps1` 验证支付 URL、错误签名、金额篡改、有效回调、重复回调和服务商退款门禁；脚本会恢复原有 EPay 配置。目标服务商退款协议尚未接入时，EPay 退款必须返回 `503`，保持订单为 `paid`、钱包余额不变且不生成 `refunds` 记录，同时写入 `payment.refund.rejected` 审计。
 
 ## 订阅到期
@@ -213,6 +213,6 @@ GitHub 登录只接受提供商确认过的邮箱；LinuxDo 登录拒绝未激�
 
 ## 标准费用目录与无价格窗口
 
-迁移 58 为新旧安装统一预置平台会产生的标准费用项，但不自动创建价格版本：`app.runtime.minutes`、`cpu.core_hours`、`memory.gib_hours`、`storage.system.gib_days`、`storage.data.gib_days`、`network.egress_gib`、`app.deployment`、`product.authorization`、`network.public_ingress`、`backup.operation` 和 `backup.storage.gib_days`。管理员应按业务需要分别发布不可变价格版本。系统盘与数据盘分开计量；旧 `storage.gib_days` 只作为历史记录保留，新窗口不再写入该代码。
+迁移 58 为新旧安装预置了标准费用项。当前只对持久数据卷生成 `storage.data.gib_days`，镜像和容器可写层由平台承担，不生成 `storage.system.gib_days`。旧 `storage.system.gib_days` 与 `storage.gib_days` 仅用于展示历史账单，不再产生新用量。备份是数据卷的独立副本，仍按 `backup.storage.gib_days` 计费。
 
 用量事件创建时即解析并冻结 `price_version_id`，后续扣费只能使用该快照。若当时没有适用价格，聚合窗口会直接封存为 `unpriced`：不会扣除赠送额度或钱包余额，不会生成扣费与账单明细，后续补建或回填价格也不会追溯收费。迁移 58 会以相同规则封存升级前遗留的无价格待处理窗口，并用数据库约束禁止再次产生 `pending` 且没有价格快照的聚合。`waived_legacy` 仅用于历史兼容或迁移回滚，不能重新进入待扣费队列。

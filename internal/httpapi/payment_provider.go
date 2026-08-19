@@ -60,10 +60,10 @@ func (manualPaymentProvider) ClosePayment(_ context.Context, order providerOrder
 	return providerResult{Status: "closed", Message: "manual order closed"}, nil
 }
 
-type epayPaymentProvider struct{ merchant, endpoint, secret string }
+type epayPaymentProvider struct{ merchant, endpoint, secret, paymentType string }
 
 func (p epayPaymentProvider) CreatePayment(_ context.Context, req providerCreateRequest) (string, error) {
-	values := map[string]string{"pid": p.merchant, "type": "alipay", "out_trade_no": req.Order.ID, "notify_url": req.Origin + "/api/payments/epay/callback", "return_url": req.Origin + "/console", "name": "CloudMeter 账户充值", "money": centsAmountText(req.Order.AmountCents)}
+	values := map[string]string{"pid": p.merchant, "type": p.paymentType, "out_trade_no": req.Order.ID, "notify_url": req.Origin + "/api/payments/epay/callback", "return_url": req.Origin + "/console/recharge", "name": "CloudMeter 账户充值", "money": centsAmountText(req.Order.AmountCents), "device": "pc"}
 	return buildEPayCheckoutURL(p.endpoint, values, p.secret)
 }
 func (p epayPaymentProvider) VerifyCallback(_ context.Context, form url.Values) (providerCallback, error) {
@@ -84,8 +84,8 @@ func (s *Server) paymentProvider(ctx context.Context, name string) (paymentProvi
 		return nil, errors.New("unsupported payment provider")
 	}
 	var enabled bool
-	var merchant, endpoint, encrypted string
-	if err := s.db.QueryRow(ctx, `SELECT enabled,merchant_id,endpoint,secret FROM payment_provider_configs WHERE provider='epay'`).Scan(&enabled, &merchant, &endpoint, &encrypted); err != nil {
+	var merchant, endpoint, encrypted, paymentType string
+	if err := s.db.QueryRow(ctx, `SELECT enabled,merchant_id,endpoint,secret,payment_type FROM payment_provider_configs WHERE provider='epay'`).Scan(&enabled, &merchant, &endpoint, &encrypted, &paymentType); err != nil {
 		return nil, err
 	}
 	if !enabled || merchant == "" || endpoint == "" || encrypted == "" {
@@ -95,5 +95,5 @@ func (s *Server) paymentProvider(ctx context.Context, name string) (paymentProvi
 	if err != nil {
 		return nil, err
 	}
-	return epayPaymentProvider{merchant: merchant, endpoint: endpoint, secret: secret}, nil
+	return epayPaymentProvider{merchant: merchant, endpoint: endpoint, secret: secret, paymentType: paymentType}, nil
 }

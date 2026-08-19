@@ -132,7 +132,10 @@ func TestPullFetchesImageWhenLocalImageIsMissing(t *testing.T) {
 			if request.URL.Query().Get("fromImage") != image {
 				t.Fatalf("fromImage=%q", request.URL.Query().Get("fromImage"))
 			}
-			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("")), Header: make(http.Header)}, nil
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("{\"status\":\"Pull complete\"}\n")), Header: make(http.Header)}, nil
+		case 3:
+			if request.Method != http.MethodGet { t.Fatalf("verify method=%s", request.Method) }
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("{\"Id\":\"pulled\"}")), Header: make(http.Header)}, nil
 		default:
 			t.Fatalf("unexpected request %d: %s %s", requests, request.Method, request.URL.String())
 			return nil, nil
@@ -141,7 +144,7 @@ func TestPullFetchesImageWhenLocalImageIsMissing(t *testing.T) {
 	if err := executor.Pull(context.Background(), image); err != nil {
 		t.Fatal(err)
 	}
-	if requests != 2 {
+	if requests != 3 {
 		t.Fatalf("requests=%d", requests)
 	}
 }

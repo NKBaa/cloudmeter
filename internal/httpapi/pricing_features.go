@@ -21,7 +21,7 @@ type pricingVersionResponse struct {
 }
 
 func (s *Server) adminPricing(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.db.Query(r.Context(), `SELECT i.id,i.code,i.unit,i.created_at,v.id,v.version,v.unit_price_micros,v.precision_scale,v.rounding_mode,v.minimum_quantity::text,v.free_quantity::text,v.effective_at,v.created_at FROM pricing_items i LEFT JOIN pricing_versions v ON v.pricing_item_id=i.id ORDER BY i.code,v.version DESC`)
+	rows, err := s.db.Query(r.Context(), `SELECT i.id,i.code,i.unit,i.created_at,v.id,v.version,v.unit_price_micros,v.precision_scale,v.rounding_mode,v.minimum_quantity::text,v.free_quantity::text,v.effective_at,v.created_at FROM pricing_items i LEFT JOIN pricing_versions v ON v.pricing_item_id=i.id WHERE i.code <> 'storage.system.gib_days' ORDER BY i.code,v.version DESC`)
 	if err != nil {
 		s.internalError(w, err)
 		return
@@ -74,6 +74,10 @@ func (s *Server) createPricingItem(w http.ResponseWriter, r *http.Request) {
 	}
 	q.Code = strings.ToLower(strings.TrimSpace(q.Code))
 	q.Unit = strings.ToLower(strings.TrimSpace(q.Unit))
+	if q.Code == "storage.system.gib_days" {
+		writeError(w, 400, "pricing_item_retired", "system disk billing has been retired; price persistent data volumes instead")
+		return
+	}
 	if q.Code == "" || q.Unit == "" {
 		writeError(w, 400, "validation_failed", "code and unit are required")
 		return
@@ -145,12 +149,16 @@ func (s *Server) createPricingVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	var exists bool
-	if err = tx.QueryRow(r.Context(), "SELECT true FROM pricing_items WHERE id=$1 FOR UPDATE", itemID).Scan(&exists); err == pgx.ErrNoRows {
+	var itemCode string
+	if err = tx.QueryRow(r.Context(), "SELECT code FROM pricing_items WHERE id=$1 FOR UPDATE", itemID).Scan(&itemCode); err == pgx.ErrNoRows {
 		writeError(w, 404, "pricing_item_not_found", "pricing item not found")
 		return
 	} else if err != nil {
 		s.internalError(w, err)
+		return
+	}
+	if itemCode == "storage.system.gib_days" {
+		writeError(w, 409, "pricing_item_retired", "system disk billing has been retired")
 		return
 	}
 	var id string
@@ -180,7 +188,7 @@ func (s *Server) adminPricingOverrides(w http.ResponseWriter, r *http.Request) {
 		JOIN pricing_items i ON i.id=o.pricing_item_id
 		JOIN pricing_versions pv ON pv.id=o.pricing_version_id
 		LEFT JOIN users u ON u.id=o.user_id LEFT JOIN app_products p ON p.id=o.product_id
-		WHERE o.plan_id IS NULL
+		WHERE o.plan_id IS NULL AND i.code <> 'storage.system.gib_days'
 		ORDER BY i.code,4,6`)
 	if err != nil {
 		s.internalError(w, err)
@@ -229,7 +237,7 @@ func (s *Server) upsertPricingOverride(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	var valid bool
-	query := `SELECT EXISTS(SELECT 1 FROM pricing_versions WHERE id=$1 AND pricing_item_id=$2),EXISTS(SELECT 1 FROM ` + map[string]string{"user": "users", "product": "app_products"}[q.Scope] + ` WHERE id=$3)`
+	query := `SELECT EXISTS(SELECT 1 FROM pricing_versions pv JOIN pricing_items pi ON pi.id=pv.pricing_item_id WHERE pv.id=$1 AND pv.pricing_item_id=$2 AND pi.code <> 'storage.system.gib_days'),EXISTS(SELECT 1 FROM ` + map[string]string{"user": "users", "product": "app_products"}[q.Scope] + ` WHERE id=$3)`
 	var scopeValid bool
 	if err = tx.QueryRow(r.Context(), query, q.PricingVersionID, q.PricingItemID, q.ScopeID).Scan(&valid, &scopeValid); err != nil {
 		s.internalError(w, err)

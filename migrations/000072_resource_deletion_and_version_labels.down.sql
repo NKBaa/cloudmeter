@@ -1,0 +1,13 @@
+BEGIN;
+DROP TABLE IF EXISTS app_deletion_jobs;
+DROP INDEX IF EXISTS user_apps_user_id_service_slug_key;
+DROP INDEX IF EXISTS user_apps_user_id_slug_key;
+DROP INDEX IF EXISTS app_products_slug_key;
+ALTER TABLE user_apps ADD CONSTRAINT user_apps_user_id_slug_key UNIQUE(user_id,slug);
+ALTER TABLE user_apps ADD CONSTRAINT user_apps_user_id_service_slug_key UNIQUE(user_id,service_slug);
+ALTER TABLE app_products ADD CONSTRAINT app_products_slug_key UNIQUE(slug);
+ALTER TABLE app_product_versions DROP CONSTRAINT IF EXISTS app_product_versions_label_check;
+ALTER TABLE app_product_versions DROP COLUMN IF EXISTS version_label;
+ALTER TABLE user_apps DROP COLUMN IF EXISTS deleted_at;
+ALTER TABLE app_products DROP COLUMN IF EXISTS deleted_at;
+COMMIT;

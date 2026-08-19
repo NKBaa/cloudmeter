@@ -1,14 +1,62 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"fmt"
 	"github.com/jackc/pgx/v5"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
 )
+
+type paymentMethod struct {
+	Name           string `json:"name"`
+	Type           string `json:"type"`
+	MinAmountCents int64  `json:"minAmountCents"`
+	Enabled        bool   `json:"enabled"`
+}
+
+var paymentTypePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$`)
+
+func validatedPaymentMethods(methods []paymentMethod) ([]paymentMethod, error) {
+	if len(methods) == 0 || len(methods) > 20 {
+		return nil, fmt.Errorf("configure between 1 and 20 payment methods")
+	}
+	seen := map[string]bool{}
+	for index := range methods {
+		methods[index].Name = strings.TrimSpace(methods[index].Name)
+		methods[index].Type = strings.TrimSpace(methods[index].Type)
+		if methods[index].Name == "" || utf8.RuneCountInString(methods[index].Name) > 40 || !paymentTypePattern.MatchString(methods[index].Type) {
+			return nil, fmt.Errorf("payment method name or type is invalid")
+		}
+		if seen[methods[index].Type] {
+			return nil, fmt.Errorf("payment method type must be unique")
+		}
+		if methods[index].MinAmountCents < 100 || methods[index].MinAmountCents > 100000000 {
+			return nil, fmt.Errorf("payment method minimum amount must be between 1 and 1000000 yuan")
+		}
+		seen[methods[index].Type] = true
+	}
+	return methods, nil
+}
+
+func validatedAmountOptions(values []float64) ([]float64, error) {
+	if len(values) == 0 || len(values) > 20 {
+		return nil, fmt.Errorf("configure between 1 and 20 recharge amounts")
+	}
+	seen := map[int64]bool{}
+	for _, value := range values {
+		cents := int64(value*100 + 0.5)
+		if cents < 100 || cents > 100000000 || seen[cents] {
+			return nil, fmt.Errorf("recharge amounts must be unique values between 1 and 1000000 yuan")
+		}
+		seen[cents] = true
+	}
+	return values, nil
+}
 
 func centsAmountText(amount int64) string {
 	return fmt.Sprintf("%d.%02d", amount/100, amount%100)
@@ -23,7 +71,7 @@ func supportsImmediateRefund(provider string) bool {
 }
 
 func (s *Server) listPaymentProviders(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.db.Query(r.Context(), "SELECT provider,enabled FROM payment_provider_configs ORDER BY provider")
+	rows, err := s.db.Query(r.Context(), "SELECT provider,enabled,payment_methods,amount_options FROM payment_provider_configs ORDER BY provider")
 	if err != nil {
 		s.internalError(w, err)
 		return
@@ -33,17 +81,29 @@ func (s *Server) listPaymentProviders(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var provider string
 		var enabled bool
-		if err := rows.Scan(&provider, &enabled); err != nil {
+		var methods []paymentMethod
+		var amounts []float64
+		if err := rows.Scan(&provider, &enabled, &methods, &amounts); err != nil {
 			s.internalError(w, err)
 			return
 		}
-		items = append(items, map[string]any{"provider": provider, "enabled": enabled})
+		if provider == "epay" {
+			visible := make([]paymentMethod, 0, len(methods))
+			for _, method := range methods {
+				if method.Enabled {
+					visible = append(visible, method)
+				}
+			}
+			items = append(items, map[string]any{"provider": provider, "enabled": enabled, "paymentMethods": visible, "amountOptions": amounts})
+		} else {
+			items = append(items, map[string]any{"provider": provider, "enabled": enabled})
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"providers": items})
 }
 
 func (s *Server) getPaymentSettings(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.db.Query(r.Context(), "SELECT provider,enabled,merchant_id,endpoint,(secret<>'') FROM payment_provider_configs ORDER BY provider")
+	rows, err := s.db.Query(r.Context(), "SELECT provider,enabled,merchant_id,endpoint,(secret<>''),payment_type,payment_methods,amount_options FROM payment_provider_configs ORDER BY provider")
 	if err != nil {
 		s.internalError(w, err)
 		return
@@ -51,13 +111,15 @@ func (s *Server) getPaymentSettings(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 	items := []map[string]any{}
 	for rows.Next() {
-		var provider, merchant, endpoint string
+		var provider, merchant, endpoint, paymentType string
 		var enabled, configured bool
-		if err := rows.Scan(&provider, &enabled, &merchant, &endpoint, &configured); err != nil {
+		var methods []paymentMethod
+		var amounts []float64
+		if err := rows.Scan(&provider, &enabled, &merchant, &endpoint, &configured, &paymentType, &methods, &amounts); err != nil {
 			s.internalError(w, err)
 			return
 		}
-		items = append(items, map[string]any{"provider": provider, "enabled": enabled, "merchantId": merchant, "endpoint": endpoint, "secretConfigured": configured})
+		items = append(items, map[string]any{"provider": provider, "enabled": enabled, "merchantId": merchant, "endpoint": endpoint, "secretConfigured": configured, "paymentType": paymentType, "paymentMethods": methods, "amountOptions": amounts})
 	}
 	writeJSON(w, 200, map[string]any{"providers": items})
 }
@@ -70,16 +132,38 @@ func (s *Server) updatePaymentSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var q struct {
-		Enabled    bool   `json:"enabled"`
-		MerchantID string `json:"merchantId"`
-		Endpoint   string `json:"endpoint"`
-		Secret     string `json:"secret"`
+		Enabled        bool            `json:"enabled"`
+		MerchantID     string          `json:"merchantId"`
+		Endpoint       string          `json:"endpoint"`
+		Secret         string          `json:"secret"`
+		PaymentType    string          `json:"paymentType"`
+		PaymentMethods []paymentMethod `json:"paymentMethods"`
+		AmountOptions  []float64       `json:"amountOptions"`
 	}
 	if err := decodeJSON(r, &q); err != nil {
 		writeError(w, 400, "invalid_request", err.Error())
 		return
 	}
-	enabled, merchant, endpoint, secret := q.Enabled, q.MerchantID, q.Endpoint, q.Secret
+	enabled, merchant, endpoint, secret, paymentType := q.Enabled, q.MerchantID, q.Endpoint, q.Secret, strings.TrimSpace(q.PaymentType)
+	if paymentType == "" {
+		paymentType = "alipay"
+	}
+	if paymentType != "alipay" && paymentType != "wxpay" && paymentType != "qqpay" && paymentType != "bank" {
+		writeError(w, 400, "validation_failed", "unsupported EPay payment type")
+		return
+	}
+	methods, methodsErr := validatedPaymentMethods(q.PaymentMethods)
+	if methodsErr != nil {
+		writeError(w, 400, "validation_failed", methodsErr.Error())
+		return
+	}
+	amounts, amountsErr := validatedAmountOptions(q.AmountOptions)
+	if amountsErr != nil {
+		writeError(w, 400, "validation_failed", amountsErr.Error())
+		return
+	}
+	methodsJSON, _ := json.Marshal(methods)
+	amountsJSON, _ := json.Marshal(amounts)
 	merchant, endpoint = strings.TrimSpace(merchant), strings.TrimSpace(endpoint)
 	if endpoint != "" {
 		parsed, parseErr := url.ParseRequestURI(endpoint)
@@ -111,7 +195,7 @@ func (s *Server) updatePaymentSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if _, err = tx.Exec(r.Context(), "UPDATE payment_provider_configs SET enabled=$1,merchant_id=$2,endpoint=$3,secret=CASE WHEN $4='' THEN secret ELSE $4 END,updated_at=now() WHERE provider=$5", enabled, merchant, endpoint, encryptedSecret, provider); err != nil {
+	if _, err = tx.Exec(r.Context(), "UPDATE payment_provider_configs SET enabled=$1,merchant_id=$2,endpoint=$3,secret=CASE WHEN $4='' THEN secret ELSE $4 END,payment_type=$5,payment_methods=$6,amount_options=$7,updated_at=now() WHERE provider=$8", enabled, merchant, endpoint, encryptedSecret, paymentType, methodsJSON, amountsJSON, provider); err != nil {
 		s.internalError(w, err)
 		return
 	}
@@ -263,6 +347,7 @@ func (s *Server) createPaymentOrder(w http.ResponseWriter, r *http.Request) {
 	var q struct {
 		AmountCents    int64  `json:"amountCents"`
 		Provider       string `json:"provider"`
+		PaymentType    string `json:"paymentType"`
 		IdempotencyKey string `json:"idempotencyKey"`
 	}
 	if err := decodeJSON(r, &q); err != nil {
@@ -293,12 +378,33 @@ func (s *Server) createPaymentOrder(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "validation_failed", "unsupported payment provider")
 		return
 	}
-	var epayEndpoint, epaySecret, epayMerchant string
+	var epayEndpoint, epaySecret, epayMerchant, epayPaymentType string
 	if provider == "epay" {
-		if err := s.db.QueryRow(r.Context(), "SELECT endpoint,secret,merchant_id FROM payment_provider_configs WHERE provider='epay'").Scan(&epayEndpoint, &epaySecret, &epayMerchant); err != nil {
+		var configuredMethods []paymentMethod
+		if err := s.db.QueryRow(r.Context(), "SELECT endpoint,secret,merchant_id,payment_type,payment_methods FROM payment_provider_configs WHERE provider='epay'").Scan(&epayEndpoint, &epaySecret, &epayMerchant, &epayPaymentType, &configuredMethods); err != nil {
 			s.internalError(w, err)
 			return
 		}
+		requestedType := strings.TrimSpace(q.PaymentType)
+		if requestedType == "" && len(configuredMethods) > 0 {
+			requestedType = configuredMethods[0].Type
+		}
+		allowed := false
+		for _, method := range configuredMethods {
+			if method.Enabled && method.Type == requestedType {
+				if amount < method.MinAmountCents {
+					writeError(w, 400, "minimum_topup", fmt.Sprintf("minimum recharge for %s is %s yuan", method.Name, centsAmountText(method.MinAmountCents)))
+					return
+				}
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			writeError(w, 400, "payment_method_unavailable", "payment method is not enabled")
+			return
+		}
+		epayPaymentType = requestedType
 		if epayEndpoint == "" || epaySecret == "" {
 			writeError(w, 503, "payment_provider_pending", "EPay is pending configuration")
 			return
@@ -316,11 +422,11 @@ func (s *Server) createPaymentOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	var existingID, existingProvider, existingStatus string
+	var existingID, existingProvider, existingStatus, existingPaymentType string
 	var existingAmount int64
-	err = tx.QueryRow(r.Context(), "SELECT id,provider,amount_cents,status FROM payment_orders WHERE user_id=$1 AND idempotency_key=$2 FOR UPDATE", p.ID, key).Scan(&existingID, &existingProvider, &existingAmount, &existingStatus)
+	err = tx.QueryRow(r.Context(), "SELECT id,provider,payment_type,amount_cents,status FROM payment_orders WHERE user_id=$1 AND idempotency_key=$2 FOR UPDATE", p.ID, key).Scan(&existingID, &existingProvider, &existingPaymentType, &existingAmount, &existingStatus)
 	if err == nil {
-		if existingProvider != provider || existingAmount != amount {
+		if existingProvider != provider || existingPaymentType != epayPaymentType || existingAmount != amount {
 			writeError(w, 409, "idempotency_conflict", "idempotency key is already used with different order parameters")
 			return
 		}
@@ -330,21 +436,15 @@ func (s *Server) createPaymentOrder(w http.ResponseWriter, r *http.Request) {
 		}
 		response := map[string]any{"orderId": existingID, "provider": existingProvider, "status": existingStatus, "amountCents": existingAmount, "idempotent": true}
 		if existingProvider == "epay" && epayEndpoint != "" && epaySecret != "" {
-			if decrypted, decryptErr := s.secrets.Decrypt("payment.secret.epay", epaySecret); decryptErr == nil {
-				epaySecret = decrypted
-			} else {
-				epaySecret = ""
-			}
-		}
-		if existingProvider == "epay" && epayEndpoint != "" && epaySecret != "" {
 			values := map[string]string{
 				"pid":          epayMerchant,
-				"type":         "alipay",
+				"type":         existingPaymentType,
 				"out_trade_no": existingID,
 				"notify_url":   s.requestOrigin(r) + "/api/payments/epay/callback",
-				"return_url":   s.requestOrigin(r) + "/console",
+				"return_url":   s.requestOrigin(r) + "/console/recharge",
 				"name":         "CloudMeter 账户充值",
 				"money":        centsAmountText(existingAmount),
+				"device":       "pc",
 			}
 			if checkout, buildErr := buildEPayCheckoutURL(epayEndpoint, values, epaySecret); buildErr == nil {
 				response["checkoutUrl"] = checkout
@@ -358,7 +458,7 @@ func (s *Server) createPaymentOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var id string
-	if err = tx.QueryRow(r.Context(), "INSERT INTO payment_orders(user_id,provider,amount_cents,idempotency_key) VALUES($1,$2,$3,$4) RETURNING id", p.ID, provider, amount, key).Scan(&id); err != nil {
+	if err = tx.QueryRow(r.Context(), "INSERT INTO payment_orders(user_id,provider,payment_type,amount_cents,idempotency_key) VALUES($1,$2,$3,$4,$5) RETURNING id", p.ID, provider, epayPaymentType, amount, key).Scan(&id); err != nil {
 		s.internalError(w, err)
 		return
 	}
@@ -369,12 +469,13 @@ func (s *Server) createPaymentOrder(w http.ResponseWriter, r *http.Request) {
 	if provider == "epay" {
 		values := map[string]string{
 			"pid":          epayMerchant,
-			"type":         "alipay",
+			"type":         epayPaymentType,
 			"out_trade_no": id,
 			"notify_url":   s.requestOrigin(r) + "/api/payments/epay/callback",
-			"return_url":   s.requestOrigin(r) + "/console",
+			"return_url":   s.requestOrigin(r) + "/console/recharge",
 			"name":         "CloudMeter 账户充值",
 			"money":        centsAmountText(amount),
+			"device":       "pc",
 		}
 		var parseErr error
 		checkoutURL, parseErr = buildEPayCheckoutURL(epayEndpoint, values, epaySecret)

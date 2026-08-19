@@ -150,7 +150,6 @@ func (s *Server) createPlanVersion(w http.ResponseWriter, r *http.Request) {
 		Apps                     int       `json:"apps"`
 		CPUCores                 float64   `json:"cpuCores"`
 		MemoryGiB                int       `json:"memoryGiB"`
-		SystemDiskGiB            float64   `json:"systemDiskGiB"`
 		DataDiskGiB              float64   `json:"dataDiskGiB"`
 		BackupStorageGiB         float64   `json:"backupStorageGiB"`
 		BackupOperationsPerMonth int       `json:"backupOperationsPerMonth"`
@@ -167,7 +166,7 @@ func (s *Server) createPlanVersion(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "invalid_request", err.Error())
 		return
 	}
-	if q.CyclePriceCents < 0 || q.CyclePriceCents > 1000000000000 || q.CreditGrantCents < 0 || q.CreditGrantCents > 1000000000000 || q.Apps < 1 || q.Apps > 1000 || q.CPUCores <= 0 || q.MemoryGiB < 1 || q.SystemDiskGiB <= 0 || q.DataDiskGiB < 0 || q.BackupStorageGiB < 0 || q.BackupOperationsPerMonth < 0 || q.ConcurrentDeployments < 1 || q.ConcurrentDeployments > 1000 || q.PublicIngresses < 0 || q.PublicIngresses > 1000 || q.EgressGiB < 0 {
+	if q.CyclePriceCents < 0 || q.CyclePriceCents > 1000000000000 || q.CreditGrantCents < 0 || q.CreditGrantCents > 1000000000000 || q.Apps < 1 || q.Apps > 1000 || q.CPUCores <= 0 || q.MemoryGiB < 1 || q.DataDiskGiB < 0 || q.BackupStorageGiB < 0 || q.BackupOperationsPerMonth < 0 || q.ConcurrentDeployments < 1 || q.ConcurrentDeployments > 1000 || q.PublicIngresses < 0 || q.PublicIngresses > 1000 || q.EgressGiB < 0 {
 		writeError(w, 400, "validation_failed", "valid price and positive entitlements are required")
 		return
 	}
@@ -203,7 +202,7 @@ func (s *Server) createPlanVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var id string
-	if err = tx.QueryRow(r.Context(), `INSERT INTO plan_versions(plan_id,version,cycle_price_cents,entitlements,effective_at) SELECT $1,$2,$3,jsonb_build_object('apps',$4::int,'cpuCores',$5::numeric,'memoryGiB',$6::int,'systemDiskGiB',$7::numeric,'dataDiskGiB',$8::numeric,'backupStorageGiB',$9::numeric,'backupOperationsPerMonth',$10::int,'concurrentDeployments',$11::int,'publicIngresses',$12::int,'ingressOverageEnabled',$13::boolean,'egressGiB',$14::numeric,'egressOverageEnabled',$15::boolean,'creditGrantCents',$16::bigint,'allowedProductIds',$17::text[]),$18 WHERE EXISTS(SELECT 1 FROM plans WHERE id=$1) RETURNING id`, planID, number, q.CyclePriceCents, q.Apps, q.CPUCores, q.MemoryGiB, q.SystemDiskGiB, q.DataDiskGiB, q.BackupStorageGiB, q.BackupOperationsPerMonth, q.ConcurrentDeployments, q.PublicIngresses, q.IngressOverageEnabled, q.EgressGiB, q.EgressOverageEnabled, q.CreditGrantCents, q.AllowedProductIDs, q.EffectiveAt).Scan(&id); err == pgx.ErrNoRows {
+	if err = tx.QueryRow(r.Context(), `INSERT INTO plan_versions(plan_id,version,cycle_price_cents,entitlements,effective_at) SELECT $1,$2,$3,jsonb_build_object('apps',$4::int,'cpuCores',$5::numeric,'memoryGiB',$6::int,'systemDiskGiB',5,'dataDiskGiB',$7::numeric,'backupStorageGiB',$8::numeric,'backupOperationsPerMonth',$9::int,'concurrentDeployments',$10::int,'publicIngresses',$11::int,'ingressOverageEnabled',$12::boolean,'egressGiB',$13::numeric,'egressOverageEnabled',$14::boolean,'creditGrantCents',$15::bigint,'allowedProductIds',$16::text[]),$17 WHERE EXISTS(SELECT 1 FROM plans WHERE id=$1) RETURNING id`, planID, number, q.CyclePriceCents, q.Apps, q.CPUCores, q.MemoryGiB, q.DataDiskGiB, q.BackupStorageGiB, q.BackupOperationsPerMonth, q.ConcurrentDeployments, q.PublicIngresses, q.IngressOverageEnabled, q.EgressGiB, q.EgressOverageEnabled, q.CreditGrantCents, q.AllowedProductIDs, q.EffectiveAt).Scan(&id); err == pgx.ErrNoRows {
 		writeError(w, 404, "plan_not_found", "plan not found")
 		return
 	} else if err != nil {

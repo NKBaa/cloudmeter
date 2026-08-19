@@ -3,6 +3,7 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -30,7 +31,7 @@ func NewDockerExecutor(socket, owner string) *DockerExecutor {
 	dialer := &net.Dialer{Timeout: 5 * time.Second}
 	return &DockerExecutor{socket: socket, owner: owner, client: &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		return dialer.DialContext(ctx, "unix", socket)
-	}}, Timeout: 5 * time.Minute}}
+	}}, Timeout: 30 * time.Minute}}
 }
 
 func (e *DockerExecutor) Ping(ctx context.Context) error {
@@ -277,11 +278,91 @@ func (e *DockerExecutor) RemoveNetwork(ctx context.Context, network string) erro
 }
 
 func (e *DockerExecutor) Pull(ctx context.Context, image string) error {
+	return e.PullWithRegistry(ctx, image, "", "", "")
+}
+
+func (e *DockerExecutor) PullWithRegistry(ctx context.Context, image, username, password, serverAddress string) error {
 	var metadata map[string]any
 	if err := e.request(ctx, http.MethodGet, "/images/"+urlEscape(image)+"/json", nil, &metadata); err == nil {
 		return nil
 	}
-	return e.request(ctx, http.MethodPost, "/images/create?fromImage="+url.QueryEscape(image), nil, nil)
+	path := "/images/create?fromImage=" + url.QueryEscape(image)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://docker"+path, nil)
+	if err != nil {
+		return err
+	}
+	if username != "" || password != "" {
+		auth, marshalErr := json.Marshal(map[string]string{
+			"username": username, "password": password, "serveraddress": serverAddress,
+		})
+		if marshalErr != nil {
+			return marshalErr
+		}
+		// Docker's X-Registry-Auth header is ordinary RFC 4648 Base64.
+		// RawURLEncoding is subtly different (it replaces '+'/'/' and removes
+		// padding), which makes private-registry pulls fail even when the
+		// configured credentials are correct.
+		req.Header.Set("X-Registry-Auth", base64.StdEncoding.EncodeToString(auth))
+	}
+	resp, err := e.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("docker image pull %s: %w", image, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return fmt.Errorf("docker engine POST %s: %s", path, strings.TrimSpace(string(data)))
+	}
+	decoder := json.NewDecoder(resp.Body)
+	for {
+		var event struct {
+			Error       string `json:"error"`
+			ErrorDetail struct {
+				Message string `json:"message"`
+			} `json:"errorDetail"`
+		}
+		if err = decoder.Decode(&event); err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("docker image pull %s response: %w", image, err)
+		}
+		if event.Error != "" {
+			return fmt.Errorf("docker image pull %s: %s", image, event.Error)
+		}
+		if event.ErrorDetail.Message != "" {
+			return fmt.Errorf("docker image pull %s: %s", image, event.ErrorDetail.Message)
+		}
+	}
+	metadata = nil
+	if err = e.request(ctx, http.MethodGet, "/images/"+urlEscape(image)+"/json", nil, &metadata); err != nil {
+		return fmt.Errorf("docker image pull completed but image %s is unavailable: %w", image, err)
+	}
+	return nil
+}
+
+type DockerDaemonSettings struct {
+	RegistryMirrors []string
+	HTTPProxy       string
+	HTTPSProxy      string
+	NoProxy         string
+}
+
+func (e *DockerExecutor) DaemonSettings(ctx context.Context) (DockerDaemonSettings, error) {
+	var out struct {
+		RegistryConfig struct {
+			Mirrors []string `json:"Mirrors"`
+		} `json:"RegistryConfig"`
+		HTTPProxy  string `json:"HttpProxy"`
+		HTTPSProxy string `json:"HttpsProxy"`
+		NoProxy    string `json:"NoProxy"`
+	}
+	if err := e.request(ctx, http.MethodGet, "/info", nil, &out); err != nil {
+		return DockerDaemonSettings{}, err
+	}
+	return DockerDaemonSettings{
+		RegistryMirrors: out.RegistryConfig.Mirrors, HTTPProxy: out.HTTPProxy, HTTPSProxy: out.HTTPSProxy, NoProxy: out.NoProxy,
+	}, nil
 }
 
 func (e *DockerExecutor) Create(ctx context.Context, name, image, network string, aliases []string, spec map[string]any) error {
@@ -442,6 +523,19 @@ func (e *DockerExecutor) EnsureVolume(ctx context.Context, name string) error {
 	}
 	return e.request(ctx, http.MethodPost, "/volumes/create", map[string]any{"Name": name, "Labels": e.managedLabels(nil)}, &out)
 }
+func (e *DockerExecutor) RemoveVolumeIfExists(ctx context.Context, name string) error {
+	if err := e.assertVolumeOwner(ctx, name); err != nil {
+		if isDockerNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	err := e.request(ctx, http.MethodDelete, "/volumes/"+urlEscape(name)+"?force=true", nil, nil)
+	if err != nil && !isDockerNotFound(err) {
+		return err
+	}
+	return nil
+}
 
 // VolumeSize returns the Engine-reported byte usage for a managed volume.
 func (e *DockerExecutor) VolumeSize(ctx context.Context, name string) (int64, error) {
@@ -548,7 +642,7 @@ func (e *DockerExecutor) ProbeHTTP(ctx context.Context, name, image, network, ta
 	if err := e.RemoveIfExists(ctx, name); err != nil {
 		return err
 	}
-	cmd := []string{"wget", "-q", "-T", strconv.Itoa(timeoutSeconds), "-O", "/dev/null", "--", target}
+	cmd := []string{"wget", "-S", "-T", strconv.Itoa(timeoutSeconds), "-O", "/dev/null", "--", target}
 	body := containerCreate{
 		Image:  image,
 		Cmd:    cmd,
@@ -576,9 +670,55 @@ func (e *DockerExecutor) ProbeHTTP(ctx context.Context, name, image, network, ta
 		return err
 	}
 	if waited.StatusCode != 0 {
+		data, logErr := e.rawRequest(ctx, http.MethodGet, "/containers/"+urlEscape(name)+"/logs?stdout=true&stderr=true&tail=40", nil)
+		detail := ""
+		if logErr == nil {
+			detail = strings.TrimSpace(decodeDockerLogs(data))
+		}
+		if len(detail) > 1200 {
+			detail = detail[len(detail)-1200:]
+		}
+		if detail != "" {
+			return fmt.Errorf("HTTP health probe failed with exit code %d: %s", waited.StatusCode, detail)
+		}
 		return fmt.Errorf("HTTP health probe failed with exit code %d", waited.StatusCode)
 	}
 	return nil
+}
+
+func (e *DockerExecutor) ContainerDiagnostics(ctx context.Context, name string, tail int) (string, error) {
+	if err := e.assertContainerOwner(ctx, name); err != nil {
+		return "", err
+	}
+	if tail < 1 || tail > 500 {
+		tail = 80
+	}
+	var inspected struct {
+		State struct {
+			Status     string `json:"Status"`
+			Running    bool   `json:"Running"`
+			Restarting bool   `json:"Restarting"`
+			OOMKilled  bool   `json:"OOMKilled"`
+			ExitCode   int    `json:"ExitCode"`
+			Error      string `json:"Error"`
+		} `json:"State"`
+	}
+	if err := e.request(ctx, http.MethodGet, "/containers/"+urlEscape(name)+"/json", nil, &inspected); err != nil {
+		return "", err
+	}
+	data, err := e.rawRequest(ctx, http.MethodGet, "/containers/"+urlEscape(name)+"/logs?stdout=true&stderr=true&tail="+strconv.Itoa(tail), nil)
+	if err != nil {
+		return "", err
+	}
+	state := fmt.Sprintf("状态=%s running=%t restarting=%t oomKilled=%t exitCode=%d", inspected.State.Status, inspected.State.Running, inspected.State.Restarting, inspected.State.OOMKilled, inspected.State.ExitCode)
+	if inspected.State.Error != "" {
+		state += " error=" + inspected.State.Error
+	}
+	logs := strings.TrimSpace(decodeDockerLogs(data))
+	if len(logs) > 6000 {
+		logs = logs[len(logs)-6000:]
+	}
+	return state + "\n" + logs, nil
 }
 
 func (e *DockerExecutor) rawRequest(ctx context.Context, method, path string, body any) ([]byte, error) {

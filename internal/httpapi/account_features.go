@@ -430,6 +430,74 @@ func (s *Server) updateUserStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, map[string]any{"updated": true, "status": q.Status})
 }
+
+func (s *Server) updateUserRole(w http.ResponseWriter, r *http.Request) {
+	p, _ := r.Context().Value(principalKey).(principal)
+	userID := r.PathValue("userID")
+	if !validUUID(userID) {
+		writeError(w, http.StatusBadRequest, "validation_failed", "userID must be a UUID")
+		return
+	}
+	var q struct {
+		Role string `json:"role"`
+	}
+	if err := decodeJSON(r, &q); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	if q.Role != "user" && q.Role != "admin" {
+		writeError(w, http.StatusBadRequest, "validation_failed", "role must be user or admin")
+		return
+	}
+	tx, err := s.db.BeginTx(r.Context(), pgx.TxOptions{IsoLevel: pgx.Serializable})
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	defer tx.Rollback(r.Context())
+	var lockedUserID string
+	err = tx.QueryRow(r.Context(), `SELECT id::text FROM users WHERE id=$1 FOR UPDATE`, userID).Scan(&lockedUserID)
+	if err == pgx.ErrNoRows {
+		writeError(w, http.StatusNotFound, "user_not_found", "user not found")
+		return
+	}
+	var currentRoles []string
+	if err = tx.QueryRow(r.Context(), `SELECT coalesce(array_agg(role.code ORDER BY role.code),'{}')
+		FROM user_roles ur JOIN roles role ON role.id=ur.role_id WHERE ur.user_id=$1`, userID).Scan(&currentRoles); err != nil {
+		s.internalError(w, err)
+		return
+	}
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	for _, role := range currentRoles {
+		if role == "super_admin" {
+			writeError(w, http.StatusConflict, "super_admin_role_immutable", "super administrator role cannot be changed here")
+			return
+		}
+	}
+	if _, err = tx.Exec(r.Context(), `DELETE FROM user_roles ur USING roles role
+		WHERE ur.role_id=role.id AND ur.user_id=$1 AND role.code IN ('user','admin')`, userID); err != nil {
+		s.internalError(w, err)
+		return
+	}
+	if _, err = tx.Exec(r.Context(), `INSERT INTO user_roles(user_id,role_id) SELECT $1,id FROM roles WHERE code=$2`, userID, q.Role); err != nil {
+		s.internalError(w, err)
+		return
+	}
+	if _, err = tx.Exec(r.Context(), `INSERT INTO audit_logs(actor_user_id,subject_user_id,action,resource_type,resource_id,request_id,metadata)
+		VALUES($1::uuid,$2::uuid,'user.role.update','user',($2::uuid)::text,$3,jsonb_build_object('from',$4::text[],'to',$5::text))`,
+		p.ID, userID, requestID(r.Context()), currentRoles, q.Role); err != nil {
+		s.internalError(w, err)
+		return
+	}
+	if err = tx.Commit(r.Context()); err != nil {
+		s.internalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"updated": true, "role": q.Role, "roles": []string{q.Role}})
+}
 func (s *Server) getMailSettings(w http.ResponseWriter, r *http.Request) {
 	var e, passwordConfigured bool
 	var h, u, f, n, m string

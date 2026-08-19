@@ -72,9 +72,9 @@ echo '[4/7] checking migrations and API contracts'
 MIGRATION_STATE="$("${COMPOSE[@]}" exec -T postgres psql -U cloudmeter -d cloudmeter -Atc "SELECT version::text || '|' || CASE WHEN dirty THEN 'dirty' ELSE 'clean' END FROM schema_migrations")"
 [[ "$MIGRATION_STATE" == "${LATEST_MIGRATION}|clean" ]] || { echo "migration state is $MIGRATION_STATE, expected ${LATEST_MIGRATION}|clean" >&2; exit 1; }
 "${COMPOSE[@]}" exec -T gateway caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null
-"$DOCKER_BIN" run --rm -v "$DOCKER_MOUNT_ROOT:/src" -w /src golang:1.23-alpine sh -c '/usr/local/go/bin/go test ./internal/httpapi -run TestOpenAPICoversRegisteredRoutes -count=1' >/dev/null
+"$DOCKER_BIN" run --rm -e GOPROXY="${GOPROXY:-https://goproxy.cn,direct}" -v "$DOCKER_MOUNT_ROOT:/src" -w /src golang:1.23-alpine sh -c '/usr/local/go/bin/go test ./internal/httpapi -run TestOpenAPICoversRegisteredRoutes -count=1' >/dev/null
 echo '[5/7] validating OpenAPI schema'
-"$DOCKER_BIN" run --rm -v "$DOCKER_MOUNT_ROOT:/work" -w /work node:24-alpine npx --yes '@redocly/cli@2.46.1' lint docs/openapi.yaml --config docs/redocly.yaml >/dev/null
+"$DOCKER_BIN" run --rm -e npm_config_registry="${NPM_REGISTRY:-https://registry.npmmirror.com}" -v "$DOCKER_MOUNT_ROOT:/work" -w /work node:24-alpine npx --yes '@redocly/cli@2.46.1' lint docs/openapi.yaml --config docs/redocly.yaml >/dev/null
 echo '[6/7] restarting services without deleting volumes'
 "${COMPOSE[@]}" restart api worker egress-proxy app-router web gateway >/dev/null
 if ! wait_for_healthy; then

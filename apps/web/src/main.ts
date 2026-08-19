@@ -18,6 +18,8 @@ import AuditAdminView from './views/AuditAdminView.vue'
 import CheckinSettingsView from './views/CheckinSettingsView.vue'
 import HomeView from './views/HomeView.vue'
 import HomeSettingsView from './views/HomeSettingsView.vue'
+import DockerSettingsView from './views/DockerSettingsView.vue'
+import TicketsView from './views/TicketsView.vue'
 import './styles.css'
 
 const router = createRouter({
@@ -52,6 +54,7 @@ const router = createRouter({
         { path: 'console/usage', component: ConsoleView, props: { page: 'usage' } },
         { path: 'console/releases', component: ReleasesView },
         { path: 'console/backups', component: BackupsView },
+        { path: 'console/tickets', component: TicketsView, props: { admin: false } },
         { path: 'admin', component: AdminView, props: { page: 'overview' }, meta: { admin: true } },
         { path: 'admin/users', component: AdminView, props: { page: 'users' }, meta: { admin: true } },
         { path: 'admin/announcements', component: AdminView, props: { page: 'announcements' }, meta: { admin: true } },
@@ -65,6 +68,8 @@ const router = createRouter({
         { path: 'admin/checkin-settings', component: CheckinSettingsView, meta: { superAdmin: true } },
         { path: 'admin/audit', component: AuditAdminView, meta: { superAdmin: true } },
         { path: 'admin/homepage', component: HomeSettingsView, meta: { superAdmin: true } },
+        { path: 'admin/tickets', component: TicketsView, props: { admin: true }, meta: { admin: true } },
+        { path: 'admin/docker', component: DockerSettingsView, meta: { admin: true } },
       ],
     },
   ],

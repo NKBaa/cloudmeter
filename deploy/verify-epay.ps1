@@ -22,8 +22,8 @@ function New-Session([string]$userID) {
 }
 function EPay-Sign([hashtable]$values, [string]$secret) {
     $parts = $values.Keys | Where-Object { $_ -notin @("sign", "sign_type") -and [string]$values[$_] -ne "" } | Sort-Object | ForEach-Object { "$_=$($values[$_])" }
-    $hmac = [Security.Cryptography.HMACSHA256]::new([Text.Encoding]::UTF8.GetBytes($secret))
-    try { return (($hmac.ComputeHash([Text.Encoding]::UTF8.GetBytes(($parts -join "&"))) | ForEach-Object { $_.ToString('x2') }) -join '') } finally { $hmac.Dispose() }
+    $md5 = [Security.Cryptography.MD5]::Create()
+    try { return (($md5.ComputeHash([Text.Encoding]::UTF8.GetBytes(($parts -join "&") + $secret)) | ForEach-Object { $_.ToString('x2') }) -join '') } finally { $md5.Dispose() }
 }
 function Post-FormStatus([hashtable]$body) {
     try {
@@ -56,15 +56,15 @@ try {
     if ($checkout.Host -ne "pay.example.test" -or -not $checkout.Query.Contains("sign=")) { throw "EPay checkout URL is invalid" }
     $notify = "http://127.0.0.1:$port/api/payments/epay/callback"
     $values = @{ pid = $merchant; type = "alipay"; out_trade_no = $created.orderId; notify_url = $notify; return_url = "http://127.0.0.1:$port/console"; name = "CloudMeter verification"; money = "0.01"; trade_no = "verify-trade-$([guid]::NewGuid().ToString('N'))"; trade_status = "TRADE_SUCCESS" }
-    $invalid = $values.Clone(); $invalid.sign_type = "HMAC-SHA256"; $invalid.sign = "invalid"
+    $invalid = $values.Clone(); $invalid.sign_type = "MD5"; $invalid.sign = "invalid"
     if ((Post-FormStatus $invalid) -ne 403) { throw "invalid EPay signature was accepted" }
-    $mismatch = $values.Clone(); $mismatch.money = "0.02"; $mismatch.sign_type = "HMAC-SHA256"; $mismatch.sign = EPay-Sign $mismatch $secret
+    $mismatch = $values.Clone(); $mismatch.money = "0.02"; $mismatch.sign_type = "MD5"; $mismatch.sign = EPay-Sign $mismatch $secret
     if ((Post-FormStatus $mismatch) -ne 400) { throw "EPay amount mismatch was not rejected" }
-    $valid = $values.Clone(); $valid.sign_type = "HMAC-SHA256"; $valid.sign = EPay-Sign $valid $secret
-    $accepted = Invoke-RestMethod -Method Post -Uri "$baseURL/payments/epay/callback" -Body $valid -ContentType "application/x-www-form-urlencoded"
-    if (-not $accepted.success) { throw "valid EPay callback was not accepted" }
-    $replay = Invoke-RestMethod -Method Post -Uri "$baseURL/payments/epay/callback" -Body $valid -ContentType "application/x-www-form-urlencoded"
-    if (-not $replay.idempotent) { throw "EPay callback replay was not idempotent" }
+    $valid = $values.Clone(); $valid.sign_type = "MD5"; $valid.sign = EPay-Sign $valid $secret
+    $accepted = Invoke-WebRequest -UseBasicParsing -Method Post -Uri "$baseURL/payments/epay/callback" -Body $valid -ContentType "application/x-www-form-urlencoded"
+    if ($accepted.Content.Trim() -ne 'success') { throw "valid EPay callback was not accepted" }
+    $replay = Invoke-WebRequest -UseBasicParsing -Method Post -Uri "$baseURL/payments/epay/callback" -Body $valid -ContentType "application/x-www-form-urlencoded"
+    if ($replay.Content.Trim() -ne 'success') { throw "EPay callback replay was not idempotent" }
     try {
         Invoke-RestMethod -Method Post -Uri "$baseURL/admin/payments/orders/$($created.orderId)/refund" -Headers $adminHeaders -ContentType "application/json" -Body "{`"reason`":`"EPay provider refund guard verification`"}" | Out-Null
         throw "EPay refund unexpectedly succeeded without a provider operation"

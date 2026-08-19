@@ -301,11 +301,32 @@ paths:
                   type: object
                   additionalProperties: {type: string, minLength: 1, maxLength: 65536}
                   description: Values for every Secret key declared by the selected product version. Values are encrypted and never returned.
+                resources:
+                  type: object
+                  description: User-selected overrides. The API accepts only fields explicitly enabled by the immutable product version.
+                  properties:
+                    cpuCores: {type: number, minimum: 0.1, maximum: 64}
+                    memoryMiB: {type: number, minimum: 64, maximum: 262144}
+                    dataVolumeGiB: {type: number, minimum: 1, maximum: 16384, description: One capacity shared by every persistent mount in this application and billed once.}
+                    command: {type: array, items: {type: string}}
+                    environment: {type: object, additionalProperties: {type: string}}
+                    dependencies: {type: array, items: {$ref: '#/components/schemas/ProductDependency'}}
       responses:
         '201': {description: "Application, encrypted initial Secrets, immutable release, and deployment job created atomically"}
         '400': {description: "Invalid resources, slug, or missing or undeclared initial Secrets"}
         '403': {description: Product is not included in the current plan}
         '409': {description: "Subscription, application, deployment concurrency, CPU, memory, system disk, or data disk quota exceeded; or a required product dependency is unavailable"}
+  /apps/{appID}:
+    delete:
+      operationId: deleteApp
+      description: Soft-deletes an owned application, removes its route, stops billing, and queues container and persistent-volume cleanup while retaining financial and release history.
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: appID, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '202': {description: Application hidden and resource cleanup queued}
+        '404': {description: Application not found}
+        '409': {description: An operation is active or another application depends on this service}
   /apps/{appID}/route:
     get:
       operationId: appRoute
@@ -429,13 +450,12 @@ paths:
           application/json:
             schema:
               type: object
-              required: [cyclePriceCents, apps, cpuCores, memoryGiB, systemDiskGiB, dataDiskGiB, backupStorageGiB, backupOperationsPerMonth, concurrentDeployments, publicIngresses, ingressOverageEnabled, egressGiB, egressOverageEnabled, creditGrantCents, effectiveAt]
+              required: [cyclePriceCents, apps, cpuCores, memoryGiB, dataDiskGiB, backupStorageGiB, backupOperationsPerMonth, concurrentDeployments, publicIngresses, ingressOverageEnabled, egressGiB, egressOverageEnabled, creditGrantCents, effectiveAt]
               properties:
                 cyclePriceCents: {type: integer, minimum: 0, maximum: 1000000000000}
                 apps: {type: integer, minimum: 1}
                 cpuCores: {type: number, exclusiveMinimum: 0}
                 memoryGiB: {type: integer, minimum: 1}
-                systemDiskGiB: {type: number, exclusiveMinimum: 0}
                 dataDiskGiB: {type: number, minimum: 0}
                 backupStorageGiB: {type: number, minimum: 0}
                 backupOperationsPerMonth: {type: integer, minimum: 0}
@@ -575,7 +595,13 @@ paths:
   /payments/epay/callback:
     post:
       operationId: epayCallback
-      description: Provider callback verified by merchant configuration and HMAC signature.
+      description: Provider form callback verified with the configured merchant and New API compatible MD5 signature; returns plain text success when accepted.
+      responses:
+        '200': {description: Callback accepted or already processed}
+        '403': {description: Signature or merchant rejected}
+    get:
+      operationId: epayCallbackGet
+      description: GET-query variant for EPay providers that do not post form data; verification and idempotency are identical to POST.
       responses:
         '200': {description: Callback accepted or already processed}
         '403': {description: Signature or merchant rejected}
@@ -817,6 +843,16 @@ paths:
         '201': {description: Product created with an immutable slug and audit record}
         '409': {description: Product slug already exists}
   /admin/products/{productID}:
+    delete:
+      operationId: deleteProduct
+      description: Removes a product from active management while preserving immutable version and audit history. Products with user application history must be retired instead.
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: productID, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200': {description: Product removed from the active catalog}
+        '404': {description: Product not found}
+        '409': {description: Product has application history or an active version test}
     patch:
       operationId: updateProduct
       description: Updates the display name while preserving the product slug and all immutable versions.
@@ -900,6 +936,93 @@ paths:
         '202': {description: Isolated product-version test deployment queued}
         '400': {description: Required test secrets are missing or invalid}
         '409': {description: A test is already running or the version is already published}
+  /tickets:
+    get:
+      operationId: listTickets
+      description: Lists support tickets owned by the current user, ordered by status, priority, and recent activity.
+      security: [{bearerAuth: []}]
+      responses:
+        '200':
+          description: Current user's support tickets
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TicketList'}
+    post:
+      operationId: createTicket
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateTicketRequest'}
+      responses:
+        '201':
+          description: Support ticket and its first message created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TicketCreated'}
+        '400': {description: Ticket fields are incomplete or invalid}
+  /tickets/{ticketID}:
+    get:
+      operationId: getTicket
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: ticketID, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: Ticket metadata and complete conversation owned by the current user
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TicketDetail'}
+        '404': {description: Ticket not found or not owned by the current user}
+  /tickets/{ticketID}/messages:
+    post:
+      operationId: replyTicket
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: ticketID, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/TicketReplyRequest'}
+      responses:
+        '201': {description: User reply appended and ticket reopened when appropriate}
+        '404': {description: Ticket not found or not owned by the current user}
+        '409': {description: Closed ticket cannot receive replies}
+  /tickets/{ticketID}/close:
+    post:
+      operationId: closeTicket
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: ticketID, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200': {description: Ticket closed by its owner}
+        '404': {description: "Ticket not found, not owned, or already closed"}
+  /admin/settings/docker:
+    get:
+      operationId: getDockerSettings
+      description: Returns desired Docker image, Registry, proxy, and pull settings together with the latest Worker-observed daemon state. Registry passwords never leave the API.
+      security: [{bearerAuth: []}]
+      responses:
+        '200':
+          description: Docker settings and sanitized daemon probe
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DockerSettings'}
+        '403': {description: Super administrator required}
+    put:
+      operationId: updateDockerSettings
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/UpdateDockerSettingsRequest'}
+      responses:
+        '200': {description: "Docker settings encrypted, saved, and audited"}
+        '400': {description: "Mirror, Registry, proxy, or timeout validation failed"}
+        '403': {description: Super administrator required}
   /admin/users:
     get:
       operationId: listUsers
@@ -916,6 +1039,27 @@ paths:
       parameters:
         - {name: userID, in: path, required: true, schema: {type: string, format: uuid}}
       responses: {'200': {description: User status updated}}
+  /admin/users/{userID}/role:
+    patch:
+      operationId: updateUserRole
+      description: Switches a non-super-administrator account between ordinary user and administrator while retaining the shared user console.
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: userID, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [role]
+              properties:
+                role: {type: string, enum: [user, admin]}
+      responses:
+        '200': {description: Account role switched and existing sessions observe the change}
+        '404': {description: User not found}
+        '409': {description: Super administrator role is protected}
   /admin/users/{userID}/wallet/adjust:
     post:
       operationId: adjustWallet
@@ -953,6 +1097,67 @@ paths:
       responses:
         '200': {description: Encrypted OAuth settings and LinuxDo trust policy updated}
         '409': {description: PUBLIC_BASE_URL is required before enabling OAuth}
+  /admin/tickets:
+    get:
+      operationId: adminListTickets
+      description: Lists all support tickets; an optional status filter narrows the queue.
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: status, in: query, schema: {$ref: '#/components/schemas/TicketStatus'}}
+      responses:
+        '200':
+          description: Administrator support queue
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TicketList'}
+        '403': {description: Administrator role required}
+  /admin/tickets/{ticketID}:
+    get:
+      operationId: adminGetTicket
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: ticketID, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: Ticket metadata, requester identity, and complete conversation
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TicketDetail'}
+        '404': {description: Ticket not found}
+  /admin/tickets/{ticketID}/messages:
+    post:
+      operationId: adminReplyTicket
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: ticketID, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/TicketReplyRequest'}
+      responses:
+        '201': {description: Staff reply appended and ticket moved to waiting for user}
+        '404': {description: Ticket not found}
+        '409': {description: Closed ticket cannot receive replies}
+  /admin/tickets/{ticketID}/status:
+    patch:
+      operationId: adminUpdateTicketStatus
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: ticketID, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [status]
+              properties:
+                status: {$ref: '#/components/schemas/TicketStatus'}
+      responses:
+        '200': {description: Ticket status updated and audited}
+        '404': {description: Ticket not found}
   /admin/announcements/{announcementID}:
     patch:
       operationId: updateAnnouncement
@@ -975,6 +1180,116 @@ components:
   securitySchemes:
     bearerAuth: {type: http, scheme: bearer}
   schemas:
+    TicketStatus:
+      type: string
+      enum: [open, in_progress, waiting_user, resolved, closed]
+    TicketSummary:
+      type: object
+      additionalProperties: false
+      required: [id, number, userId, requesterName, requesterEmail, subject, category, priority, status, messageCount, lastMessageAt, createdAt, updatedAt]
+      properties:
+        id: {type: string, format: uuid}
+        number: {type: integer, format: int64, minimum: 1}
+        userId: {type: string, format: uuid}
+        requesterName: {type: string}
+        requesterEmail: {type: string, format: email}
+        subject: {type: string, minLength: 2, maxLength: 160}
+        category: {type: string, enum: [deployment, billing, account, product, other]}
+        priority: {type: string, enum: [low, normal, high, urgent]}
+        status: {$ref: '#/components/schemas/TicketStatus'}
+        messageCount: {type: integer, minimum: 1}
+        lastMessageAt: {type: string, format: date-time}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+    TicketMessage:
+      type: object
+      additionalProperties: false
+      required: [id, authorId, authorName, staffReply, body, createdAt]
+      properties:
+        id: {type: string, format: uuid}
+        authorId: {type: string, format: uuid}
+        authorName: {type: string}
+        staffReply: {type: boolean}
+        body: {type: string, minLength: 1, maxLength: 10000}
+        createdAt: {type: string, format: date-time}
+    TicketList:
+      type: object
+      additionalProperties: false
+      required: [tickets]
+      properties:
+        tickets:
+          type: array
+          items: {$ref: '#/components/schemas/TicketSummary'}
+    TicketDetail:
+      type: object
+      additionalProperties: false
+      required: [ticket, messages]
+      properties:
+        ticket: {$ref: '#/components/schemas/TicketSummary'}
+        messages:
+          type: array
+          items: {$ref: '#/components/schemas/TicketMessage'}
+    CreateTicketRequest:
+      type: object
+      additionalProperties: false
+      required: [subject, category, priority, body]
+      properties:
+        subject: {type: string, minLength: 2, maxLength: 160}
+        category: {type: string, enum: [deployment, billing, account, product, other]}
+        priority: {type: string, enum: [low, normal, high, urgent]}
+        body: {type: string, minLength: 1, maxLength: 10000}
+    TicketReplyRequest:
+      type: object
+      additionalProperties: false
+      required: [body]
+      properties:
+        body: {type: string, minLength: 1, maxLength: 10000}
+    TicketCreated:
+      type: object
+      additionalProperties: false
+      required: [id, number, status]
+      properties:
+        id: {type: string, format: uuid}
+        number: {type: integer, format: int64, minimum: 1}
+        status: {type: string, const: open}
+    UpdateDockerSettingsRequest:
+      type: object
+      additionalProperties: false
+      required: [registryMirrors, defaultRegistry, registryUsername, registryPassword, httpProxy, httpsProxy, noProxy, pullTimeoutSeconds]
+      properties:
+        registryMirrors:
+          type: array
+          maxItems: 16
+          uniqueItems: true
+          items: {type: string, format: uri, pattern: '^https://'}
+        defaultRegistry: {type: string, maxLength: 512, description: Registry host with optional namespace and without a URI scheme}
+        registryUsername: {type: string, maxLength: 256}
+        registryPassword: {type: string, maxLength: 4096, writeOnly: true, description: Empty preserves the existing encrypted password unless the username is also cleared}
+        httpProxy: {type: string, maxLength: 4096}
+        httpsProxy: {type: string, maxLength: 4096}
+        noProxy: {type: string, maxLength: 4096}
+        pullTimeoutSeconds: {type: integer, minimum: 30, maximum: 1800}
+    DockerSettings:
+      type: object
+      additionalProperties: false
+      required: [registryMirrors, defaultRegistry, registryUsername, registryPasswordConfigured, httpProxy, httpsProxy, noProxy, pullTimeoutSeconds, detectedRegistryMirrors, detectedHttpProxy, detectedHttpsProxy, detectedNoProxy, lastCheckError, daemonRestartRequired, daemonJson]
+      properties:
+        registryMirrors: {type: array, items: {type: string, format: uri}}
+        defaultRegistry: {type: string}
+        registryUsername: {type: string}
+        registryPasswordConfigured: {type: boolean}
+        httpProxy: {type: string}
+        httpsProxy: {type: string}
+        noProxy: {type: string}
+        pullTimeoutSeconds: {type: integer}
+        detectedRegistryMirrors: {type: array, items: {type: string}}
+        detectedHttpProxy: {type: string}
+        detectedHttpsProxy: {type: string}
+        detectedNoProxy: {type: string}
+        lastCheckedAt: {type: [string, 'null'], format: date-time}
+        lastCheckError: {type: string}
+        daemonRestartRequired: {type: boolean}
+        daemonJson: {type: string}
     RefundResult:
       type: object
       required: [orderId, status, balanceCents, refundId, refundStatus, idempotent]
@@ -1090,9 +1405,10 @@ components:
       additionalProperties: false
       required: [imageDigest, runtimeSpec, routeSpec, healthSpec, updateSpec]
       properties:
+        versionLabel: {type: string, maxLength: 64}
         imageDigest:
           type: string
-          pattern: '^[A-Za-z0-9][A-Za-z0-9./:_-]*@sha256:[0-9a-f]{64}$'
+          pattern: '^[A-Za-z0-9][A-Za-z0-9._/:-]*(?::[A-Za-z0-9_][A-Za-z0-9._-]{0,127}|@sha256:[0-9a-f]{64})$'
         runtimeSpec: {$ref: '#/components/schemas/ProductRuntimeSpec'}
         routeSpec: {$ref: '#/components/schemas/ProductRouteSpec'}
         healthSpec: {$ref: '#/components/schemas/ProductHealthSpec'}
@@ -1100,11 +1416,20 @@ components:
     ProductRuntimeSpec:
       type: object
       additionalProperties: false
-      required: [cpuCores, memoryMiB, systemDiskGiB, volumes, env, secretKeys]
+      required: [cpuCores, memoryMiB, volumes, env, secretKeys]
       properties:
         cpuCores: {type: number, minimum: 0.1, maximum: 64}
         memoryMiB: {type: number, minimum: 64, maximum: 262144}
-        systemDiskGiB: {type: number, minimum: 1, maximum: 1024}
+        dataVolumeGiB: {type: number, minimum: 1, maximum: 16384, description: Minimum capacity shared by all declared persistent mounts.}
+        editableOptions:
+          type: object
+          additionalProperties: false
+          properties:
+            cpu: {type: boolean}
+            memory: {type: boolean}
+            dataVolume: {type: boolean}
+            command: {type: boolean}
+            dependencies: {type: boolean}
         command:
           type: array
           maxItems: 64

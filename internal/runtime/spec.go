@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-var digestPattern = regexp.MustCompile("^[a-zA-Z0-9][a-zA-Z0-9./:_-]*@sha256:[0-9a-f]{64}$")
+var imageReferencePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._/:-]*(?::[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}|@sha256:[0-9a-f]{64})$`)
 var volumeKeyPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
 var environmentKeyPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
 var secretKeyPattern = regexp.MustCompile(`^[A-Z_][A-Z0-9_]{0,127}$`)
@@ -58,8 +58,9 @@ type StorageResources struct {
 }
 
 func ValidateImageDigest(value string) error {
-	if !digestPattern.MatchString(strings.TrimSpace(value)) {
-		return fmt.Errorf("image must be pinned to name@sha256:<64 hex>")
+	value = strings.TrimSpace(value)
+	if strings.Contains(value, "://") || !imageReferencePattern.MatchString(value) {
+		return fmt.Errorf("image must include a version tag (for example nginx:1.27) or sha256 digest")
 	}
 	return nil
 }
@@ -82,6 +83,21 @@ func ValidateRuntimeSpec(spec map[string]any) error {
 	}
 	if _, err := RuntimeStorage(spec, true); err != nil {
 		return err
+	}
+	if raw, exists := spec["editableOptions"]; exists {
+		options, ok := raw.(map[string]any)
+		if !ok {
+			return fmt.Errorf("editableOptions must be an object")
+		}
+		allowed := map[string]bool{"cpu": true, "memory": true, "dataVolume": true, "command": true, "dependencies": true}
+		for key, rawValue := range options {
+			if !allowed[key] {
+				return fmt.Errorf("editableOptions contains unsupported option %q", key)
+			}
+			if _, ok := rawValue.(bool); !ok {
+				return fmt.Errorf("editable option %q must be boolean", key)
+			}
+		}
 	}
 	if _, err := RuntimeCommand(spec); err != nil {
 		return err
@@ -114,25 +130,41 @@ func ValidateRuntimeSpec(spec map[string]any) error {
 	}
 	if raw, exists := spec["editableEnvKeys"]; exists {
 		values, ok := raw.([]any)
-		if !ok { return fmt.Errorf("editableEnvKeys must be an array") }
-		if len(values) > 128 { return fmt.Errorf("editableEnvKeys may contain at most 128 entries") }
+		if !ok {
+			return fmt.Errorf("editableEnvKeys must be an array")
+		}
+		if len(values) > 128 {
+			return fmt.Errorf("editableEnvKeys may contain at most 128 entries")
+		}
 		seen := map[string]bool{}
 		environment, _ := spec["env"].(map[string]any)
 		for _, rawKey := range values {
 			key, ok := rawKey.(string)
-			if !ok || !environmentKeyPattern.MatchString(key) { return fmt.Errorf("editable environment variable name is invalid") }
-			if seen[key] { return fmt.Errorf("editable environment variable %q is duplicated", key) }
-			if _, exists := environment[key]; !exists { return fmt.Errorf("editable environment variable %q has no default value", key) }
+			if !ok || !environmentKeyPattern.MatchString(key) {
+				return fmt.Errorf("editable environment variable name is invalid")
+			}
+			if seen[key] {
+				return fmt.Errorf("editable environment variable %q is duplicated", key)
+			}
+			if _, exists := environment[key]; !exists {
+				return fmt.Errorf("editable environment variable %q has no default value", key)
+			}
 			seen[key] = true
 		}
 	}
 	if raw, exists := spec["envDescriptions"]; exists {
 		values, ok := raw.(map[string]any)
-		if !ok { return fmt.Errorf("envDescriptions must be an object") }
-		if len(values) > 128 { return fmt.Errorf("envDescriptions may contain at most 128 entries") }
+		if !ok {
+			return fmt.Errorf("envDescriptions must be an object")
+		}
+		if len(values) > 128 {
+			return fmt.Errorf("envDescriptions may contain at most 128 entries")
+		}
 		for key, rawDescription := range values {
 			description, ok := rawDescription.(string)
-			if !ok || !environmentKeyPattern.MatchString(key) || len(description) > 500 { return fmt.Errorf("environment description is invalid") }
+			if !ok || !environmentKeyPattern.MatchString(key) || len(description) > 500 {
+				return fmt.Errorf("environment description is invalid")
+			}
 		}
 	}
 	secretKeys, err := RuntimeSecretKeys(spec)
@@ -317,8 +349,9 @@ func RuntimeStorage(spec map[string]any, required bool) (StorageResources, error
 	if math.IsNaN(systemDisk) || math.IsInf(systemDisk, 0) || systemDisk < MinSystemDiskGiB || systemDisk > MaxSystemDiskGiB {
 		return StorageResources{}, fmt.Errorf("systemDiskGiB must be between %.0f and %.0f", MinSystemDiskGiB, MaxSystemDiskGiB)
 	}
-	dataDisk := 0.0
-	if values, ok := spec["volumes"].([]any); ok {
+	dataDisk, dataDiskOK := 0.0, false
+	if values, ok := spec["volumes"].([]any); ok && len(values) > 0 {
+		dataDisk, dataDiskOK = numeric(spec["dataVolumeGiB"])
 		for _, item := range values {
 			entry, ok := item.(map[string]any)
 			if !ok {
@@ -334,10 +367,26 @@ func RuntimeStorage(spec map[string]any, required bool) (StorageResources, error
 			if math.IsNaN(size) || math.IsInf(size, 0) || size < MinVolumeGiB || size > MaxVolumeGiB {
 				return StorageResources{}, fmt.Errorf("volume sizeGiB must be between %.0f and %.0f", MinVolumeGiB, MaxVolumeGiB)
 			}
-			dataDisk += size
+			if !dataDiskOK || size > dataDisk {
+				dataDisk = size
+			}
 		}
 	}
+	if dataDiskOK && (math.IsNaN(dataDisk) || math.IsInf(dataDisk, 0) || dataDisk < MinVolumeGiB || dataDisk > MaxVolumeGiB) {
+		return StorageResources{}, fmt.Errorf("dataVolumeGiB must be between %.0f and %.0f", MinVolumeGiB, MaxVolumeGiB)
+	}
 	return StorageResources{SystemDiskGiB: systemDisk, DataDiskGiB: dataDisk}, nil
+}
+
+// RuntimeDataVolumeGiB returns the single capacity quota shared by every
+// persistent mount in an application. Legacy specs fall back to the largest
+// declared per-mount size instead of summing mounts and double billing them.
+func RuntimeDataVolumeGiB(spec map[string]any, required bool) (float64, error) {
+	storage, err := RuntimeStorage(spec, required)
+	if err != nil {
+		return 0, err
+	}
+	return storage.DataDiskGiB, nil
 }
 
 // RuntimeResources parses resource reservations. Legacy immutable release

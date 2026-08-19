@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from "vue";
+import { nextTick, onMounted, reactive, ref } from "vue";
 import {
   ArrowLeft,
   BadgeCent,
@@ -58,7 +58,32 @@ const version = reactive({
   freeQuantity: "0",
   effectiveAt: "",
 });
-const overrideForm = reactive({
+const pricingDrafts = new Map<string, { unitPriceYuan:number; precisionScale:number; roundingMode:string; minimumQuantity:string; freeQuantity:string; effectiveAt:string }>();
+type OverrideForm = { pricingVersionId:string; scope:string; scopeId:string };
+const overrideDrafts = new Map<string, OverrideForm>();
+const switchingPricing = ref(false);
+function defaultPricingVersion() { return { unitPriceYuan:0.01, precisionScale:6, roundingMode:"half_up", minimumQuantity:"0", freeQuantity:"0", effectiveAt:"" }; }
+function defaultOverrideForm():OverrideForm { return { pricingVersionId:"", scope:"product", scopeId:"" }; }
+function cloneDraft<T>(value:T):T { return JSON.parse(JSON.stringify(value)) as T; }
+function savePricingDraft() {
+  if (!selected.value) return;
+  pricingDrafts.set(selected.value, cloneDraft(version));
+  overrideDrafts.set(selected.value, cloneDraft(overrideForm));
+}
+function loadPricingDraft(id:string) {
+  Object.assign(version, cloneDraft(pricingDrafts.get(id) || defaultPricingVersion()));
+  Object.assign(overrideForm, cloneDraft(overrideDrafts.get(id) || defaultOverrideForm()));
+}
+async function selectPricing(id:string) {
+  if (id===selected.value || switchingPricing.value) return;
+  savePricingDraft();
+  switchingPricing.value=true;
+  selected.value=id;
+  loadPricingDraft(id);
+  await nextTick();
+  window.setTimeout(()=>switchingPricing.value=false,180);
+}
+const overrideForm = reactive<OverrideForm>({
   pricingVersionId: "",
   scope: "product",
   scopeId: "",
@@ -71,7 +96,7 @@ async function load() {
       api<{ users: any[] }>("/admin/users"),
       api<{ products: any[] }>("/admin/products"),
     ]);
-    items.value = prices.items;
+    items.value = prices.items.filter((entry) => entry.code !== "storage.system.gib_days");
     overrides.value = os.overrides;
     users.value = us.users.map((v) => ({
       id: v.id,
@@ -79,7 +104,7 @@ async function load() {
     }));
     products.value = ps.products.map((v) => ({ id: v.id, name: v.name }));
     if (!selected.value && items.value.length)
-      selected.value = items.value[0].id;
+      await selectPricing(items.value[0].id);
     error.value = "";
   } catch (e) {
     error.value = (e as Error).message;
@@ -93,11 +118,15 @@ function done(text: string) {
 async function createItem() {
   try {
     busy.value = "item";
+    savePricingDraft();
     const result = await api<{ id: string }>("/admin/pricing/items", {
       method: "POST",
       body: JSON.stringify(item),
     });
+    pricingDrafts.set(result.id, defaultPricingVersion());
+    overrideDrafts.set(result.id, defaultOverrideForm());
     selected.value = result.id;
+    loadPricingDraft(result.id);
     done("费用项已创建");
     await load();
   } catch (e) {
@@ -123,6 +152,10 @@ async function createVersion() {
           : new Date().toISOString(),
       }),
     });
+    const currentID = selected.value;
+    const freshDraft = defaultPricingVersion();
+    pricingDrafts.set(currentID, freshDraft);
+    Object.assign(version, freshDraft);
     done("新价格版本已生效");
     await load();
   } catch (e) {
@@ -196,7 +229,7 @@ function price(v: Version) {
           v-for="entry in items"
           :key="entry.id"
           :class="['pricing-select', { selected: selected === entry.id }]"
-          @click="selected = entry.id"
+          @click="selectPricing(entry.id)"
         >
           <BadgeCent :size="18" /><span
             ><strong>{{ usageCodeLabel(entry.code) }}</strong
@@ -213,7 +246,11 @@ function price(v: Version) {
           </button>
         </form>
       </section>
-      <div class="pricing-main">
+      <Transition name="panel-swap" mode="out-in">
+        <div
+          :key="selected || 'pricing-empty'"
+          :class="['pricing-main', switchingPricing && 'is-switching']"
+        >
         <section v-if="selected" class="form-panel">
           <h2><BadgeCent :size="19" />发布价格版本</h2>
           <form @submit.prevent="createVersion">
@@ -358,7 +395,8 @@ function price(v: Version) {
             尚无价格，用量会标记为未配置价格且不会扣费
           </p>
         </section>
-      </div>
+        </div>
+      </Transition>
     </div>
   </main>
 </template>

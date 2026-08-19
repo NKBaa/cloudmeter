@@ -41,6 +41,10 @@ const errorMessages: Record<string, string> = {
   unauthenticated: '登录状态已失效，请重新登录',
   forbidden: '你没有执行此操作的权限',
   last_super_admin: '平台至少需要保留一名活跃超级管理员',
+  super_admin_role_immutable: '超级管理员权限受保护，不能在这里降级',
+  user_not_found: '没有找到这个用户，列表可能已经发生变化，请刷新后重试',
+  ticket_not_found: '没有找到这个工单，或你没有查看权限',
+  ticket_closed: '工单已经关闭，不能继续回复',
 }
 
 export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {

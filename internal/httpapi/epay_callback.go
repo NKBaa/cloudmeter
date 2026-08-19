@@ -1,8 +1,8 @@
 package httpapi
 
 import (
-	"crypto/hmac"
-	"crypto/sha256"
+	"crypto/md5"
+	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"net/http"
@@ -23,10 +23,10 @@ func verifyEPayCallback(form url.Values, merchant, secret string) (providerCallb
 	tradeNo := strings.TrimSpace(values["trade_no"])
 	amountText := strings.TrimSpace(values["money"])
 	status := strings.TrimSpace(values["trade_status"])
-	if orderID == "" || tradeNo == "" || amountText == "" || status == "" || values["pid"] != merchant || !strings.EqualFold(values["sign_type"], "HMAC-SHA256") {
+	if orderID == "" || tradeNo == "" || amountText == "" || status == "" || values["pid"] != merchant || !strings.EqualFold(values["sign_type"], "MD5") {
 		return providerCallback{}, errors.New("EPay callback fields are invalid")
 	}
-	if !hmac.Equal([]byte(strings.ToLower(values["sign"])), []byte(epaySignature(values, secret))) {
+	if subtle.ConstantTimeCompare([]byte(strings.ToLower(values["sign"])), []byte(epaySignature(values, secret))) != 1 {
 		return providerCallback{}, errors.New("EPay callback signature is invalid")
 	}
 	amount, err := parseAmountCents(amountText)
@@ -48,21 +48,34 @@ func epaySignature(values map[string]string, secret string) string {
 	for _, k := range keys {
 		parts = append(parts, k+"="+values[k])
 	}
-	mac := hmac.New(sha256.New, []byte(secret))
-	_, _ = mac.Write([]byte(strings.Join(parts, "&")))
-	return hex.EncodeToString(mac.Sum(nil))
+	digest := md5.Sum([]byte(strings.Join(parts, "&") + secret))
+	return hex.EncodeToString(digest[:])
+}
+
+func epayPurchaseEndpoint(endpoint string) (*url.URL, error) {
+	base, err := url.Parse(endpoint)
+	if err != nil || base.Scheme == "" || base.Host == "" {
+		return nil, errors.New("invalid EPay endpoint")
+	}
+	path := strings.TrimRight(base.Path, "/")
+	if path == "" {
+		base.Path = "/submit.php"
+	} else if !strings.HasSuffix(strings.ToLower(path), "/submit.php") {
+		base.Path = path + "/submit.php"
+	}
+	return base, nil
 }
 
 func buildEPayCheckoutURL(endpoint string, values map[string]string, secret string) (string, error) {
-	base, err := url.Parse(endpoint)
-	if err != nil || base.Scheme == "" || base.Host == "" {
-		return "", errors.New("invalid EPay endpoint")
+	base, err := epayPurchaseEndpoint(endpoint)
+	if err != nil {
+		return "", err
 	}
 	query := base.Query()
 	for key, value := range values {
 		query.Set(key, value)
 	}
-	query.Set("sign_type", "HMAC-SHA256")
+	query.Set("sign_type", "MD5")
 	query.Set("sign", epaySignature(values, secret))
 	base.RawQuery = query.Encode()
 	return base.String(), nil
@@ -74,8 +87,8 @@ func (s *Server) epayCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	values := map[string]string{}
-	for k := range r.PostForm {
-		values[k] = r.PostForm.Get(k)
+	for k := range r.Form {
+		values[k] = r.Form.Get(k)
 	}
 	sign, orderID := strings.TrimSpace(values["sign"]), strings.TrimSpace(values["out_trade_no"])
 	status, merchant, amountText, tradeNo := strings.TrimSpace(values["trade_status"]), strings.TrimSpace(values["pid"]), strings.TrimSpace(values["money"]), strings.TrimSpace(values["trade_no"])
@@ -83,8 +96,8 @@ func (s *Server) epayCallback(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "invalid_callback", "required callback fields are missing")
 		return
 	}
-	if !strings.EqualFold(strings.TrimSpace(values["sign_type"]), "HMAC-SHA256") {
-		writeError(w, 400, "unsupported_signature_type", "only HMAC-SHA256 callbacks are supported")
+	if !strings.EqualFold(strings.TrimSpace(values["sign_type"]), "MD5") {
+		writeError(w, 400, "unsupported_signature_type", "only MD5 callbacks are supported")
 		return
 	}
 	if status != "TRADE_SUCCESS" && status != "SUCCESS" {
@@ -107,7 +120,7 @@ func (s *Server) epayCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	expected := epaySignature(values, secret)
-	if !hmac.Equal([]byte(strings.ToLower(sign)), []byte(expected)) {
+	if subtle.ConstantTimeCompare([]byte(strings.ToLower(sign)), []byte(expected)) != 1 {
 		writeError(w, 403, "invalid_signature", "callback signature is invalid")
 		return
 	}
@@ -144,7 +157,9 @@ func (s *Server) epayCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if orderStatus == "paid" {
-		writeJSON(w, 200, map[string]any{"success": true, "idempotent": true})
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("success"))
 		return
 	}
 	if orderStatus != "pending" {
@@ -179,7 +194,9 @@ func (s *Server) epayCallback(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"success": true, "balanceCents": newBalance, "ledgerEntryId": entryID})
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("success"))
 }
 
 func parseAmountCents(value string) (int64, error) {

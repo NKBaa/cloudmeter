@@ -3,6 +3,7 @@ package httpapi
 import (
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"unicode/utf8"
 
@@ -28,6 +29,18 @@ func normalizeProductName(name string) (string, error) {
 	return name, err
 }
 
+func normalizeProductIconURL(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", nil
+	}
+	parsed, err := url.ParseRequestURI(value)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || len(value) > 2048 {
+		return "", fmt.Errorf("product icon must be a valid HTTP or HTTPS URL")
+	}
+	return value, nil
+}
+
 func restoredProductStatus(hasPublishedVersion, hasTestHistory bool) string {
 	if hasPublishedVersion {
 		return "published"
@@ -45,13 +58,19 @@ func (s *Server) updateProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var q struct {
-		Name string `json:"name"`
+		Name    string `json:"name"`
+		IconURL string `json:"iconUrl"`
 	}
 	if err := decodeJSON(r, &q); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
 	name, err := normalizeProductName(q.Name)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "validation_failed", err.Error())
+		return
+	}
+	iconURL, err := normalizeProductIconURL(q.IconURL)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "validation_failed", err.Error())
 		return
@@ -64,19 +83,19 @@ func (s *Server) updateProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	var slug, currentName, status string
-	if err = tx.QueryRow(r.Context(), `SELECT slug,name,status FROM app_products WHERE id=$1 FOR UPDATE`, productID).Scan(&slug, &currentName, &status); err == pgx.ErrNoRows {
+	var slug, currentName, currentIconURL, status string
+	if err = tx.QueryRow(r.Context(), `SELECT slug,name,icon_url,status FROM app_products WHERE id=$1 FOR UPDATE`, productID).Scan(&slug, &currentName, &currentIconURL, &status); err == pgx.ErrNoRows {
 		writeError(w, http.StatusNotFound, "product_not_found", "product not found")
 		return
 	} else if err != nil {
 		s.internalError(w, err)
 		return
 	}
-	if currentName == name {
-		writeJSON(w, http.StatusOK, map[string]any{"id": productID, "slug": slug, "name": name, "status": status, "idempotent": true})
+	if currentName == name && currentIconURL == iconURL {
+		writeJSON(w, http.StatusOK, map[string]any{"id": productID, "slug": slug, "name": name, "iconUrl": iconURL, "status": status, "idempotent": true})
 		return
 	}
-	if _, err = tx.Exec(r.Context(), `UPDATE app_products SET name=$2 WHERE id=$1`, productID, name); err != nil {
+	if _, err = tx.Exec(r.Context(), `UPDATE app_products SET name=$2,icon_url=$3 WHERE id=$1`, productID, name, iconURL); err != nil {
 		s.internalError(w, err)
 		return
 	}
@@ -90,7 +109,7 @@ func (s *Server) updateProduct(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"id": productID, "slug": slug, "name": name, "status": status, "idempotent": false})
+	writeJSON(w, http.StatusOK, map[string]any{"id": productID, "slug": slug, "name": name, "iconUrl": iconURL, "status": status, "idempotent": false})
 }
 
 func (s *Server) updateProductAvailability(w http.ResponseWriter, r *http.Request) {

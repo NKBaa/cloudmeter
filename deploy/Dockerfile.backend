@@ -1,5 +1,7 @@
 FROM golang:1.23-alpine AS build
 WORKDIR /src
+ARG GOPROXY=https://goproxy.cn,direct
+ENV GOPROXY=${GOPROXY}
 COPY go.mod go.sum* ./
 RUN go mod download
 COPY apps ./apps
@@ -7,8 +9,8 @@ COPY internal ./internal
 ARG TARGET=api
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/service ./apps/${TARGET}
 
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM alpine:3.21
+RUN addgroup -S service && adduser -S -G service -u 65532 service
 COPY --from=build /out/service /service
-USER nonroot:nonroot
+USER 65532:65532
 ENTRYPOINT ["/service"]
-

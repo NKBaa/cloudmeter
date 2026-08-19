@@ -12,6 +12,7 @@ import {
   Check,
   CircleStop,
   CreditCard,
+  CircleAlert,
   ExternalLink,
   FileDown,
   Gauge,
@@ -25,6 +26,7 @@ import {
   RotateCcw,
   Rocket,
   Settings2,
+  Trash2,
   X,
 } from "@lucide/vue";
 import { api, logout } from "../api";
@@ -38,10 +40,12 @@ type Dependency = {
   required: boolean;
 };
 type Volume = { name: string; mountPath: string; sizeGiB: number };
+type EditableOptions = { cpu?: boolean; memory?: boolean; dataVolume?: boolean; command?: boolean; dependencies?: boolean };
 type Product = {
   id: string;
   slug: string;
   name: string;
+  iconUrl?: string;
   versionId: string;
   version: number;
   deployable: boolean;
@@ -49,7 +53,6 @@ type Product = {
   runtimeSpec?: {
     cpuCores?: number;
     memoryMiB?: number;
-    systemDiskGiB?: number;
     command?: string[];
     env?: Record<string, string>;
     editableEnvKeys?: string[];
@@ -57,6 +60,8 @@ type Product = {
     secretKeys?: string[];
     dependencies?: Dependency[];
     volumes?: Volume[];
+    dataVolumeGiB?: number;
+    editableOptions?: EditableOptions;
   };
   routeSpec?: {
     containerPort?: number;
@@ -78,7 +83,10 @@ type App = {
   memoryUsageMiB?: number;
   estimatedMonthlyCents?: number;
   estimateComplete?: boolean;
+  jobLastError?: string;
 };
+type DeploymentEvent = { id?: number; fromState?: string; toState?: string; message?: string; createdAt?: string };
+type DeploymentJob = { id: string; state: string; attempts: number; lastError?: string | null; createdAt: string; updatedAt: string; events: DeploymentEvent[] };
 type Usage = {
   usageCode: string;
   unit: string;
@@ -143,7 +151,8 @@ type CreditConsumption = {
   windowStart: string;
   createdAt: string;
 };
-type PaymentProvider = { provider: string; enabled: boolean };
+type PaymentMethod = { name: string; type: string; minAmountCents: number; enabled: boolean };
+type PaymentProvider = { provider: string; enabled: boolean; paymentMethods?: PaymentMethod[]; amountOptions?: number[] };
 type Release = {
   id: string;
   releaseNumber: number;
@@ -231,9 +240,10 @@ const products = ref<Product[]>([]),
   name = ref(""),
   error = ref(""),
   message = ref(""),
-  topup = ref(0),
-  selectedTopup = ref(100),
+  topup = ref(10),
+  selectedTopup = ref(10),
   busy = ref("");
+const selectedPaymentType = ref("");
 const activeBill = ref<string>(""),
   billItems = ref<Record<string, BillItem[]>>({});
 const impersonation = ref({ active: false, readOnly: true, actorName: "" });
@@ -246,13 +256,15 @@ const secretApp = ref<App | null>(null),
   secretKey = ref(""),
   secretValue = ref(""),
   secretBusy = ref(false);
+const deploymentApp = ref<App | null>(null);
+const deploymentJobs = ref<DeploymentJob[]>([]);
+const deploymentBusy = ref(false);
 const deployProduct = ref<Product | null>(null),
   deploySlug = ref(""),
   deploySecrets = ref<Record<string, string>>({}),
   deployCPU = ref(1),
   deployMemory = ref(512),
-  deploySystemDisk = ref(5),
-  deployVolumes = ref<Record<string, number>>({});
+  deployDataVolumeGiB = ref(0);
 const deployCommand = ref("");
 const deployPort = ref(8080);
 const deployEnvironment = ref<{ key: string; value: string }[]>([]);
@@ -307,7 +319,9 @@ async function doCheckin() {
     busy.value = "";
   }
 }
-const topupOptions = [10, 20, 50, 100, 200, 300, 400, 500];
+const epayProvider = computed(() => paymentProviders.value.find((item) => item.provider === "epay"));
+const topupOptions = computed(() => epayProvider.value?.amountOptions?.length ? epayProvider.value.amountOptions : [10,20,50,100,200,300,400,500]);
+const paymentMethods = computed(() => (epayProvider.value?.paymentMethods || []).filter((item) => item.enabled));
 const totalSpend = computed(() =>
   ledger.value
     .filter((item) => item.amountCents < 0)
@@ -447,6 +461,8 @@ async function load() {
   creditConsumptions.value = creditData.consumptions;
   orders.value = o.orders;
   paymentProviders.value = providers.providers;
+  if (!topupOptions.value.includes(selectedTopup.value)) chooseTopup(topupOptions.value[0] || 10);
+  if (!paymentMethods.value.some((item) => item.type === selectedPaymentType.value)) selectedPaymentType.value = paymentMethods.value[0]?.type || "";
   announcements.value = n.announcements;
   notifications.value = notices.notifications;
   const pairs = await Promise.all(
@@ -541,13 +557,7 @@ function openDeploy(p: Product) {
   );
   deployCPU.value = p.runtimeSpec?.cpuCores || 1;
   deployMemory.value = p.runtimeSpec?.memoryMiB || 512;
-  deploySystemDisk.value = p.runtimeSpec?.systemDiskGiB || 5;
-  deployVolumes.value = Object.fromEntries(
-    (p.runtimeSpec?.volumes || []).map((volume) => [
-      volume.name,
-      volume.sizeGiB,
-    ]),
-  );
+  deployDataVolumeGiB.value = p.runtimeSpec?.dataVolumeGiB || Math.max(0, ...(p.runtimeSpec?.volumes || []).map((volume) => volume.sizeGiB));
   deployCommand.value = (p.runtimeSpec?.command || []).join(" ");
   deployPort.value = p.routeSpec?.containerPort || 8080;
   deployEnvironment.value = (p.runtimeSpec?.editableEnvKeys || []).map(
@@ -561,7 +571,7 @@ function closeDeploy() {
   deployProduct.value = null;
   deploySlug.value = "";
   deploySecrets.value = {};
-  deployVolumes.value = {};
+  deployDataVolumeGiB.value = 0;
   deployCommand.value = "";
   deployEnvironment.value = [];
   deployDependencies.value = [];
@@ -587,19 +597,18 @@ async function deploy() {
         idempotencyKey: crypto.randomUUID(),
         secrets: deploySecrets.value,
         resources: {
-          cpuCores: deployCPU.value,
-          memoryMiB: deployMemory.value,
-          systemDiskGiB: deploySystemDisk.value,
-          volumeSizes: deployVolumes.value,
-          command: deployCommand.value.trim()
+          cpuCores: p.runtimeSpec?.editableOptions?.cpu !== false ? deployCPU.value : undefined,
+          memoryMiB: p.runtimeSpec?.editableOptions?.memory !== false ? deployMemory.value : undefined,
+          dataVolumeGiB: p.runtimeSpec?.editableOptions?.dataVolume !== false && (p.runtimeSpec?.volumes?.length || 0) ? deployDataVolumeGiB.value : undefined,
+          command: p.runtimeSpec?.editableOptions?.command && deployCommand.value.trim()
             ? deployCommand.value.trim().split(/\s+/)
-            : [],
+            : undefined,
           environment: Object.fromEntries(
             deployEnvironment.value
               .filter((item) => item.key.trim())
               .map((item) => [item.key.trim(), item.value]),
           ),
-          dependencies: deployDependencies.value,
+          dependencies: p.runtimeSpec?.editableOptions?.dependencies ? deployDependencies.value : undefined,
         },
       }),
     });
@@ -631,6 +640,40 @@ async function updateApp(app: App) {
   } finally {
     busy.value = "";
   }
+}
+function deploymentErrorHint(value?: string) {
+  const text = String(value || '');
+  if (/no such image/i.test(text)) return '镜像不存在或版本号不可用，请检查管理员发布的镜像地址与 Tag，并确认镜像源可访问。';
+  if (/pull access denied|unauthorized|authentication required/i.test(text)) return '镜像仓库拒绝访问，请让管理员检查 Registry 地址、凭据或镜像是否为私有仓库。';
+  if (/timeout|timed out|deadline exceeded/i.test(text)) return '拉取镜像超时，请检查镜像加速、代理、DNS 和网络连通性。';
+  if (/connection refused|port is already allocated/i.test(text)) return '容器启动端口或内部服务不可用，请让管理员检查内网端口与健康检查配置。';
+  return '部署任务未完成，请查看下方原始错误与事件时间线，或联系管理员。';
+}
+function deploymentErrorText(value?: string) {
+  const text = String(value || '').trim();
+  return text.length > 1200 ? text.slice(0, 1200) + '…' : text;
+}
+async function openDeploymentDetails(app: App) {
+  deploymentApp.value = app;
+  deploymentJobs.value = [];
+  deploymentBusy.value = true;
+  try {
+    const result = await api<{ deployments: DeploymentJob[] }>('/apps/' + app.id + '/deployments');
+    deploymentJobs.value = result.deployments || [];
+  } catch (e) {
+    error.value = (e as Error).message;
+  } finally {
+    deploymentBusy.value = false;
+  }
+}
+async function deleteApp(app: App) {
+  if (writeLocked.value || !window.confirm(`删除应用“${app.slug}”？运行容器、路由和持久数据卷会被回收，账单和发布审计历史仍会保留。此操作不可恢复。`)) return;
+  try {
+    busy.value = app.id;
+    await api(`/apps/${app.id}`, { method: "DELETE" });
+    message.value = "应用已进入删除清理队列";
+    await load();
+  } catch (e) { error.value = (e as Error).message; } finally { busy.value = ""; }
 }
 async function rollback(app: App) {
   if (!app.previousReleaseId) {
@@ -759,15 +802,18 @@ async function createOrder() {
     if (!paymentProviders.value.some((v) => v.provider === "epay" && v.enabled))
       throw new Error("在线支付尚未开通，请联系管理员调整余额");
     const provider = "epay";
+    const method = paymentMethods.value.find((item) => item.type === selectedPaymentType.value);
+    if (!method) throw new Error("请选择可用的付款方式");
+    if (Math.round(topup.value * 100) < method.minAmountCents) throw new Error(method.name + "最低充值 ¥" + (method.minAmountCents / 100).toFixed(2));
     const result = await api<{ checkoutUrl?: string }>("/payments/orders", {
       method: "POST",
       body: JSON.stringify({
         amountCents: Math.round(topup.value * 100),
         provider,
+        paymentType: selectedPaymentType.value,
         idempotencyKey: crypto.randomUUID(),
       }),
     });
-    topup.value = 0;
     if (result.checkoutUrl) {
       window.open(result.checkoutUrl, "_blank", "noopener,noreferrer");
       message.value = "支付页面已打开，请完成支付后返回控制台";
@@ -1020,6 +1066,26 @@ async function exitImpersonation() {
         </p>
       </div>
     </section>
+    <section v-if="page === 'apps' && !apps.length" class="context-empty apps-empty">
+      <span class="context-empty-icon" aria-hidden="true">
+        <Rocket :size="28" />
+      </span>
+      <div class="apps-empty-content">
+        <p class="eyebrow">应用实例</p>
+        <h2>还没有部署应用</h2>
+        <p>
+          从管理员发布的产品中部署第一个应用；后续每次部署和更新都会形成可追溯的版本记录。
+        </p>
+        <div class="empty-actions">
+          <RouterLink class="primary compact" to="/console/deploy">
+            <Plus :size="16" />部署第一个应用
+          </RouterLink>
+          <RouterLink class="secondary compact" to="/console">
+            <Gauge :size="16" />返回概览
+          </RouterLink>
+        </div>
+      </div>
+    </section>
     <section v-if="page === 'apps' && apps.length" class="product-list">
       <div class="section-heading">
         <div>
@@ -1028,11 +1094,18 @@ async function exitImpersonation() {
         </div>
         <span>{{ apps.length }} 个应用</span>
       </div>
-      <article v-for="app in apps" :key="app.id" class="product-row">
+      <article v-for="app in apps" :key="app.id" class="product-row app-product-row">
         <span class="product-icon"><AppWindow :size="20" /></span>
         <div>
           <strong>{{ app.slug }}</strong
           ><small>{{ app.productSlug }} · {{ appState(app) }}</small>
+        </div>
+        <div class="product-row-main">
+          <div v-if="app.status === 'failed' || app.jobLastError" class="deployment-error-card">
+            <div class="deployment-error-title"><CircleAlert :size="16"/><strong>{{ app.status === 'failed' ? '部署失败' : '部署任务异常' }}</strong><button class="secondary compact" type="button" @click="openDeploymentDetails(app)">查看部署详情</button></div>
+            <p>{{ deploymentErrorHint(app.jobLastError) }}</p>
+            <code v-if="app.jobLastError">{{ deploymentErrorText(app.jobLastError) }}</code>
+          </div>
         </div>
         <div class="product-controls">
           <span class="status-pill" :class="appStateClass(app)">{{
@@ -1087,6 +1160,14 @@ async function exitImpersonation() {
             @click="startApp(app)"
           >
             <Play :size="17" />
+          </button
+          ><button
+            class="icon-action stop-action"
+            title="删除应用和持久数据"
+            :disabled="writeLocked || busy === app.id"
+            @click="deleteApp(app)"
+          >
+            <Trash2 :size="17" />
           </button>
         </div>
       </article>
@@ -1154,7 +1235,7 @@ async function exitImpersonation() {
         :key="product.versionId"
         :class="['product-row', { unavailable: !product.deployable }]"
       >
-        <span class="product-icon"><AppWindow :size="20" /></span>
+        <span class="product-icon"><AppWindow :size="20"/><img v-if="product.iconUrl" :src="product.iconUrl" alt="" @error="($event.currentTarget as HTMLImageElement).style.display='none'"/></span>
         <div>
           <strong>{{ product.name }}</strong
           ><small
@@ -1241,17 +1322,7 @@ async function exitImpersonation() {
           <div class="payment-choice">
             <strong>付款方式</strong>
             <div>
-              <span
-                :class="[
-                  'payment-method',
-                  {
-                    active: paymentProviders.some(
-                      (item) => item.provider === 'epay' && item.enabled,
-                    ),
-                  },
-                ]"
-                ><CreditCard :size="19" />在线支付（支付宝）</span
-              >
+              <button v-for="method in paymentMethods" :key="method.type" type="button" :class="['payment-method',{active:selectedPaymentType===method.type}]" @click="selectedPaymentType=method.type"><CreditCard :size="19"/><span><strong>{{method.name}}</strong><small>最低充值 ¥{{(method.minAmountCents/100).toFixed(2)}}</small></span><Check v-if="selectedPaymentType===method.type" :size="16"/></button>
             </div>
             <p
               v-if="
@@ -1272,7 +1343,7 @@ async function exitImpersonation() {
               class="primary"
               :disabled="
                 writeLocked ||
-                topup <= 0 ||
+                  topup <= 0 || !selectedPaymentType ||
                 !paymentProviders.some(
                   (item) => item.provider === 'epay' && item.enabled,
                 )
@@ -1427,8 +1498,9 @@ async function exitImpersonation() {
                 max="64"
                 step="0.1"
                 required
+                :readonly="deployProduct.runtimeSpec?.editableOptions?.cpu === false"
               /><small
-                >最低 {{ deployProduct.runtimeSpec?.cpuCores || 1 }} 核</small
+                >最低 {{ deployProduct.runtimeSpec?.cpuCores || 1 }} 核{{ deployProduct.runtimeSpec?.editableOptions?.cpu === false ? '，管理员已固定' : '，可向上调整' }}</small
               ></label
             >
             <label
@@ -1439,22 +1511,10 @@ async function exitImpersonation() {
                 max="262144"
                 step="64"
                 required
+                :readonly="deployProduct.runtimeSpec?.editableOptions?.memory === false"
               /><small
                 >最低
-                {{ deployProduct.runtimeSpec?.memoryMiB || 512 }} MiB</small
-              ></label
-            >
-            <label
-              >系统盘 GiB<input
-                v-model.number="deploySystemDisk"
-                type="number"
-                :min="deployProduct.runtimeSpec?.systemDiskGiB || 1"
-                max="1024"
-                step="1"
-                required
-              /><small
-                >最低
-                {{ deployProduct.runtimeSpec?.systemDiskGiB || 5 }} GiB</small
+                {{ deployProduct.runtimeSpec?.memoryMiB || 512 }} MiB{{ deployProduct.runtimeSpec?.editableOptions?.memory === false ? '，管理员已固定' : '，可向上调整' }}</small
               ></label
             >
             <label
@@ -1464,21 +1524,20 @@ async function exitImpersonation() {
               ></label
             >
           </div>
-          <label
-            v-for="volume in deployProduct.runtimeSpec?.volumes || []"
-            :key="volume.name"
-            >{{ volume.name }} 数据卷 GiB<input
-              v-model.number="deployVolumes[volume.name]"
+          <label v-if="deployProduct.runtimeSpec?.volumes?.length"
+            >共享数据卷容量 GiB<input
+              v-model.number="deployDataVolumeGiB"
               type="number"
-              :min="volume.sizeGiB"
+              :min="deployProduct.runtimeSpec?.dataVolumeGiB || Math.max(...(deployProduct.runtimeSpec?.volumes || []).map((volume) => volume.sizeGiB))"
               max="16384"
               step="1"
               required
+              :readonly="deployProduct.runtimeSpec?.editableOptions?.dataVolume === false"
             /><small
-              >挂载 {{ volume.mountPath }}，最低 {{ volume.sizeGiB }} GiB</small
+              >全部挂载（{{ (deployProduct.runtimeSpec?.volumes || []).map((volume) => volume.mountPath).join('、') }}）共享同一容量，最低 {{ deployProduct.runtimeSpec?.dataVolumeGiB || deployDataVolumeGiB }} GiB，只计费一次；停止后保留并继续计费</small
             ></label
           >
-          <label
+          <label v-if="deployProduct.runtimeSpec?.editableOptions?.command"
             >启动命令<input
               v-model="deployCommand"
               placeholder="留空使用镜像默认命令"
@@ -1534,7 +1593,7 @@ async function exitImpersonation() {
               <small class="env-help">{{ deployProduct.runtimeSpec?.envDescriptions?.[item.key] || "管理员未提供说明" }}</small>
             </div>
           </div>
-          <div class="deploy-dependencies">
+          <div v-if="deployProduct.runtimeSpec?.editableOptions?.dependencies" class="deploy-dependencies">
             <div class="deploy-secret-heading">
               <Link2 :size="17" />
               <div>
@@ -1661,6 +1720,33 @@ async function exitImpersonation() {
       <p v-else class="secret-empty quiet">
         此产品的已发布版本没有声明可配置的 Secret。
       </p>
+    </section>
+  </div>
+  <div v-if="deploymentApp" class="modal-backdrop" @click.self="deploymentApp = null">
+    <section class="secret-dialog deployment-dialog">
+      <header>
+        <div>
+          <p class="eyebrow">{{ deploymentApp.slug }}</p>
+          <h2>部署详情</h2>
+        </div>
+        <button class="icon-action" title="关闭" @click="deploymentApp = null"><X :size="18" /></button>
+      </header>
+      <p v-if="deploymentBusy" class="quiet">正在读取部署事件…</p>
+      <p v-else-if="!deploymentJobs.length" class="quiet">暂无部署任务记录</p>
+      <div v-for="job in deploymentJobs" :key="job.id" class="deployment-job">
+        <div class="deployment-job-heading">
+          <span :class="['status-pill', job.state === 'succeeded' ? 'active' : job.state === 'failed' ? 'danger' : 'pending']">{{ state(job.state) }}</span>
+          <small>{{ new Date(job.updatedAt || job.createdAt).toLocaleString() }} · 尝试 {{ job.attempts }} 次</small>
+        </div>
+        <p v-if="job.lastError" class="deployment-detail-hint">{{ deploymentErrorHint(job.lastError) }}</p>
+        <code v-if="job.lastError" class="deployment-raw-error">{{ deploymentErrorText(job.lastError) }}</code>
+        <ol v-if="job.events.length" class="deployment-timeline">
+          <li v-for="event in job.events" :key="event.id || event.createdAt">
+            <span>{{ event.toState ? state(event.toState) : '事件' }}</span>
+            <small>{{ event.message || '状态已更新' }} · {{ event.createdAt ? new Date(event.createdAt).toLocaleString() : '' }}</small>
+          </li>
+        </ol>
+      </div>
     </section>
   </div>
 </template>

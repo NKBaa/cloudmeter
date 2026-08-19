@@ -73,14 +73,21 @@ func main() {
 		os.Exit(1)
 	}
 	defer db.Close()
+	syncDockerDaemonSettings(ctx, db)
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 	logger.Info("worker started")
+	lastDockerSettingsSync := time.Now()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			if time.Since(lastDockerSettingsSync) >= 30*time.Second {
+				syncDockerDaemonSettings(ctx, db)
+				lastDockerSettingsSync = time.Now()
+			}
+			processAppDeletionOne(ctx, db, logger)
 			reconcileRouterNetworks(ctx, db, logger)
 			reconcileEgressNetworks(ctx, db, logger)
 			processStopOne(ctx, db, logger)
@@ -98,6 +105,50 @@ func main() {
 			billUsage(ctx, db, logger)
 		}
 	}
+}
+
+func processAppDeletionOne(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		return
+	}
+	defer tx.Rollback(ctx)
+	var id, appID string
+	var attempts int
+	err = tx.QueryRow(ctx, `UPDATE app_deletion_jobs SET status='running',attempts=attempts+1,updated_at=now(),last_error=NULL WHERE id=(SELECT id FROM app_deletion_jobs WHERE available_at<=now() AND (status='queued' OR (status='running' AND updated_at<now()-interval '1 minute')) ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING id,user_app_id,attempts`).Scan(&id, &appID, &attempts)
+	if err == pgx.ErrNoRows {
+		return
+	}
+	if err != nil {
+		return
+	}
+	if tx.Commit(ctx) != nil {
+		return
+	}
+	if executor == nil {
+		_, _ = db.Exec(ctx, `UPDATE app_deletion_jobs SET status='queued',last_error='docker unavailable',available_at=now()+interval '10 seconds' WHERE id=$1`, id)
+		return
+	}
+	prefixes := []string{"cm-" + appID + "-"}
+	if runtimeScope != "" {
+		prefixes = append(prefixes, "cm-"+runtimeScope+"-"+appID+"-")
+	}
+	for _, prefix := range prefixes {
+		names, _ := executor.ContainerNames(ctx, prefix)
+		for _, name := range names {
+			_ = executor.RemoveIfExists(ctx, name)
+		}
+	}
+	rows, _ := db.Query(ctx, `SELECT DISTINCT volume->>'name' FROM app_releases r CROSS JOIN LATERAL jsonb_array_elements(coalesce(r.immutable_snapshot->'runtime_spec'->'volumes','[]'::jsonb)) volume WHERE r.user_app_id=$1`, appID)
+	if rows != nil {
+		for rows.Next() {
+			var key string
+			_ = rows.Scan(&key)
+			_ = executor.RemoveVolumeIfExists(ctx, runtimepolicy.AppVolumeNameForOwner(runtimeOwner, appID, key))
+		}
+		rows.Close()
+	}
+	_, _ = db.Exec(ctx, `UPDATE app_deletion_jobs SET status='succeeded',completed_at=now(),updated_at=now() WHERE id=$1`, id)
 }
 
 func processStopOne(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
@@ -954,8 +1005,7 @@ func meterRuntime(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
 	}
 	rows, err := db.Query(ctx, `SELECT a.id,a.user_id,coalesce(ar.upstream_container,''),
 		coalesce(r.immutable_snapshot->'runtime_spec'->>'cpuCores',''),
-		coalesce(r.immutable_snapshot->'runtime_spec'->>'memoryMiB',''),
-		coalesce(r.immutable_snapshot->'runtime_spec'->>'systemDiskGiB','')
+		coalesce(r.immutable_snapshot->'runtime_spec'->>'memoryMiB','')
 		FROM user_apps a
 		JOIN app_releases r ON r.id=a.last_successful_release_id
 		LEFT JOIN app_routes ar ON ar.user_app_id=a.id
@@ -966,8 +1016,8 @@ func meterRuntime(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var appID, userID, container, cpuCores, memoryMiB, systemDiskGiB string
-		if err := rows.Scan(&appID, &userID, &container, &cpuCores, &memoryMiB, &systemDiskGiB); err != nil {
+		var appID, userID, container, cpuCores, memoryMiB string
+		if err := rows.Scan(&appID, &userID, &container, &cpuCores, &memoryMiB); err != nil {
 			logger.Error("usage scan failed", "error", err)
 			continue
 		}
@@ -984,7 +1034,6 @@ func meterRuntime(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
 		}
 		insertUsage(ctx, db, userID, appID, "cpu.core_hours", "core_hour", decimalTimeQuantity(cpuCores, 5, 60), windowStart, windowEnd, appID+":cpu:"+windowStart.Format(time.RFC3339), logger)
 		insertUsage(ctx, db, userID, appID, "memory.gib_hours", "GiB_hour", decimalTimeQuantity(memoryMiB, 5, 1024*60), windowStart, windowEnd, appID+":memory:"+windowStart.Format(time.RFC3339), logger)
-		insertUsage(ctx, db, userID, appID, "storage.system.gib_days", "GiB_day", decimalTimeQuantity(systemDiskGiB, 5, 24*60), windowStart, windowEnd, appID+":system-storage:"+windowStart.Format(time.RFC3339), logger)
 	}
 }
 
@@ -1001,12 +1050,12 @@ func meterStorage(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
 	if windowEnd.After(now) || windowEnd.Equal(windowStart) {
 		return
 	}
-	rows, err := db.Query(ctx, `SELECT app.id::text,app.user_id::text,volume->>'name',max(coalesce((volume->>'sizeGiB')::numeric,10))::text
+	rows, err := db.Query(ctx, `SELECT app.id::text,app.user_id::text,min(volume->>'name'),max(coalesce((release.immutable_snapshot->'runtime_spec'->>'dataVolumeGiB')::numeric,(volume->>'sizeGiB')::numeric,10))::text
 		FROM user_apps app
 		JOIN app_releases release ON release.user_app_id=app.id
 		CROSS JOIN LATERAL jsonb_array_elements(coalesce(release.immutable_snapshot->'runtime_spec'->'volumes','[]'::jsonb)) volume
-		WHERE coalesce(volume->>'name','')<>''
-		GROUP BY app.id,app.user_id,volume->>'name'`)
+		WHERE coalesce(volume->>'name','')<>'' AND app.deleted_at IS NULL
+		GROUP BY app.id,app.user_id`)
 	if err != nil {
 		logger.Error("storage usage query failed", "error", err)
 		return
@@ -1021,7 +1070,7 @@ func meterStorage(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
 		if _, sizeErr := executor.VolumeSize(ctx, runtimepolicy.AppVolumeNameForOwner(runtimeOwner, appID, key)); sizeErr != nil {
 			continue
 		}
-		insertUsage(ctx, db, userID, appID, "storage.data.gib_days", "GiB_day", decimalTimeQuantity(sizeGiB, 5, 24*60), windowStart, windowEnd, appID+":data-storage:"+key+":"+windowStart.Format(time.RFC3339), logger)
+		insertUsage(ctx, db, userID, appID, "storage.data.gib_days", "GiB_day", decimalTimeQuantity(sizeGiB, 5, 24*60), windowStart, windowEnd, appID+":data-storage:shared:"+windowStart.Format(time.RFC3339), logger)
 	}
 	if err = rows.Err(); err != nil {
 		logger.Error("storage usage iteration failed", "error", err)
@@ -1211,7 +1260,7 @@ func processOne(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
 				return
 			}
 		}
-		if err = executor.Pull(ctx, snap.Image); err != nil {
+		if _, err = pullConfiguredProductImage(ctx, db, snap.Image); err != nil {
 			tx.Rollback(ctx)
 			markJobError(ctx, db, id, err, logger)
 			return
@@ -1249,6 +1298,12 @@ func processOne(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
 			return
 		}
 		image = snap.Image
+		image, err = configuredProductImage(ctx, db, image)
+		if err != nil {
+			tx.Rollback(ctx)
+			markJobError(ctx, db, id, err, logger)
+			return
+		}
 		if snap.Runtime == nil {
 			snap.Runtime = map[string]any{}
 		}

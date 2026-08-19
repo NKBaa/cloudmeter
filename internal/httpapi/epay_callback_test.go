@@ -24,7 +24,7 @@ func TestEPaySignatureAndCheckoutURL(t *testing.T) {
 		t.Fatal(err)
 	}
 	query := parsed.Query()
-	if query.Get("sign") != first || query.Get("sign_type") != "HMAC-SHA256" || query.Get("out_trade_no") != "order-1" {
+	if query.Get("sign") != first || query.Get("sign_type") != "MD5" || query.Get("out_trade_no") != "order-1" {
 		t.Fatalf("unexpected checkout query: %s", parsed.RawQuery)
 	}
 	if strings.Contains(checkout, "secret") {
@@ -32,14 +32,35 @@ func TestEPaySignatureAndCheckoutURL(t *testing.T) {
 	}
 }
 
+func TestEPaySignatureMatchesGoEPay(t *testing.T) {
+	values := map[string]string{"device": "devicev", "money": "moneyv"}
+	if got := epaySignature(values, "1234567"); got != "3854cc9f022e0fb821bd2e002260245d" {
+		t.Fatalf("go-epay compatible signature=%q", got)
+	}
+}
+
 func TestEPaySignatureTypeIsExplicit(t *testing.T) {
-	for _, value := range []string{"HMAC-SHA256", "hmac-sha256"} {
-		if !strings.EqualFold(value, "HMAC-SHA256") {
+	for _, value := range []string{"MD5", "md5"} {
+		if !strings.EqualFold(value, "MD5") {
 			t.Fatalf("supported signature type rejected: %q", value)
 		}
 	}
-	if strings.EqualFold("MD5", "HMAC-SHA256") {
+	if strings.EqualFold("HMAC-SHA256", "MD5") {
 		t.Fatal("unsupported signature type accepted")
+	}
+}
+
+func TestEPayEndpointAcceptsOriginOrSubmitURL(t *testing.T) {
+	values := map[string]string{"pid": "merchant", "money": "1.00"}
+	for _, endpoint := range []string{"https://pay.example.test", "https://pay.example.test/submit.php"} {
+		checkout, err := buildEPayCheckoutURL(endpoint, values, "secret")
+		if err != nil {
+			t.Fatal(err)
+		}
+		parsed, _ := url.Parse(checkout)
+		if parsed.Path != "/submit.php" {
+			t.Fatalf("endpoint %q produced path %q", endpoint, parsed.Path)
+		}
 	}
 }
 

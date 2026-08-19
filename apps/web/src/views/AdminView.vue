@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-import { Activity, AppWindow, BadgeCent, BadgeDollarSign, CheckCircle2, CircleAlert, CirclePause, CirclePlay, Coins, Copy, CreditCard, Eye, FileClock, Globe2, KeyRound, LogIn, LogOut, MailCheck, Megaphone, Save, Settings2, ShieldPlus, Users, X } from '@lucide/vue'
+import { Activity, AppWindow, ArrowRight, BadgeCent, BadgeDollarSign, CheckCircle2, CircleAlert, CirclePause, CirclePlay, Coins, Container, Copy, CreditCard, Eye, FileClock, Globe2, KeyRound, LogIn, LogOut, MailCheck, Megaphone, MessageSquareText, Save, Settings2, ShieldPlus, Users, X } from '@lucide/vue'
 import { api, logout } from '../api'
 import BrandMark from '../components/BrandMark.vue'
 
@@ -31,8 +31,10 @@ const notice=reactive({title:'',content:'',severity:'info',published:true})
 const credit=reactive({userId:'',amountCents:0,businessRef:'',note:'',expiresAt:''})
 const editingUser=ref<User|null>(null)
 const walletEdit=reactive({targetBalanceYuan:0,note:''})
+const roleEdit=ref<'user'|'admin'>('user')
 
 const isSuperAdmin=computed(()=>currentUser.value?.Roles.includes('super_admin')===true)
+const isAdmin=computed(()=>currentUser.value?.Roles.some(role=>role==='admin'||role==='super_admin')===true)
 const smtpFormReady=computed(()=>smtp.enabled&&smtp.host.trim().length>0&&smtp.port>=1&&smtp.port<=65535&&(!smtp.username.trim()||smtp.passwordConfigured||smtp.password.length>0)&&/^[^\s@]+@[^\s@]+$/.test(smtp.fromEmail.trim())&&['none','starttls','tls'].includes(smtp.tlsMode))
 
 function done(text:string){message.value=text;error.value=''}
@@ -105,12 +107,31 @@ async function setUserStatus(user:User){
     done(status==='active'?'账户已恢复':'账户已停用')
   }catch(value){failed(value)}finally{busy.value=''}
 }
-function openUserEditor(user:User){editingUser.value=user;walletEdit.targetBalanceYuan=user.balanceCents/100;walletEdit.note=''}
-async function saveWalletBalance(){
+function primaryRole(user:User):'user'|'admin'{return user.roles.includes('admin')?'admin':'user'}
+function roleLabel(user:User){return user.roles.includes('super_admin')?'超级管理员':user.roles.includes('admin')?'管理员':'普通用户'}
+function openUserEditor(user:User){editingUser.value=user;walletEdit.targetBalanceYuan=user.balanceCents/100;walletEdit.note='';roleEdit.value=primaryRole(user)}
+async function saveUserChanges(){
   const user=editingUser.value;if(!user)return
   const target=Math.round(walletEdit.targetBalanceYuan*100),amount=target-user.balanceCents
-  if(amount===0){failed(new Error('余额没有变化'));return}
-  try{busy.value='wallet-adjust';const result=await api<{balanceCents:number}>('/admin/users/'+user.id+'/wallet/adjust',{method:'POST',body:JSON.stringify({amountCents:amount,businessRef:'admin-edit/'+crypto.randomUUID(),note:walletEdit.note.trim()||'管理员在用户编辑栏调整余额'})});user.balanceCents=result.balanceCents;done('用户余额已更新并写入调账账本');editingUser.value=null}catch(value){failed(value)}finally{busy.value=''}
+  const roleChanged=!user.roles.includes('super_admin')&&roleEdit.value!==primaryRole(user)
+  if(amount===0&&!roleChanged){failed(new Error('账户信息没有变化'));return}
+  try{
+    busy.value='user-save'
+    const updates:string[]=[]
+    if(roleChanged){
+      const result=await api<{roles:string[]}>('/admin/users/'+user.id+'/role',{method:'PATCH',body:JSON.stringify({role:roleEdit.value})})
+      user.roles=result.roles
+      updates.push(roleEdit.value==='admin'?'权限已切换为管理员':'权限已切换为普通用户')
+    }
+    if(amount!==0){
+      const result=await api<{balanceCents:number}>('/admin/users/'+user.id+'/wallet/adjust',{method:'POST',body:JSON.stringify({amountCents:amount,businessRef:'admin-edit/'+crypto.randomUUID(),note:walletEdit.note.trim()||'管理员在用户编辑栏调整余额'})})
+      user.balanceCents=result.balanceCents
+      updates.push('余额已更新并写入调账账本')
+    }
+    done(updates.join('；'))
+    editingUser.value=null
+    await load()
+  }catch(value){failed(value)}finally{busy.value=''}
 }
 async function impersonate(user:User,writeEnabled=false){
   if(writeEnabled&&!confirm('代用户执行写操作会记录真实管理员身份。确认继续？'))return
@@ -191,6 +212,11 @@ async function grantCredit(){
         <article><small>应用产品</small><strong>{{summary.products}}</strong><span>全部模板产品</span></article>
         <article><small>进行中部署</small><strong>{{summary.activeDeployments}}</strong><span>尚未完成的任务</span></article>
       </section>
+      <section v-if="page==='overview'" class="admin-quick-grid">
+        <RouterLink to="/admin/products"><span><AppWindow :size="18"/></span><div><strong>产品与版本</strong><small>创建产品、导入模板并测试发布</small></div><ArrowRight :size="16"/></RouterLink>
+        <RouterLink to="/admin/tickets"><span><MessageSquareText :size="18"/></span><div><strong>工单管理</strong><small>处理用户问题和回复进度</small></div><ArrowRight :size="16"/></RouterLink>
+        <RouterLink to="/admin/docker" class="docker-quick-link"><span><Container :size="18"/></span><div><strong>Docker 与镜像源</strong><small>镜像加速、Registry、代理和拉取探测</small></div><ArrowRight :size="16"/></RouterLink>
+      </section>
 
       <section v-if="page==='users'" class="admin-section">
         <div class="section-heading">
@@ -208,15 +234,19 @@ async function grantCredit(){
           </form>
           <div class="data-list">
             <article v-for="user in users" :key="user.id" class="data-row">
-              <div><strong>{{user.displayName}}</strong><small>{{user.email}} · {{user.roles.join(' / ')}}</small></div>
+              <div><strong>{{user.displayName}}</strong><small>{{user.email}} · {{roleLabel(user)}}</small></div>
               <span :class="['status-pill',user.status]">{{user.status==='active'?'正常':'已停用'}}</span>
               <span class="user-balance">¥{{(user.balanceCents/100).toFixed(2)}}</span>
-              <template v-if="isSuperAdmin&&user.roles.includes('user')&&user.status==='active'">
-                <button class="icon-action" title="只读查看用户控制台" :disabled="busy==='impersonate-'+user.id" @click="impersonate(user)"><Eye :size="18"/></button>
-                <button class="icon-action" title="代用户执行操作" :disabled="busy==='impersonate-'+user.id" @click="impersonate(user,true)"><LogIn :size="18"/></button>
-              </template>
-              <button v-if="isSuperAdmin" class="icon-action" :title="user.status==='active'?'停用账户':'恢复账户'" :disabled="busy===user.id" @click="setUserStatus(user)"><CirclePause v-if="user.status==='active'" :size="18"/><CirclePlay v-else :size="18"/></button>
-              <button v-if="isSuperAdmin" class="icon-action" title="编辑用户与余额" @click="openUserEditor(user)"><Settings2 :size="18"/></button>
+              <div v-if="isAdmin" class="user-row-actions">
+                <template v-if="user.roles.includes('user')&&user.status==='active'">
+                  <template v-if="isSuperAdmin">
+                  <button class="icon-action" title="只读查看用户控制台" :disabled="busy==='impersonate-'+user.id" @click="impersonate(user)"><Eye :size="16"/></button>
+                  <button class="icon-action" title="代用户执行操作" :disabled="busy==='impersonate-'+user.id" @click="impersonate(user,true)"><LogIn :size="16"/></button>
+                  </template>
+                </template>
+                <button v-if="isSuperAdmin" class="icon-action" :title="user.status==='active'?'停用账户':'恢复账户'" :disabled="busy===user.id" @click="setUserStatus(user)"><CirclePause v-if="user.status==='active'" :size="16"/><CirclePlay v-else :size="16"/></button>
+                <button class="icon-action" title="编辑用户与余额" @click="openUserEditor(user)"><Settings2 :size="16"/></button>
+              </div>
             </article>
           </div>
         </div>
@@ -314,5 +344,5 @@ async function grantCredit(){
         </div>
       </section>
     </main>
-    <div v-if="editingUser" class="modal-backdrop user-editor-backdrop" @click.self="editingUser=null"><aside class="user-editor"><header><div><p class="eyebrow">编辑用户</p><h2>{{editingUser.displayName}}</h2><small>{{editingUser.email}}</small></div><button class="icon-action" title="关闭" @click="editingUser=null"><X :size="18"/></button></header><form @submit.prevent="saveWalletBalance"><section><h3>基本信息</h3><label>显示名称<input :value="editingUser.displayName" disabled/></label><label>邮箱<input :value="editingUser.email" disabled/></label></section><section><h3>余额与调账</h3><label>目标余额（CNY）<input v-model.number="walletEdit.targetBalanceYuan" type="number" min="0" step="0.01" required/><small>当前 ¥{{(editingUser.balanceCents/100).toFixed(2)}}，保存时自动写入差额账本</small></label><label>管理员备注<textarea v-model="walletEdit.note" rows="4" maxlength="500" placeholder="本次余额调整原因"/></label></section><footer><button type="button" class="secondary" @click="editingUser=null">取消</button><button class="primary" :disabled="busy==='wallet-adjust'"><Save :size="17"/>保存更改</button></footer></form></aside></div>
+    <div v-if="editingUser" class="modal-backdrop user-editor-backdrop" @click.self="editingUser=null"><aside class="user-editor"><header><div><p class="eyebrow">编辑用户</p><h2>{{editingUser.displayName}}</h2><small>{{editingUser.email}}</small></div><button class="icon-action" title="关闭" @click="editingUser=null"><X :size="18"/></button></header><form @submit.prevent="saveUserChanges"><section><h3>基本信息</h3><label>显示名称<input :value="editingUser.displayName" disabled/></label><label>邮箱<input :value="editingUser.email" disabled/></label><label>账号权限<select v-model="roleEdit" :disabled="editingUser.roles.includes('super_admin')"><option value="user">普通用户</option><option value="admin">管理员</option></select><small v-if="editingUser.roles.includes('super_admin')">超级管理员权限受保护，不能在此降级</small><small v-else>保存后立即生效；管理员会在普通用户控制台基础上获得管理能力</small></label></section><section v-if="isSuperAdmin"><h3>余额与调账</h3><label>目标余额（元）<input v-model.number="walletEdit.targetBalanceYuan" type="number" min="0" step="0.01" required/><small>当前 ¥{{(editingUser.balanceCents/100).toFixed(2)}}，余额有变化时自动写入差额账本</small></label><label>管理员备注<textarea v-model="walletEdit.note" rows="3" maxlength="500" placeholder="余额调整原因（仅调整权限时可留空）"/></label></section><footer><button type="button" class="secondary" @click="editingUser=null">取消</button><button class="primary" :disabled="busy==='user-save'"><Save :size="17"/>保存更改</button></footer></form></aside></div>
 </template>

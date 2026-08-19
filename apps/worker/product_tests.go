@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -51,14 +52,14 @@ func processProductVersionTestOne(ctx context.Context, db *pgxpool.Pool, logger 
 	}
 	if executor == nil {
 		tx.Rollback(ctx)
-		failProductVersionTest(ctx, db, id, fmt.Errorf("Docker executor is not enabled"), logger)
+		failProductVersionTest(ctx, db, id, productTestFailure("运行环境检查", "Docker Engine", fmt.Errorf("Docker executor is not enabled"), nil), logger)
 		return
 	}
 
 	var spec productVersionTestSnapshot
 	if json.Unmarshal(snapshot, &spec) != nil || strings.TrimSpace(spec.Image) == "" {
 		tx.Rollback(ctx)
-		failProductVersionTest(ctx, db, id, fmt.Errorf("test deployment snapshot is invalid"), logger)
+		failProductVersionTest(ctx, db, id, productTestFailure("读取版本配置", "版本快照", fmt.Errorf("test deployment snapshot is invalid"), nil), logger)
 		return
 	}
 	switch state {
@@ -68,15 +69,15 @@ func processProductVersionTestOne(ctx context.Context, db *pgxpool.Pool, logger 
 			return
 		}
 	case "pulling":
-		if err = executor.Pull(ctx, spec.Image); err != nil {
+		if _, err = pullConfiguredProductImage(ctx, db, spec.Image); err != nil {
 			tx.Rollback(ctx)
-			failProductVersionTest(ctx, db, id, err, logger)
+			failProductVersionTest(ctx, db, id, productTestFailure("拉取应用镜像", spec.Image, err, productTestSecretValues(id, encryptedSecrets)), logger)
 			return
 		}
 		if _, needsProbe := healthPath(spec.Health); needsProbe {
 			if err = executor.Pull(ctx, backupHelperImage); err != nil {
 				tx.Rollback(ctx)
-				failProductVersionTest(ctx, db, id, fmt.Errorf("health probe helper image pull failed: %w", err), logger)
+				failProductVersionTest(ctx, db, id, productTestFailure("准备健康检查组件", backupHelperImage, err, productTestSecretValues(id, encryptedSecrets)), logger)
 				return
 			}
 		}
@@ -85,9 +86,9 @@ func processProductVersionTestOne(ctx context.Context, db *pgxpool.Pool, logger 
 			return
 		}
 	case "starting":
-		if err = startProductVersionTestContainer(ctx, id, spec, encryptedSecrets); err != nil {
+		if err = startProductVersionTestContainer(ctx, db, id, spec, encryptedSecrets); err != nil {
 			tx.Rollback(ctx)
-			failProductVersionTest(ctx, db, id, err, logger)
+			failProductVersionTest(ctx, db, id, productTestFailure("创建并启动测试容器", spec.Image, err, productTestSecretValues(id, encryptedSecrets)), logger)
 			return
 		}
 		if err = advanceProductVersionTest(ctx, tx, id, "health_checking", healthInterval(snapshot)); err != nil {
@@ -95,12 +96,13 @@ func processProductVersionTestOne(ctx context.Context, db *pgxpool.Pool, logger 
 			return
 		}
 	case "health_checking":
-		healthy, healthErr := productVersionTestHealthy(ctx, id, spec)
+		healthy, healthDetail, healthErr := productVersionTestHealthy(ctx, id, spec)
 		if healthErr != nil {
 			tx.Rollback(ctx)
-			failProductVersionTest(ctx, db, id, healthErr, logger)
+			failProductVersionTest(ctx, db, id, productTestFailure("执行健康检查", spec.Image, healthErr, productTestSecretValues(id, encryptedSecrets)), logger)
 			return
 		}
+		healthDetail = redactProductTestDiagnostics(healthDetail, productTestSecretValues(id, encryptedSecrets))
 		if healthy {
 			if err = completeProductVersionTest(ctx, tx, id, "succeeded", ""); err != nil {
 				logger.Error("product test completion failed", "test", id, "error", err)
@@ -108,14 +110,19 @@ func processProductVersionTestOne(ctx context.Context, db *pgxpool.Pool, logger 
 			}
 			terminal = true
 		} else if healthAttempts+1 >= productTestMaxHealthAttempts {
-			if err = completeProductVersionTest(ctx, tx, id, "failed", fmt.Sprintf("health check did not pass after %d attempts", productTestMaxHealthAttempts)); err != nil {
+			message := fmt.Sprintf("测试阶段：执行健康检查\n检查对象：%s\n失败原因：健康检查在 %d 次尝试后仍未通过\n处理建议：确认容器监听端口、健康检查路径和启动耗时；需要较长预热时间时可适当增大检查间隔。", spec.Image, productTestMaxHealthAttempts)
+			if healthDetail != "" {
+				message += "\n技术详情（已脱敏）：\n" + healthDetail
+			}
+			if err = completeProductVersionTest(ctx, tx, id, "failed", message); err != nil {
 				logger.Error("product test failure completion failed", "test", id, "error", err)
 				return
 			}
 			terminal = true
 		} else if _, err = tx.Exec(ctx, `UPDATE app_product_version_tests
-			SET attempts=attempts+1,health_attempts=health_attempts+1,available_at=now()+make_interval(secs=>$2),updated_at=now()
-			WHERE id=$1`, id, healthInterval(snapshot)); err != nil {
+			SET attempts=attempts+1,health_attempts=health_attempts+1,last_error=nullif($3,''),
+				available_at=now()+make_interval(secs=>$2),updated_at=now()
+			WHERE id=$1`, id, healthInterval(snapshot), trimProductTestError(healthDetail)); err != nil {
 			logger.Error("product test health retry update failed", "test", id, "error", err)
 			return
 		}
@@ -139,7 +146,7 @@ func advanceProductVersionTest(ctx context.Context, tx pgx.Tx, id, next string, 
 	return err
 }
 
-func startProductVersionTestContainer(ctx context.Context, id string, spec productVersionTestSnapshot, encryptedSecrets map[string]string) error {
+func startProductVersionTestContainer(ctx context.Context, db *pgxpool.Pool, id string, spec productVersionTestSnapshot, encryptedSecrets map[string]string) error {
 	network, container := productTestNetworkName(id), productTestContainerName(id)
 	if err := executor.EnsureNetwork(ctx, network); err != nil {
 		return err
@@ -156,7 +163,11 @@ func startProductVersionTestContainer(ctx context.Context, id string, spec produ
 	if err = executor.RemoveIfExists(ctx, container); err != nil {
 		return err
 	}
-	if err = executor.CreateProductTest(ctx, container, spec.Image, network, []string{productTestAlias(id)}, runtimeSpec); err != nil {
+	image, err := configuredProductImage(ctx, db, spec.Image)
+	if err != nil {
+		return err
+	}
+	if err = executor.CreateProductTest(ctx, container, image, network, []string{productTestAlias(id)}, runtimeSpec); err != nil {
 		return err
 	}
 	return executor.Start(ctx, container)
@@ -197,29 +208,112 @@ func productVersionTestRuntime(id string, runtimeSpec map[string]any, encryptedS
 	return runtime, nil
 }
 
-func productVersionTestHealthy(ctx context.Context, id string, spec productVersionTestSnapshot) (bool, error) {
+func productVersionTestHealthy(ctx context.Context, id string, spec productVersionTestSnapshot) (bool, string, error) {
 	container, network := productTestContainerName(id), productTestNetworkName(id)
 	healthy, err := executor.Healthy(ctx, container)
 	if err != nil && dockerResourceMissing(err) && runtimeScope != "" {
 		container, network = legacyProductTestContainerName(id), legacyProductTestNetworkName(id)
 		healthy, err = executor.Healthy(ctx, container)
 	}
-	if err != nil || !healthy {
-		return healthy, err
+	if err != nil {
+		return false, "", err
+	}
+	if !healthy {
+		detail := "容器尚未进入可用状态"
+		if diagnostics, diagnosticsErr := executor.ContainerDiagnostics(ctx, container, 80); diagnosticsErr == nil && strings.TrimSpace(diagnostics) != "" {
+			detail += "。\n容器诊断：\n" + diagnostics
+		}
+		return false, detail, nil
 	}
 	if !snapshotHealthOK(mustMarshalProductTestHealth(spec.Health)) {
-		return false, nil
+		return false, "模板要求模拟健康检查失败", nil
 	}
 	path, ok := healthPath(spec.Health)
 	if !ok {
-		return true, nil
+		return true, "", nil
 	}
 	target := fmt.Sprintf("http://%s:%d%s", productTestAlias(id), routePort(spec.Route), path)
 	probeName := productTestHealthContainerName(id)
 	probeCtx, cancel := context.WithTimeout(ctx, time.Duration(healthTimeout(spec.Health)+5)*time.Second)
 	defer cancel()
 	err = executor.ProbeHTTP(probeCtx, probeName, backupHelperImage, network, target, healthTimeout(spec.Health))
-	return err == nil, nil
+	if err == nil {
+		return true, "", nil
+	}
+	detail := fmt.Sprintf("探测地址：%s\n探测失败：%s", target, err)
+	if diagnostics, diagnosticsErr := executor.ContainerDiagnostics(ctx, container, 100); diagnosticsErr == nil && strings.TrimSpace(diagnostics) != "" {
+		detail += "\n容器诊断：\n" + diagnostics
+	}
+	return false, detail, nil
+}
+
+func productTestSecretValues(id string, encryptedSecrets map[string]string) []string {
+	values := make([]string, 0, len(encryptedSecrets)+2)
+	for key, encrypted := range encryptedSecrets {
+		if secrets == nil || encrypted == "" {
+			continue
+		}
+		if value, err := secrets.Decrypt("product.version.test."+id+"."+key, encrypted); err == nil && value != "" {
+			values = append(values, value)
+		}
+	}
+	if egressToken != "" {
+		mac := hmac.New(sha256.New, []byte(egressToken))
+		_, _ = mac.Write([]byte(id))
+		values = append(values, hex.EncodeToString(mac.Sum(nil)))
+	}
+	sort.Slice(values, func(i, j int) bool { return len(values[i]) > len(values[j]) })
+	return values
+}
+
+func redactProductTestDiagnostics(value string, secretValues []string) string {
+	for _, secret := range secretValues {
+		if secret != "" {
+			value = strings.ReplaceAll(value, secret, "[已脱敏]")
+		}
+	}
+	value = regexpAuthorization.ReplaceAllString(value, "$1[已脱敏]")
+	value = regexpURLCredential.ReplaceAllString(value, "$1[已脱敏]@")
+	value = regexpSensitiveAssignment.ReplaceAllString(value, "$1[已脱敏]")
+	return trimProductTestError(value)
+}
+
+func productTestFailure(stage, target string, cause error, secretValues []string) error {
+	detail := "未返回底层错误详情"
+	if cause != nil && strings.TrimSpace(cause.Error()) != "" {
+		detail = redactProductTestDiagnostics(cause.Error(), secretValues)
+	}
+	lower := strings.ToLower(detail)
+	reason := "容器运行时返回错误"
+	suggestion := "根据下方技术详情核对产品版本配置；修正后重新执行测试部署。"
+	switch {
+	case strings.Contains(lower, "no such image"), strings.Contains(lower, "manifest unknown"), strings.Contains(lower, "manifest not found"):
+		reason = "镜像或填写的版本号不存在"
+		suggestion = "核对完整镜像地址和版本号；不要依赖已被删除的 latest 标签。私有镜像还需在“Docker 与镜像源”中配置 Registry 凭据。"
+	case strings.Contains(lower, "pull access denied"), strings.Contains(lower, "unauthorized"), strings.Contains(lower, "authentication required"), strings.Contains(lower, "denied"):
+		reason = "Registry 拒绝访问镜像"
+		suggestion = "确认镜像可见性，并在“Docker 与镜像源”中填写正确的 Registry 地址、用户名和密码。"
+	case strings.Contains(lower, "deadline exceeded"), strings.Contains(lower, "i/o timeout"), strings.Contains(lower, "timeout"), strings.Contains(lower, "timed out"):
+		reason = "连接镜像库或容器服务超时"
+		suggestion = "检查宿主机网络、Docker 镜像加速/代理和 DNS；必要时在“Docker 与镜像源”中提高拉取超时。"
+	case strings.Contains(lower, "connection refused"):
+		reason = "目标服务拒绝连接"
+		suggestion = "确认容器内网监听端口与应用实际端口一致，并检查应用是否已完成启动。"
+	case strings.Contains(lower, "exec format error"), strings.Contains(lower, "no matching manifest"):
+		reason = "镜像不支持当前服务器架构"
+		suggestion = "选择包含当前 CPU 架构的多架构镜像，或发布与服务器架构匹配的版本。"
+	case strings.Contains(lower, "docker executor is not enabled"):
+		reason = "Worker 尚未连接 Docker Engine"
+		suggestion = "检查 Worker 的 Docker Socket 挂载和运行时配置，然后重启 Worker。"
+	case strings.Contains(lower, "snapshot is invalid"):
+		reason = "版本快照不完整或已损坏"
+		suggestion = "重新创建该产品版本；若仍复现，请检查数据库迁移是否完整。"
+	}
+	target = strings.TrimSpace(redactProductTestDiagnostics(target, secretValues))
+	if target == "" {
+		target = "未识别"
+	}
+	return fmt.Errorf("测试阶段：%s\n检查对象：%s\n失败原因：%s\n处理建议：%s\n技术详情（已脱敏）：\n%s", stage, target, reason, suggestion, detail)
 }
 
 func dockerResourceMissing(err error) bool {
@@ -375,8 +469,9 @@ func activeProductVersionTestIDs(ctx context.Context, db *pgxpool.Pool) (map[str
 
 func trimProductTestError(value string) string {
 	value = strings.TrimSpace(value)
-	if len(value) > 2048 {
-		return value[:2048]
+	runes := []rune(value)
+	if len(runes) > 6000 {
+		return string(runes[:6000]) + "\n……诊断信息已截断"
 	}
 	return value
 }
@@ -489,3 +584,6 @@ func productTestHealthOwnerActive(name string, active map[string]struct{}) bool 
 var regexpUUID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 var regexpCompactUUID = regexp.MustCompile(`^[0-9a-f]{32}$`)
 var regexpHealthPrefix = regexp.MustCompile(`^[0-9a-f]{12}$`)
+var regexpAuthorization = regexp.MustCompile(`(?i)(authorization:\s*(?:bearer|basic)\s+)[^\s]+`)
+var regexpURLCredential = regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9+.-]*://)[^/@\s]+@`)
+var regexpSensitiveAssignment = regexp.MustCompile(`(?i)(\b(?:password|passwd|token|secret|api[_-]?key|access[_-]?key)\b\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)`)

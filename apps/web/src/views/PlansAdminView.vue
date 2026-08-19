@@ -20,7 +20,6 @@ type Version = {
     apps: number;
     cpuCores: number;
     memoryGiB: number;
-    systemDiskGiB: number;
     dataDiskGiB: number;
     backupStorageGiB: number;
     backupOperationsPerMonth: number;
@@ -66,7 +65,6 @@ const planForm = reactive({ code: "pro", name: "专业版" }),
     apps: 5,
     cpuCores: 4,
     memoryGiB: 8,
-    systemDiskGiB: 50,
     dataDiskGiB: 100,
     backupStorageGiB: 100,
     backupOperationsPerMonth: 50,
@@ -305,21 +303,13 @@ function subscriptionLabel(user: User) {
               </div>
               <div class="field-row">
                 <label
-                  >系统盘总量（GiB）<input
-                    v-model.number="versionForm.systemDiskGiB"
-                    type="number"
-                    min="1"
-                    step="1"
-                    required
-                /></label>
-                <label
                   >数据盘总量（GiB）<input
                     v-model.number="versionForm.dataDiskGiB"
                     type="number"
                     min="0"
                     step="1"
                     required
-                /></label>
+                /><small>仅持久数据卷按容量计费；镜像与容器临时层由平台承担。</small></label>
               </div>
               <fieldset class="product-entitlements">
                 <legend>备份权益</legend>

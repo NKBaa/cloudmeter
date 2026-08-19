@@ -18,12 +18,16 @@ import {
   Receipt,
   Settings2,
   Users,
+  Container,
+  MessageSquareText,
 } from "@lucide/vue";
 import { logout } from "../api";
 import BrandMark from "./BrandMark.vue";
 
 const route = useRoute();
 const roles = ref<string[]>([]);
+const user = ref<{ Email?: string; DisplayName?: string } | null>(null);
+const balanceCents = ref(0);
 const isAdmin = computed(() =>
   roles.value.some((role) => role === "admin" || role === "super_admin"),
 );
@@ -38,11 +42,26 @@ onMounted(async () => {
     if (response.ok) {
       const me = await response.json();
       roles.value = me.Roles || [];
+      user.value = me;
+    }
+    const billingResponse = await fetch("/api/billing/summary", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (billingResponse.ok) {
+      const summary = await billingResponse.json();
+      balanceCents.value = summary.balanceCents || 0;
     }
   } catch {
     /* The page surfaces session errors itself. */
   }
 });
+
+const balanceText = computed(() => {
+  return `余额 ¥${(balanceCents.value / 100).toFixed(2)}`;
+});
+const userInitial = computed(() =>
+  user.value?.Email ? user.value.Email[0].toUpperCase() : "?",
+);
 
 function isAnchorActive(path: string, hash: string): boolean {
   return route.path === path && route.hash === hash;
@@ -82,6 +101,9 @@ function isAnchorActive(path: string, hash: string): boolean {
         <RouterLink to="/console/usage" active-class="active"
           ><Receipt :size="18" />用量明细</RouterLink
         >
+        <RouterLink to="/console/tickets" active-class="active"
+          ><MessageSquareText :size="18" />工单支持</RouterLink
+        >
         <template v-if="isAdmin">
           <div class="nav-group">管理控制台</div>
           <RouterLink to="/admin" exact-active-class="active"
@@ -93,6 +115,10 @@ function isAnchorActive(path: string, hash: string): boolean {
           <RouterLink to="/admin/products" active-class="active"
             ><AppWindow :size="18" />产品管理</RouterLink
           >
+          <RouterLink to="/admin/tickets" active-class="active"
+            ><MessageSquareText :size="18" />工单管理</RouterLink
+          >
+          <div v-if="isSuperAdmin" class="nav-group">资金与运营</div>
           <RouterLink
             v-if="isSuperAdmin"
             to="/admin/pricing"
@@ -117,6 +143,7 @@ function isAnchorActive(path: string, hash: string): boolean {
             active-class="active"
             ><CalendarCheck :size="18" />签到设置</RouterLink
           >
+          <div class="nav-group">平台设置</div>
           <RouterLink to="/admin/announcements" active-class="active"
             ><Settings2 :size="18" />公告管理</RouterLink
           >
@@ -142,16 +169,33 @@ function isAnchorActive(path: string, hash: string): boolean {
             active-class="active"
             ><FileClock :size="18" />审计日志</RouterLink
           >
+          <div v-if="isAdmin" class="nav-group infrastructure-nav-group">容器基础设施</div>
+          <RouterLink
+            v-if="isAdmin"
+            to="/admin/docker"
+            active-class="active"
+            class="infrastructure-nav-link"
+            ><Container :size="18" />Docker 与镜像源</RouterLink
+          >
         </template>
       </nav>
+      <div class="sidebar-user" v-if="user">
+        <div class="sidebar-user-avatar">{{ userInitial }}</div>
+        <div class="sidebar-user-info">
+          <strong>{{ user.Email }}</strong>
+          <span>{{ balanceText }}</span>
+        </div>
+      </div>
       <button class="icon-text" @click="logout">
         <LogOut :size="17" />退出
       </button>
     </aside>
-    <RouterView v-slot="{ Component, route: activeRoute }">
-      <Transition name="page-fade" mode="out-in">
-        <component :is="Component" :key="activeRoute.path" />
-      </Transition>
-    </RouterView>
+    <main class="app-main">
+      <RouterView v-slot="{ Component, route }">
+        <Transition name="workspace-slide" mode="out-in">
+          <component :is="Component" :key="route.fullPath" />
+        </Transition>
+      </RouterView>
+    </main>
   </div>
 </template>
