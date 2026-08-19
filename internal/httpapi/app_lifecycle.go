@@ -3,7 +3,9 @@ package httpapi
 import (
 	runtimepolicy "cloudmeter/internal/runtime"
 	"context"
+	"fmt"
 	"github.com/jackc/pgx/v5"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -44,6 +46,66 @@ func (s *Server) appReleases(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"releases": items})
 }
 
+// appConfiguration returns the active executable settings together with the
+// latest published product template. Secret values are deliberately omitted;
+// only declared/configured key names are returned.
+func (s *Server) appConfiguration(w http.ResponseWriter, r *http.Request) {
+	p, _ := r.Context().Value(principalKey).(principal)
+	appID := r.PathValue("appID")
+	var appSlug, appStatus, productID, productSlug, productName, iconURL string
+	var currentVersionID, targetVersionID string
+	var targetVersion int
+	var currentRuntime, currentRoute, targetRuntime, targetRoute map[string]any
+	err := s.db.QueryRow(r.Context(), `SELECT app.slug,app.status,product.id::text,product.slug,product.name,product.icon_url,
+		current_release.product_version_id::text,current_release.immutable_snapshot->'runtime_spec',current_release.immutable_snapshot->'route_spec',
+		target.id::text,target.version,target.runtime_spec,target.route_spec
+		FROM user_apps app
+		JOIN app_products product ON product.id=app.product_id
+		JOIN app_releases current_release ON current_release.id=app.last_successful_release_id
+		JOIN LATERAL (SELECT id,version,runtime_spec,route_spec FROM app_product_versions
+			WHERE product_id=product.id AND published_at IS NOT NULL ORDER BY version DESC LIMIT 1) target ON true
+		WHERE app.id=$1 AND app.user_id=$2 AND app.deleted_at IS NULL`, appID, p.ID).Scan(
+		&appSlug, &appStatus, &productID, &productSlug, &productName, &iconURL,
+		&currentVersionID, &currentRuntime, &currentRoute, &targetVersionID, &targetVersion, &targetRuntime, &targetRoute,
+	)
+	if err == pgx.ErrNoRows {
+		writeError(w, http.StatusNotFound, "app_configuration_not_found", "application has no successful configuration")
+		return
+	}
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	rows, err := s.db.Query(r.Context(), `SELECT secret.key FROM app_secrets secret
+		WHERE secret.user_app_id=$1 AND EXISTS(SELECT 1 FROM app_secret_versions version WHERE version.app_secret_id=secret.id)
+		ORDER BY secret.key`, appID)
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	defer rows.Close()
+	configuredKeys := []string{}
+	for rows.Next() {
+		var key string
+		if err = rows.Scan(&key); err != nil {
+			s.internalError(w, err)
+			return
+		}
+		configuredKeys = append(configuredKeys, key)
+	}
+	if err = rows.Err(); err != nil {
+		s.internalError(w, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, map[string]any{
+		"app":                  map[string]any{"id": appID, "slug": appSlug, "status": appStatus, "productSlug": productSlug},
+		"current":              map[string]any{"versionId": currentVersionID, "runtimeSpec": currentRuntime, "routeSpec": currentRoute},
+		"target":               map[string]any{"productId": productID, "productSlug": productSlug, "name": productName, "iconUrl": iconURL, "versionId": targetVersionID, "version": targetVersion, "runtimeSpec": targetRuntime, "routeSpec": targetRoute},
+		"configuredSecretKeys": configuredKeys,
+	})
+}
+
 func (s *Server) appRoute(w http.ResponseWriter, r *http.Request) {
 	p, _ := r.Context().Value(principalKey).(principal)
 	var path, host string
@@ -62,8 +124,10 @@ func (s *Server) appRoute(w http.ResponseWriter, r *http.Request) {
 }
 
 type appReleaseRequest struct {
-	VersionID      string `json:"versionId"`
-	IdempotencyKey string `json:"idempotencyKey"`
+	VersionID      string             `json:"versionId"`
+	IdempotencyKey string             `json:"idempotencyKey"`
+	Resources      *selectedResources `json:"resources"`
+	Secrets        map[string]string  `json:"secrets"`
 }
 
 func (s *Server) createAppRelease(w http.ResponseWriter, r *http.Request) {
@@ -80,7 +144,7 @@ func (s *Server) createAppRelease(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "validation_failed", "versionId and idempotencyKey are required")
 		return
 	}
-	s.createReleaseJob(w, r, p.auditActorID(), p.ID, appID, req.VersionID, req.IdempotencyKey, "", "update")
+	s.createReleaseJob(w, r, p.auditActorID(), p.ID, appID, req.VersionID, req.IdempotencyKey, "", "update", req.Resources, req.Secrets)
 }
 func (s *Server) rollbackApp(w http.ResponseWriter, r *http.Request) {
 	p, _ := r.Context().Value(principalKey).(principal)
@@ -108,9 +172,9 @@ func (s *Server) rollbackApp(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, err)
 		return
 	}
-	s.createReleaseJob(w, r, p.auditActorID(), p.ID, appID, versionID, q.IdempotencyKey, q.ReleaseID, "rollback")
+	s.createReleaseJob(w, r, p.auditActorID(), p.ID, appID, versionID, q.IdempotencyKey, q.ReleaseID, "rollback", nil, nil)
 }
-func (s *Server) createReleaseJob(w http.ResponseWriter, r *http.Request, actorID, userID, appID, versionID, key, rollbackReleaseID, operation string) {
+func (s *Server) createReleaseJob(w http.ResponseWriter, r *http.Request, actorID, userID, appID, versionID, key, rollbackReleaseID, operation string, selected *selectedResources, providedSecrets map[string]string) {
 	tx, err := s.db.Begin(r.Context())
 	if err != nil {
 		s.internalError(w, err)
@@ -190,6 +254,21 @@ func (s *Server) createReleaseJob(w http.ResponseWriter, r *http.Request, actorI
 			s.internalError(w, err)
 			return
 		}
+		if operation == "update" {
+			runtimeSpec, err = runtimeSpecForUpdate(runtimeSpec, snapshotRuntime(currentSnapshot), selected)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "invalid_deployment_configuration", err.Error())
+				return
+			}
+			if err = s.applyReleaseSecretUpdates(r.Context(), tx, appID, runtimeSpec, providedSecrets); err != nil {
+				if validation, ok := err.(*secretValidationError); ok {
+					writeError(w, validation.Status, validation.Code, validation.Message)
+				} else {
+					s.internalError(w, err)
+				}
+				return
+			}
+		}
 		if err = tx.QueryRow(r.Context(), `SELECT jsonb_build_object('product_slug',$2::text,'image_digest',$3::text,'runtime_spec',$4::jsonb,'route_spec',$5::jsonb,'health_spec',$6::jsonb,'update_spec',$7::jsonb,'secret_versions',coalesce((SELECT jsonb_object_agg(s.key,v.id::text) FROM app_secrets s JOIN LATERAL (SELECT id FROM app_secret_versions WHERE app_secret_id=s.id ORDER BY version DESC LIMIT 1) v ON true WHERE s.user_app_id=$1 AND s.key IN (SELECT jsonb_array_elements_text(coalesce($4::jsonb->'secretKeys','[]'::jsonb)))),'{}'::jsonb))`, appID, productSlug, imageDigest, runtimeSpec, routeSpec, healthSpec, updateSpec).Scan(&snapshot); err != nil {
 			s.internalError(w, err)
 			return
@@ -263,6 +342,107 @@ func (s *Server) createReleaseJob(w http.ResponseWriter, r *http.Request, actorI
 	writeJSON(w, 202, map[string]any{"appId": appID, "releaseId": releaseID, "jobId": jobID, "status": "updating", "operation": operation})
 }
 
+// runtimeSpecForUpdate overlays user-editable values from the active release
+// onto the latest immutable product template. Omitted values stay unchanged;
+// fixed template fields always come from the administrator's new version.
+func runtimeSpecForUpdate(template, current map[string]any, requested *selectedResources) (map[string]any, error) {
+	selection := selectedResources{}
+	if requested != nil {
+		selection = *requested
+	}
+	minimumCompute, minimumErr := runtimepolicy.RuntimeResources(template, true)
+	if minimumErr != nil {
+		return nil, minimumErr
+	}
+	if editableRuntimeOption(template, "cpu", true) && selection.CPUCores == nil {
+		if resources, err := runtimepolicy.RuntimeResources(current, false); err == nil {
+			value := math.Max(resources.CPUCores, minimumCompute.CPUCores)
+			selection.CPUCores = &value
+		}
+	}
+	if editableRuntimeOption(template, "memory", true) && selection.MemoryMiB == nil {
+		if resources, err := runtimepolicy.RuntimeResources(current, false); err == nil {
+			value := math.Max(resources.MemoryMiB, minimumCompute.MemoryMiB)
+			selection.MemoryMiB = &value
+		}
+	}
+	targetVolumes := runtimepolicy.VolumeMounts(template)
+	currentCapacity, currentErr := runtimepolicy.RuntimeDataVolumeGiB(current, false)
+	if currentErr != nil {
+		return nil, currentErr
+	}
+	minimumCapacity, minimumCapacityErr := runtimepolicy.RuntimeDataVolumeGiB(template, false)
+	if minimumCapacityErr != nil {
+		return nil, minimumCapacityErr
+	}
+	if currentCapacity > 0 && len(targetVolumes) == 0 {
+		return nil, fmt.Errorf("the latest product version removes the existing shared data volume; data volumes can only be expanded")
+	}
+	if currentCapacity > minimumCapacity && !editableRuntimeOption(template, "dataVolume", true) {
+		return nil, fmt.Errorf("the latest product version fixes shared data volume capacity below the current %.0f GiB; data volumes can only be expanded", currentCapacity)
+	}
+	if len(targetVolumes) == 0 {
+		if selection.DataVolumeGiB != nil || len(selection.VolumeSizes) > 0 {
+			return nil, fmt.Errorf("this product version does not declare a data volume")
+		}
+	} else if editableRuntimeOption(template, "dataVolume", true) {
+		if selection.DataVolumeGiB == nil {
+			value := math.Max(currentCapacity, minimumCapacity)
+			if value > 0 {
+				selection.DataVolumeGiB = &value
+			}
+		} else if currentCapacity > 0 && *selection.DataVolumeGiB < currentCapacity {
+			return nil, fmt.Errorf("shared data volume capacity can only be expanded (current %.0f GiB)", currentCapacity)
+		}
+	}
+	if editableRuntimeOption(template, "command", false) && selection.Command == nil {
+		command, err := runtimepolicy.RuntimeCommand(current)
+		if err != nil {
+			return nil, err
+		}
+		if command != nil {
+			selection.Command = command
+		}
+	}
+	editableEnv := []string{}
+	if values, ok := template["editableEnvKeys"].([]any); ok {
+		for _, raw := range values {
+			if key, ok := raw.(string); ok {
+				editableEnv = append(editableEnv, key)
+			}
+		}
+	}
+	if len(editableEnv) > 0 {
+		mergedEnvironment := map[string]string{}
+		currentEnvironment, _ := current["env"].(map[string]any)
+		templateEnvironment, _ := template["env"].(map[string]any)
+		for _, key := range editableEnv {
+			if value, ok := currentEnvironment[key].(string); ok {
+				mergedEnvironment[key] = value
+			} else if value, ok := templateEnvironment[key].(string); ok {
+				mergedEnvironment[key] = value
+			}
+		}
+		for key, value := range selection.Environment {
+			mergedEnvironment[key] = value
+		}
+		selection.Environment = mergedEnvironment
+	}
+	if editableRuntimeOption(template, "dependencies", false) && selection.Dependencies == nil {
+		dependencies, err := runtimepolicy.RuntimeDependencies(current)
+		if err != nil {
+			return nil, err
+		}
+		if dependencies != nil {
+			selection.Dependencies = make([]selectedDependency, 0, len(dependencies))
+			for _, dependency := range dependencies {
+				selection.Dependencies = append(selection.Dependencies, selectedDependency{Key: dependency.Key, ProductID: dependency.ProductID, ServiceSlug: dependency.ServiceSlug, Required: dependency.Required})
+			}
+		}
+	}
+	return selectedRuntimeSpec(template, selection)
+}
+
 func missingSnapshotSecrets(snapshot map[string]any) ([]string, error) {
 	required, err := runtimepolicy.RuntimeSecretKeys(snapshotRuntime(snapshot))
 	if err != nil {
@@ -283,7 +463,10 @@ func missingRequiredBackups(ctx context.Context, tx pgx.Tx, appID string, runtim
 	missing := []string{}
 	for _, mount := range runtimepolicy.VolumeMounts(runtimeSpec) {
 		var exists bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM app_backups WHERE user_app_id=$1 AND volume_key=$2 AND status='succeeded' AND completed_at>=$3)`, appID, mount.Key, releaseCreated).Scan(&exists); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM app_backups backup
+			LEFT JOIN app_backup_deletion_jobs deletion ON deletion.backup_id=backup.id
+			WHERE backup.user_app_id=$1 AND backup.volume_key=$2 AND backup.status='succeeded'
+			  AND backup.completed_at>=$3 AND coalesce(deletion.status,'') NOT IN ('queued','running','succeeded'))`, appID, mount.Key, releaseCreated).Scan(&exists); err != nil {
 			return nil, err
 		}
 		if !exists {

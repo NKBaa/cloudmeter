@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -365,6 +366,94 @@ func (e *DockerExecutor) DaemonSettings(ctx context.Context) (DockerDaemonSettin
 	}, nil
 }
 
+var restartableComposeServices = map[string]struct{}{
+	"gateway": {}, "web": {}, "api": {}, "app-router": {}, "egress-proxy": {}, "worker": {},
+}
+
+// RestartComposeService restarts one fixed CloudMeter control-plane service.
+// The service name is allow-listed and Docker labels are checked again after
+// filtering, so callers cannot turn this into a general container restart
+// primitive or cross Compose project boundaries.
+func (e *DockerExecutor) RestartComposeService(ctx context.Context, service string, waitReady bool) error {
+	service = strings.TrimSpace(service)
+	if _, allowed := restartableComposeServices[service]; !allowed {
+		return fmt.Errorf("compose service %q is not restartable", service)
+	}
+	if strings.TrimSpace(e.owner) == "" {
+		return fmt.Errorf("runtime owner is required for platform restart")
+	}
+	filters, err := json.Marshal(map[string][]string{"label": {
+		"com.docker.compose.project=" + e.owner,
+		"com.docker.compose.service=" + service,
+		"cloudmeter.owner=" + e.owner,
+	}})
+	if err != nil {
+		return err
+	}
+	var containers []struct {
+		ID     string            `json:"Id"`
+		Labels map[string]string `json:"Labels"`
+	}
+	if err = e.request(ctx, http.MethodGet, "/containers/json?all=true&filters="+url.QueryEscape(string(filters)), nil, &containers); err != nil {
+		return fmt.Errorf("find compose service %s: %w", service, err)
+	}
+	matches := make([]string, 0, 1)
+	for _, container := range containers {
+		if container.ID == "" ||
+			container.Labels["com.docker.compose.project"] != e.owner ||
+			container.Labels["com.docker.compose.service"] != service ||
+			container.Labels["cloudmeter.owner"] != e.owner {
+			continue
+		}
+		matches = append(matches, container.ID)
+	}
+	if len(matches) != 1 {
+		return fmt.Errorf("compose service %s expected exactly one owned container, found %d", service, len(matches))
+	}
+	containerID := matches[0]
+	if err = e.request(ctx, http.MethodPost, "/containers/"+urlEscape(containerID)+"/restart?t=10", nil, nil); err != nil {
+		return fmt.Errorf("restart compose service %s: %w", service, err)
+	}
+	if !waitReady {
+		return nil
+	}
+	return e.waitComposeServiceReady(ctx, containerID, service)
+}
+
+func (e *DockerExecutor) waitComposeServiceReady(ctx context.Context, containerID, service string) error {
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		var out struct {
+			Config struct {
+				Labels map[string]string `json:"Labels"`
+			} `json:"Config"`
+			State struct {
+				Running    bool `json:"Running"`
+				Restarting bool `json:"Restarting"`
+				Health     *struct {
+					Status string `json:"Status"`
+				} `json:"Health"`
+			} `json:"State"`
+		}
+		err := e.request(ctx, http.MethodGet, "/containers/"+urlEscape(containerID)+"/json", nil, &out)
+		if err == nil {
+			labels := out.Config.Labels
+			if labels["com.docker.compose.project"] != e.owner || labels["com.docker.compose.service"] != service || labels["cloudmeter.owner"] != e.owner {
+				return fmt.Errorf("compose service %s labels changed during restart", service)
+			}
+			if out.State.Running && !out.State.Restarting && (out.State.Health == nil || out.State.Health.Status == "healthy") {
+				return nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("compose service %s did not become ready: %w", service, ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
 func (e *DockerExecutor) Create(ctx context.Context, name, image, network string, aliases []string, spec map[string]any) error {
 	if err := e.assertNetworkOwner(ctx, network); err != nil {
 		return err
@@ -550,10 +639,37 @@ func (e *DockerExecutor) VolumeSize(ctx context.Context, name string) (int64, er
 	if err := e.request(ctx, http.MethodGet, "/volumes/"+urlEscape(name), nil, &out); err != nil {
 		return 0, err
 	}
-	if out.UsageData == nil || out.UsageData.Size < 0 {
-		return 0, nil
+	if out.UsageData != nil && out.UsageData.Size >= 0 {
+		return out.UsageData.Size, nil
 	}
-	return out.UsageData.Size, nil
+	// Some Engine versions omit UsageData from volume inspect and expose it
+	// only through system disk usage. Use that endpoint before giving up so
+	// shared application-volume quotas are based on observed bytes.
+	var diskUsage struct {
+		Volumes []struct {
+			Name      string            `json:"Name"`
+			Labels    map[string]string `json:"Labels"`
+			UsageData *struct {
+				Size int64 `json:"Size"`
+			} `json:"UsageData"`
+		} `json:"Volumes"`
+	}
+	if err := e.request(ctx, http.MethodGet, "/system/df?type=volume", nil, &diskUsage); err != nil {
+		return 0, err
+	}
+	for _, volume := range diskUsage.Volumes {
+		if volume.Name != name {
+			continue
+		}
+		if !e.ownsLabels(volume.Labels) {
+			return 0, fmt.Errorf("docker volume %s belongs to a different runtime owner", name)
+		}
+		if volume.UsageData == nil || volume.UsageData.Size < 0 {
+			return 0, fmt.Errorf("docker engine did not report usage for volume %s", name)
+		}
+		return volume.UsageData.Size, nil
+	}
+	return 0, fmt.Errorf("docker engine did not return volume %s in disk usage", name)
 }
 
 func (e *DockerExecutor) ArchiveVolume(ctx context.Context, helperImage, backupVolume, sourceVolume, storageKey, jobID string) (int64, error) {
@@ -578,8 +694,12 @@ func (e *DockerExecutor) DeleteBackup(ctx context.Context, helperImage, backupVo
 	if err := e.assertVolumeOwner(ctx, backupVolume); err != nil {
 		return err
 	}
+	name := HelperContainerName(e.owner, "backup-delete", jobID)
+	if err := e.RemoveIfExists(ctx, name); err != nil {
+		return err
+	}
 	cmd := []string{"/bin/sh", "-c", "rm -f /backup/" + storageKey}
-	return e.runHelper(ctx, HelperContainerName(e.owner, "backup-delete", jobID), helperImage, cmd, []string{backupVolume + ":/backup"})
+	return e.runHelper(ctx, name, helperImage, cmd, []string{backupVolume + ":/backup"})
 }
 func (e *DockerExecutor) RestoreVolume(ctx context.Context, helperImage, backupVolume, targetVolume, storageKey, jobID string) error {
 	if err := e.assertVolumeOwner(ctx, backupVolume); err != nil {
@@ -630,7 +750,7 @@ func (e *DockerExecutor) runHelperOutput(ctx context.Context, name, image string
 	return decodeDockerLogs(data), nil
 }
 
-func (e *DockerExecutor) ProbeHTTP(ctx context.Context, name, image, network, target string, timeoutSeconds int) error {
+func (e *DockerExecutor) ProbeHTTP(ctx context.Context, name, image, network, target string, timeoutSeconds int, acceptedStatusCodes []int) error {
 	if timeoutSeconds < 1 {
 		timeoutSeconds = 5
 	}
@@ -675,6 +795,9 @@ func (e *DockerExecutor) ProbeHTTP(ctx context.Context, name, image, network, ta
 		if logErr == nil {
 			detail = strings.TrimSpace(decodeDockerLogs(data))
 		}
+		if statusCode, ok := lastHTTPStatusCode(detail); ok && containsStatusCode(acceptedStatusCodes, statusCode) {
+			return nil
+		}
 		if len(detail) > 1200 {
 			detail = detail[len(detail)-1200:]
 		}
@@ -684,6 +807,26 @@ func (e *DockerExecutor) ProbeHTTP(ctx context.Context, name, image, network, ta
 		return fmt.Errorf("HTTP health probe failed with exit code %d", waited.StatusCode)
 	}
 	return nil
+}
+
+var httpStatusLine = regexp.MustCompile(`(?i)HTTP/[0-9.]+[ \t]+([0-9]{3})(?:[ \t]|$)`)
+
+func lastHTTPStatusCode(value string) (int, bool) {
+	matches := httpStatusLine.FindAllStringSubmatch(value, -1)
+	if len(matches) == 0 {
+		return 0, false
+	}
+	statusCode, err := strconv.Atoi(matches[len(matches)-1][1])
+	return statusCode, err == nil
+}
+
+func containsStatusCode(values []int, wanted int) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *DockerExecutor) ContainerDiagnostics(ctx context.Context, name string, tail int) (string, error) {
@@ -808,25 +951,34 @@ func (e *DockerExecutor) Stats(ctx context.Context, name string) (float64, int64
 			System uint64 `json:"system_cpu_usage"`
 		} `json:"precpu_stats"`
 		Memory struct {
-			Usage uint64 `json:"usage"`
+			Usage uint64            `json:"usage"`
+			Stats map[string]uint64 `json:"stats"`
 		} `json:"memory_stats"`
 	}
 	if err := e.request(ctx, http.MethodGet, `/containers/`+urlEscape(name)+`/stats?stream=false`, nil, &out); err != nil {
 		return 0, 0, err
 	}
+	memoryUsage := out.Memory.Usage
+	inactiveFile := out.Memory.Stats["total_inactive_file"]
+	if inactiveFile == 0 {
+		inactiveFile = out.Memory.Stats["inactive_file"]
+	}
+	if inactiveFile < memoryUsage {
+		memoryUsage -= inactiveFile
+	}
 	if out.CPUStats.CPUUsage.Total < out.PreCPUStats.CPUUsage.Total || out.CPUStats.System < out.PreCPUStats.System {
-		return 0, int64(out.Memory.Usage), nil
+		return 0, int64(memoryUsage), nil
 	}
 	deltaCPU := out.CPUStats.CPUUsage.Total - out.PreCPUStats.CPUUsage.Total
 	deltaSystem := out.CPUStats.System - out.PreCPUStats.System
 	if deltaSystem == 0 {
-		return 0, int64(out.Memory.Usage), nil
+		return 0, int64(memoryUsage), nil
 	}
 	cores := out.CPUStats.Online
 	if cores == 0 {
 		cores = 1
 	}
-	return float64(deltaCPU) / float64(deltaSystem) * float64(cores), int64(out.Memory.Usage), nil
+	return float64(deltaCPU) / float64(deltaSystem) * float64(cores), int64(memoryUsage), nil
 }
 
 func urlEscape(value string) string {

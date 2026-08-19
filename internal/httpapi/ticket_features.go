@@ -20,6 +20,9 @@ type ticketSummary struct {
 	Priority       string    `json:"priority"`
 	Status         string    `json:"status"`
 	MessageCount   int       `json:"messageCount"`
+	LastMessage    string    `json:"lastMessage"`
+	LastAuthorName string    `json:"lastAuthorName"`
+	LastReplyStaff bool      `json:"lastReplyStaff"`
 	LastMessageAt  time.Time `json:"lastMessageAt"`
 	CreatedAt      time.Time `json:"createdAt"`
 	UpdatedAt      time.Time `json:"updatedAt"`
@@ -54,8 +57,15 @@ func (s *Server) adminListTickets(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) listTicketsFor(w http.ResponseWriter, r *http.Request, where string, args ...any) {
 	rows, err := s.db.Query(r.Context(), `SELECT t.id::text,t.number,t.user_id::text,u.display_name,u.email,t.subject,t.category,t.priority,t.status,
-		(SELECT count(*) FROM support_ticket_messages m WHERE m.ticket_id=t.id),t.last_message_at,t.created_at,t.updated_at
-		FROM support_tickets t JOIN users u ON u.id=t.user_id `+where+` ORDER BY
+		(SELECT count(*) FROM support_ticket_messages m WHERE m.ticket_id=t.id),
+		coalesce(latest.body,''),coalesce(latest.author_name,''),coalesce(latest.staff_reply,false),
+		t.last_message_at,t.created_at,t.updated_at
+		FROM support_tickets t JOIN users u ON u.id=t.user_id
+		LEFT JOIN LATERAL (
+			SELECT m.body,author.display_name AS author_name,m.staff_reply
+			FROM support_ticket_messages m JOIN users author ON author.id=m.author_user_id
+			WHERE m.ticket_id=t.id ORDER BY m.created_at DESC,m.id DESC LIMIT 1
+		) latest ON true `+where+` ORDER BY
 		CASE t.status WHEN 'open' THEN 0 WHEN 'in_progress' THEN 1 WHEN 'waiting_user' THEN 2 WHEN 'resolved' THEN 3 ELSE 4 END,
 		CASE t.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END,t.last_message_at DESC LIMIT 200`, args...)
 	if err != nil {
@@ -67,7 +77,8 @@ func (s *Server) listTicketsFor(w http.ResponseWriter, r *http.Request, where st
 	for rows.Next() {
 		var item ticketSummary
 		if err = rows.Scan(&item.ID, &item.Number, &item.UserID, &item.RequesterName, &item.RequesterEmail, &item.Subject,
-			&item.Category, &item.Priority, &item.Status, &item.MessageCount, &item.LastMessageAt, &item.CreatedAt, &item.UpdatedAt); err != nil {
+			&item.Category, &item.Priority, &item.Status, &item.MessageCount, &item.LastMessage, &item.LastAuthorName,
+			&item.LastReplyStaff, &item.LastMessageAt, &item.CreatedAt, &item.UpdatedAt); err != nil {
 			s.internalError(w, err)
 			return
 		}
@@ -147,8 +158,15 @@ func (s *Server) ticketDetail(w http.ResponseWriter, r *http.Request, admin bool
 		return
 	}
 	query := `SELECT t.id::text,t.number,t.user_id::text,u.display_name,u.email,t.subject,t.category,t.priority,t.status,
-		(SELECT count(*) FROM support_ticket_messages m WHERE m.ticket_id=t.id),t.last_message_at,t.created_at,t.updated_at
-		FROM support_tickets t JOIN users u ON u.id=t.user_id WHERE t.id=$1`
+		(SELECT count(*) FROM support_ticket_messages m WHERE m.ticket_id=t.id),
+		coalesce(latest.body,''),coalesce(latest.author_name,''),coalesce(latest.staff_reply,false),
+		t.last_message_at,t.created_at,t.updated_at
+		FROM support_tickets t JOIN users u ON u.id=t.user_id
+		LEFT JOIN LATERAL (
+			SELECT m.body,author.display_name AS author_name,m.staff_reply
+			FROM support_ticket_messages m JOIN users author ON author.id=m.author_user_id
+			WHERE m.ticket_id=t.id ORDER BY m.created_at DESC,m.id DESC LIMIT 1
+		) latest ON true WHERE t.id=$1`
 	args := []any{id}
 	if !admin {
 		query += " AND t.user_id=$2"
@@ -156,7 +174,8 @@ func (s *Server) ticketDetail(w http.ResponseWriter, r *http.Request, admin bool
 	}
 	var item ticketSummary
 	err := s.db.QueryRow(r.Context(), query, args...).Scan(&item.ID, &item.Number, &item.UserID, &item.RequesterName, &item.RequesterEmail,
-		&item.Subject, &item.Category, &item.Priority, &item.Status, &item.MessageCount, &item.LastMessageAt, &item.CreatedAt, &item.UpdatedAt)
+		&item.Subject, &item.Category, &item.Priority, &item.Status, &item.MessageCount, &item.LastMessage, &item.LastAuthorName,
+		&item.LastReplyStaff, &item.LastMessageAt, &item.CreatedAt, &item.UpdatedAt)
 	if err == pgx.ErrNoRows {
 		writeError(w, http.StatusNotFound, "ticket_not_found", "ticket not found")
 		return

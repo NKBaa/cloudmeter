@@ -149,7 +149,7 @@ openssl rand -base64 32 | tr -d '=\n'
 | `PLATFORM_PORT` | `18085` | 平台对外单一端口 |
 | `PLATFORM_ALLOWED_HOST` | `127.0.0.1` | WSL2 自动端口转发，Windows 宿主机直接访问 `http://127.0.0.1:18085` |
 | `PUBLIC_BASE_URL` | `http://127.0.0.1:18085` | 无域名时的完整访问根路径 |
-| `DOCKER_GID` | `0` | WSL root 用户下 docker.sock 属组为 root(0) |
+| `DOCKER_GID` | `$(stat -c '%g' /var/run/docker.sock)` 的实际结果 | 不要固定照抄；本次 Ubuntu 原生 Docker Engine 实测为 `108`，Docker Desktop/部分 WSL root 环境常见为 `0` |
 
 ---
 
@@ -181,7 +181,7 @@ stat -c '%g' /var/run/docker.sock
 DOCKER_GID=998
 ```
 
-> **WSL root 用户环境**：`stat -c '%g' /var/run/docker.sock` 返回 `0`，因此 `DOCKER_GID=0` 即可让 Worker 正常访问 Docker Socket。
+> **按实际环境填写**：WSL Docker Desktop、原生 Docker Engine 和不同发行版的 Socket 属组可能不同。请始终以 `stat -c '%g' /var/run/docker.sock` 的输出为准；本次全新 Ubuntu 24.04 + apt Docker Engine 实测为 `108`，因此本次 `.env` 使用 `DOCKER_GID=108`。只有命令实际返回 `0` 时才填写 `DOCKER_GID=0`。
 
 > **安全提示**：请勿将 Docker Socket 挂载到 API、Web 控制台或任何用户容器中。拥有 Docker Socket 权限等同于宿主机的 root 权限。
 
@@ -313,7 +313,7 @@ powershell -ExecutionPolicy Bypass -File deploy/verify.ps1
    请求中的 HTTP `Host` 报头与 `.env` 中定义的 `PLATFORM_ALLOWED_HOST` 不一致。检查反向代理是否正确透传了原 Host 报头。
 
 3. **Worker 无法部署应用**
-   检查宿主机 Docker Socket 路径与权限，确认 `.env` 中 `DOCKER_EXECUTOR_ENABLED=true` 且 `DOCKER_GID` 与宿主机 `stat -c '%g' /var/run/docker.sock` 一致（WSL root 用户为 `0`）。
+   检查宿主机 Docker Socket 路径与权限，确认 `.env` 中 `DOCKER_EXECUTOR_ENABLED=true` 且 `DOCKER_GID` 与宿主机 `stat -c '%g' /var/run/docker.sock` 一致。不要假设 WSL 一定返回 `0`；以当前机器命令输出为准。
 
 4. **数据库 Migration 报错**
    运行 `docker compose --env-file .env -f deploy/compose.yaml logs migrate` 查看具体的 SQL 错误，绝不要手动修改或乱动 PostgreSQL 中的 `schema_migrations` 表。

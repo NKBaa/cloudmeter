@@ -30,6 +30,15 @@ type Dependency struct {
 	Required    bool   `json:"required"`
 }
 
+// SecretOption describes a Secret declared by a product version.  The value
+// itself is deliberately not part of this type: Secret values are stored in
+// encrypted append-only versions and are never returned by the control plane.
+type SecretOption struct {
+	Key         string `json:"key"`
+	Description string `json:"description"`
+	Editable    bool   `json:"editable"`
+}
+
 const (
 	DefaultRuntimeOwner  = "cloudmeter"
 	DefaultBackupVolume  = "cloudmeter_backup_data"
@@ -171,6 +180,9 @@ func ValidateRuntimeSpec(spec map[string]any) error {
 	if err != nil {
 		return err
 	}
+	if _, err = RuntimeSecretOptions(spec); err != nil {
+		return err
+	}
 	if environment, ok := spec["env"].(map[string]any); ok {
 		for _, key := range secretKeys {
 			if _, exists := environment[key]; exists {
@@ -273,7 +285,14 @@ func RuntimeSecretKeys(spec map[string]any) ([]string, error) {
 	}
 	values, ok := raw.([]any)
 	if !ok {
-		return nil, fmt.Errorf("secretKeys must be an array")
+		if typed, typedOK := raw.([]string); typedOK {
+			values = make([]any, len(typed))
+			for i, value := range typed {
+				values[i] = value
+			}
+		} else {
+			return nil, fmt.Errorf("secretKeys must be an array")
+		}
 	}
 	if len(values) > 64 {
 		return nil, fmt.Errorf("secretKeys may contain at most 64 entries")
@@ -292,6 +311,90 @@ func RuntimeSecretKeys(spec map[string]any) ([]string, error) {
 		keys = append(keys, key)
 	}
 	return keys, nil
+}
+
+// RuntimeSecretOptions validates and normalizes the optional Secret metadata
+// stored alongside secretKeys. Older product versions did not have the two
+// metadata fields; those versions intentionally default to editable so an
+// existing application is not made impossible to update by a catalog-only
+// migration.
+func RuntimeSecretOptions(spec map[string]any) ([]SecretOption, error) {
+	keys, err := RuntimeSecretKeys(spec)
+	if err != nil {
+		return nil, err
+	}
+	descriptions := map[string]string{}
+	if raw, exists := spec["secretDescriptions"]; exists && raw != nil {
+		values, ok := raw.(map[string]any)
+		if !ok {
+			if typed, typedOK := raw.(map[string]string); typedOK {
+				for key, value := range typed {
+					descriptions[key] = value
+				}
+			} else {
+				return nil, fmt.Errorf("secretDescriptions must be an object")
+			}
+		} else {
+			if len(values) > 64 {
+				return nil, fmt.Errorf("secretDescriptions may contain at most 64 entries")
+			}
+			for key, rawValue := range values {
+				description, ok := rawValue.(string)
+				if !ok || !secretKeyPattern.MatchString(key) || len(description) > 500 {
+					return nil, fmt.Errorf("secret description for %q is invalid", key)
+				}
+				descriptions[key] = description
+			}
+		}
+	}
+	known := map[string]bool{}
+	for _, key := range keys {
+		known[key] = true
+	}
+	for key := range descriptions {
+		if !known[key] {
+			return nil, fmt.Errorf("secret description %q is not declared in secretKeys", key)
+		}
+	}
+	editable := map[string]bool{}
+	if raw, exists := spec["editableSecretKeys"]; exists && raw != nil {
+		values, ok := raw.([]any)
+		if !ok {
+			if typed, typedOK := raw.([]string); typedOK {
+				values = make([]any, len(typed))
+				for i, value := range typed {
+					values[i] = value
+				}
+			} else {
+				return nil, fmt.Errorf("editableSecretKeys must be an array")
+			}
+		}
+		if len(values) > 64 {
+			return nil, fmt.Errorf("editableSecretKeys may contain at most 64 entries")
+		}
+		for _, rawKey := range values {
+			key, ok := rawKey.(string)
+			if !ok || !secretKeyPattern.MatchString(key) {
+				return nil, fmt.Errorf("editable Secret key is invalid")
+			}
+			if !known[key] {
+				return nil, fmt.Errorf("editable Secret key %q is not declared in secretKeys", key)
+			}
+			if editable[key] {
+				return nil, fmt.Errorf("editable Secret key %q is duplicated", key)
+			}
+			editable[key] = true
+		}
+	} else {
+		for _, key := range keys {
+			editable[key] = true
+		}
+	}
+	options := make([]SecretOption, 0, len(keys))
+	for _, key := range keys {
+		options = append(options, SecretOption{Key: key, Description: descriptions[key], Editable: editable[key]})
+	}
+	return options, nil
 }
 
 func RuntimeCommand(spec map[string]any) ([]string, error) {

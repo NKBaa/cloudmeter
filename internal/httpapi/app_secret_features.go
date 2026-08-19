@@ -15,6 +15,14 @@ import (
 
 var appSecretKeyPattern = regexp.MustCompile(`^[A-Z_][A-Z0-9_]{0,127}$`)
 
+type secretValidationError struct {
+	Status  int
+	Code    string
+	Message string
+}
+
+func (e *secretValidationError) Error() string { return e.Message }
+
 func validateInitialSecrets(runtimeSpec map[string]any, provided map[string]string) error {
 	required, err := runtimepolicy.RuntimeSecretKeys(runtimeSpec)
 	if err != nil {
@@ -39,6 +47,75 @@ func validateInitialSecrets(runtimeSpec map[string]any, provided map[string]stri
 	return nil
 }
 
+// applyReleaseSecretUpdates rotates only values explicitly supplied by the
+// user while an application is being updated. The selected product version is
+// the authority for both declaration and editability. Every value is
+// encrypted before it reaches PostgreSQL; plaintext is never part of the
+// release snapshot or audit metadata.
+func (s *Server) applyReleaseSecretUpdates(ctx context.Context, tx pgx.Tx, appID string, runtimeSpec map[string]any, provided map[string]string) error {
+	if len(provided) == 0 {
+		return nil
+	}
+	options, err := runtimepolicy.RuntimeSecretOptions(runtimeSpec)
+	if err != nil {
+		return &secretValidationError{Status: http.StatusBadRequest, Code: "invalid_secret_metadata", Message: err.Error()}
+	}
+	byKey := make(map[string]runtimepolicy.SecretOption, len(options))
+	for _, option := range options {
+		byKey[option.Key] = option
+	}
+	normalized := make(map[string]string, len(provided))
+	for rawKey, value := range provided {
+		key := strings.ToUpper(strings.TrimSpace(rawKey))
+		if !appSecretKeyPattern.MatchString(key) || key != rawKey {
+			return &secretValidationError{Status: http.StatusBadRequest, Code: "validation_failed", Message: "Secret key must use uppercase letters, digits, and underscores"}
+		}
+		if _, exists := normalized[key]; exists {
+			return &secretValidationError{Status: http.StatusBadRequest, Code: "validation_failed", Message: fmt.Sprintf("Secret %s is specified more than once", key)}
+		}
+		option, declared := byKey[key]
+		if !declared {
+			return &secretValidationError{Status: http.StatusBadRequest, Code: "secret_not_declared", Message: fmt.Sprintf("Secret %s is not declared by the selected product version", key)}
+		}
+		if !option.Editable {
+			return &secretValidationError{Status: http.StatusForbidden, Code: "secret_not_editable", Message: fmt.Sprintf("管理员未开放 Secret %s 的用户修改权限", key)}
+		}
+		if strings.TrimSpace(value) == "" || len(value) > 65536 {
+			return &secretValidationError{Status: http.StatusBadRequest, Code: "validation_failed", Message: fmt.Sprintf("Secret %s must be non-empty and no larger than 64 KiB", key)}
+		}
+		normalized[key] = value
+	}
+	for _, key := range mapKeys(normalized) {
+		if _, err = tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))", appID, key); err != nil {
+			return err
+		}
+		var secretID string
+		err = tx.QueryRow(ctx, `SELECT id::text FROM app_secrets WHERE user_app_id=$1 AND key=$2`, appID, key).Scan(&secretID)
+		if err == pgx.ErrNoRows {
+			err = tx.QueryRow(ctx, `INSERT INTO app_secrets(user_app_id,key) VALUES($1,$2) RETURNING id::text`, appID, key).Scan(&secretID)
+		}
+		if err != nil {
+			return err
+		}
+		var version int
+		if err = tx.QueryRow(ctx, `SELECT coalesce(max(version),0)+1 FROM app_secret_versions WHERE app_secret_id=$1`, secretID).Scan(&version); err != nil {
+			return err
+		}
+		var versionID string
+		if err = tx.QueryRow(ctx, `SELECT gen_random_uuid()::text`).Scan(&versionID); err != nil {
+			return err
+		}
+		encrypted, encryptErr := s.secrets.Encrypt("app.secret.version."+versionID, normalized[key])
+		if encryptErr != nil {
+			return encryptErr
+		}
+		if _, err = tx.Exec(ctx, `INSERT INTO app_secret_versions(id,app_secret_id,version,encrypted_value) VALUES($1,$2,$3,$4)`, versionID, secretID, version, encrypted); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func mapKeys(values map[string]string) []string {
 	keys := make([]string, 0, len(values))
 	for key := range values {
@@ -54,6 +131,22 @@ type appSecretQuerier interface {
 }
 
 func allowedAppSecretKeys(ctx context.Context, query appSecretQuerier, appID, userID string) ([]string, error) {
+	options, err := allowedAppSecretOptions(ctx, query, appID, userID)
+	if err != nil {
+		return nil, err
+	}
+	keys := make([]string, 0, len(options))
+	for _, option := range options {
+		keys = append(keys, option.Key)
+	}
+	return keys, nil
+}
+
+// allowedAppSecretOptions returns the union declared by published versions.
+// Product versions are read in ascending order, so a later version's
+// description/permission becomes authoritative when a key is retained across
+// versions. Secret values are never queried here.
+func allowedAppSecretOptions(ctx context.Context, query appSecretQuerier, appID, userID string) ([]runtimepolicy.SecretOption, error) {
 	var productID string
 	if err := query.QueryRow(ctx, `SELECT product_id::text FROM user_apps WHERE id=$1 AND user_id=$2`, appID, userID).Scan(&productID); err != nil {
 		return nil, err
@@ -64,29 +157,29 @@ func allowedAppSecretKeys(ctx context.Context, query appSecretQuerier, appID, us
 		return nil, err
 	}
 	defer rows.Close()
-	allowed := map[string]bool{}
+	allowed := map[string]runtimepolicy.SecretOption{}
 	for rows.Next() {
 		var runtimeSpec map[string]any
 		if err = rows.Scan(&runtimeSpec); err != nil {
 			return nil, err
 		}
-		keys, keyErr := runtimepolicy.RuntimeSecretKeys(runtimeSpec)
+		options, keyErr := runtimepolicy.RuntimeSecretOptions(runtimeSpec)
 		if keyErr != nil {
 			return nil, fmt.Errorf("published product version has invalid Secret keys: %w", keyErr)
 		}
-		for _, key := range keys {
-			allowed[key] = true
+		for _, option := range options {
+			allowed[option.Key] = option
 		}
 	}
 	if err = rows.Err(); err != nil {
 		return nil, err
 	}
-	keys := make([]string, 0, len(allowed))
-	for key := range allowed {
-		keys = append(keys, key)
+	options := make([]runtimepolicy.SecretOption, 0, len(allowed))
+	for _, option := range allowed {
+		options = append(options, option)
 	}
-	sort.Strings(keys)
-	return keys, nil
+	sort.Slice(options, func(i, j int) bool { return options[i].Key < options[j].Key })
+	return options, nil
 }
 
 func (s *Server) listAppSecrets(w http.ResponseWriter, r *http.Request) {
@@ -96,7 +189,7 @@ func (s *Server) listAppSecrets(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "validation_failed", "appID must be a UUID")
 		return
 	}
-	allowedKeys, err := allowedAppSecretKeys(r.Context(), s.db, appID, p.ID)
+	options, err := allowedAppSecretOptions(r.Context(), s.db, appID, p.ID)
 	if err == pgx.ErrNoRows {
 		writeError(w, http.StatusNotFound, "app_not_found", "app not found")
 		return
@@ -133,7 +226,26 @@ func (s *Server) listAppSecrets(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"secrets": items, "allowedKeys": allowedKeys})
+	configured := map[string]bool{}
+	for _, value := range items {
+		configured[value.Key] = true
+	}
+	optionViews := make([]map[string]any, 0, len(options))
+	for _, option := range options {
+		optionViews = append(optionViews, map[string]any{
+			"key": option.Key, "description": option.Description,
+			"editable": option.Editable, "configured": configured[option.Key],
+		})
+	}
+	allowedKeys := make([]string, 0, len(options))
+	editableKeys := make([]string, 0, len(options))
+	for _, option := range options {
+		allowedKeys = append(allowedKeys, option.Key)
+		if option.Editable {
+			editableKeys = append(editableKeys, option.Key)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"secrets": items, "allowedKeys": allowedKeys, "editableKeys": editableKeys, "options": optionViews})
 }
 
 func (s *Server) putAppSecret(w http.ResponseWriter, r *http.Request) {
@@ -161,7 +273,7 @@ func (s *Server) putAppSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	allowedKeys, err := allowedAppSecretKeys(r.Context(), tx, appID, p.ID)
+	options, err := allowedAppSecretOptions(r.Context(), tx, appID, p.ID)
 	if err == pgx.ErrNoRows {
 		writeError(w, http.StatusNotFound, "app_not_found", "app not found")
 		return
@@ -170,15 +282,19 @@ func (s *Server) putAppSecret(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, err)
 		return
 	}
-	declared := false
-	for _, allowedKey := range allowedKeys {
-		if key == allowedKey {
-			declared = true
+	declared, editable := false, false
+	for _, option := range options {
+		if key == option.Key {
+			declared, editable = true, option.Editable
 			break
 		}
 	}
 	if !declared {
 		writeError(w, http.StatusBadRequest, "secret_not_declared", "Secret is not declared by a published version of this product")
+		return
+	}
+	if !editable {
+		writeError(w, http.StatusForbidden, "secret_not_editable", "管理员未开放此 Secret 的用户修改权限")
 		return
 	}
 	if _, err = tx.Exec(r.Context(), "SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))", appID, key); err != nil {

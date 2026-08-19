@@ -85,6 +85,18 @@ func TestHealthTimeout(t *testing.T) {
 	}
 }
 
+func TestHealthAcceptedStatusCodes(t *testing.T) {
+	got := healthAcceptedStatusCodes(map[string]any{
+		"acceptedStatusCodes": []any{401.0, 403.0, 401.0, 99.0, 600.0, 401.5, "404"},
+	})
+	if len(got) != 2 || got[0] != 401 || got[1] != 403 {
+		t.Fatalf("accepted status codes=%v", got)
+	}
+	if got = healthAcceptedStatusCodes(map[string]any{}); len(got) != 0 {
+		t.Fatalf("default accepted status codes=%v", got)
+	}
+}
+
 func TestFailedHealthTransitionsToRollback(t *testing.T) {
 	next, ok := nextDeploymentStateWithHealth(domain.DeploymentChecking, false, deploymentMaxHealthAttempts)
 	if !ok || next != domain.DeploymentRollingBack {
@@ -159,6 +171,15 @@ func TestBackupStorageQuotaExceededUsesExactDecimal(t *testing.T) {
 	}
 	if !backupStorageQuotaExceeded("1", math.MaxInt64, 1) {
 		t.Fatal("overflow-sized usage did not fail closed")
+	}
+	if backupStorageQuotaExceededParts("1", 1<<29, 1<<28, 1<<28) {
+		t.Fatal("multi-part quota exceeded at exact boundary")
+	}
+	if !backupStorageQuotaExceededParts("1", 1<<29, 1<<28, (1<<28)+1) {
+		t.Fatal("multi-part quota did not exceed after one byte")
+	}
+	if !backupStorageQuotaExceededParts("1", 0, -1) {
+		t.Fatal("negative byte part did not fail closed")
 	}
 }
 
@@ -302,5 +323,19 @@ func TestDependencyAliasesBypassEgressProxy(t *testing.T) {
 	}
 	if got := strings.Join(dependencyNoProxy(spec), ","); got != "localhost,127.0.0.1,::1,ollama,searxng" {
 		t.Fatalf("NO_PROXY=%s", got)
+	}
+}
+
+func TestPlatformRestartOrderExcludesStateAndUserServices(t *testing.T) {
+	wanted := "egress-proxy,app-router,web,api,gateway"
+	if got := strings.Join(platformRestartOrder, ","); got != wanted {
+		t.Fatalf("platform restart order=%s", got)
+	}
+	for _, forbidden := range []string{"postgres", "redis", "migrate", "worker"} {
+		for _, service := range platformRestartOrder {
+			if service == forbidden {
+				t.Fatalf("stateful or self service %q entered pre-completion restart order", forbidden)
+			}
+		}
 	}
 }

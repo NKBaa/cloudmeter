@@ -192,7 +192,7 @@ function isAnchorActive(path: string, hash: string): boolean {
     </aside>
     <main class="app-main">
       <RouterView v-slot="{ Component, route }">
-        <Transition name="workspace-slide" mode="out-in">
+        <Transition name="workspace-slide">
           <component :is="Component" :key="route.fullPath" />
         </Transition>
       </RouterView>

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { useRouter } from "vue-router";
 import {
   AppWindow,
   ArchiveRestore,
@@ -40,6 +41,7 @@ type Dependency = {
   required: boolean;
 };
 type Volume = { name: string; mountPath: string; sizeGiB: number };
+type SecretOption = { key: string; description?: string; editable?: boolean };
 type EditableOptions = { cpu?: boolean; memory?: boolean; dataVolume?: boolean; command?: boolean; dependencies?: boolean };
 type Product = {
   id: string;
@@ -58,6 +60,8 @@ type Product = {
     editableEnvKeys?: string[];
     envDescriptions?: Record<string, string>;
     secretKeys?: string[];
+    secretDescriptions?: Record<string, string>;
+    editableSecretKeys?: string[];
     dependencies?: Dependency[];
     volumes?: Volume[];
     dataVolumeGiB?: number;
@@ -66,6 +70,21 @@ type Product = {
   routeSpec?: {
     containerPort?: number;
   };
+};
+type AppConfiguration = {
+  app: { id: string; slug: string; status: string; productSlug: string };
+  current: { versionId: string; runtimeSpec: NonNullable<Product["runtimeSpec"]>; routeSpec: NonNullable<Product["routeSpec"]> };
+  target: {
+    productId: string;
+    productSlug: string;
+    name: string;
+    iconUrl?: string;
+    versionId: string;
+    version: number;
+    runtimeSpec: NonNullable<Product["runtimeSpec"]>;
+    routeSpec: NonNullable<Product["routeSpec"]>;
+  };
+  configuredSecretKeys: string[];
 };
 type App = {
   id: string;
@@ -81,9 +100,16 @@ type App = {
   memoryMiB?: number;
   cpuUsageCores?: number;
   memoryUsageMiB?: number;
+  metricsSampledAt?: string;
   estimatedMonthlyCents?: number;
   estimateComplete?: boolean;
   jobLastError?: string;
+};
+type RuntimeMetric = {
+  appId: string;
+  cpuUsageCores: number;
+  memoryUsageMiB: number;
+  sampledAt: string;
 };
 type DeploymentEvent = { id?: number; fromState?: string; toState?: string; message?: string; createdAt?: string };
 type DeploymentJob = { id: string; state: string; attempts: number; lastError?: string | null; createdAt: string; updatedAt: string; events: DeploymentEvent[] };
@@ -188,7 +214,7 @@ type Notification = {
   createdAt: string;
 };
 type AppSecret = { key: string; version: number; createdAt: string };
-type AppSecretResponse = { secrets: AppSecret[]; allowedKeys: string[] };
+type AppSecretResponse = { secrets: AppSecret[]; allowedKeys: string[]; editableKeys?: string[]; options?: SecretOption[] };
 type CheckinSummary = {
   enabled: boolean;
   checkedInToday: boolean;
@@ -210,6 +236,7 @@ const props = defineProps<{
     | "usage"
     | "checkin";
 }>();
+const router = useRouter();
 const page = computed(() => props.page || "overview");
 const pageTitle = computed(
   () =>
@@ -253,6 +280,8 @@ const writeLocked = computed(
 const secretApp = ref<App | null>(null),
   secretItems = ref<AppSecret[]>([]),
   secretAllowedKeys = ref<string[]>([]),
+  secretOptions = ref<SecretOption[]>([]),
+  secretEditableKeys = ref<string[]>([]),
   secretKey = ref(""),
   secretValue = ref(""),
   secretBusy = ref(false);
@@ -260,15 +289,37 @@ const deploymentApp = ref<App | null>(null);
 const deploymentJobs = ref<DeploymentJob[]>([]);
 const deploymentBusy = ref(false);
 const deployProduct = ref<Product | null>(null),
+  deployMode = ref<"create" | "update">("create"),
+  editingApp = ref<App | null>(null),
+  deployConfigurationLoading = ref(false),
+  deployConfiguredSecretKeys = ref<string[]>([]),
   deploySlug = ref(""),
   deploySecrets = ref<Record<string, string>>({}),
   deployCPU = ref(1),
   deployMemory = ref(512),
   deployDataVolumeGiB = ref(0);
+const deployVolumeFloorGiB = ref(0);
 const deployCommand = ref("");
 const deployPort = ref(8080);
 const deployEnvironment = ref<{ key: string; value: string }[]>([]);
 const deployDependencies = ref<Dependency[]>([]);
+const missingDeploySecretKeys = computed(() =>
+  (deployProduct.value?.runtimeSpec?.secretKeys || []).filter(
+    (key) => !deployConfiguredSecretKeys.value.includes(key) && !String(deploySecrets.value[key] || '').trim(),
+  ),
+);
+const deploySecretOptions = computed<SecretOption[]>(() => {
+  const runtime = deployProduct.value?.runtimeSpec;
+  const keys = runtime?.secretKeys || [];
+  const editable = runtime?.editableSecretKeys;
+  return keys.map((key) => ({
+    key,
+    description: runtime?.secretDescriptions?.[key] || "",
+    // Legacy versions did not persist editableSecretKeys, therefore retain
+    // the backwards-compatible default of editable.
+    editable: editable ? editable.includes(key) : true,
+  }));
+});
 const checkin = ref<CheckinSummary | null>(null),
   checkinMonth = ref(
     new Date()
@@ -477,7 +528,10 @@ async function load() {
   releases.value = Object.fromEntries(pairs);
 }
 let appsRefreshTimer: number | undefined;
+let metricsRefreshTimer: number | undefined;
 let appsRefreshInFlight = false;
+let metricsRefreshInFlight = false;
+const metricsClock = ref(Date.now());
 async function refreshApps(reportError = false) {
   if (appsRefreshInFlight) return;
   appsRefreshInFlight = true;
@@ -487,6 +541,41 @@ async function refreshApps(reportError = false) {
     if (reportError) error.value = (e as Error).message;
   } finally {
     appsRefreshInFlight = false;
+  }
+}
+async function refreshRuntimeMetrics(reportError = false) {
+  if (
+    metricsRefreshInFlight ||
+    (page.value !== "overview" && page.value !== "apps")
+  )
+    return;
+  metricsRefreshInFlight = true;
+  try {
+    const data = await api<{ metrics: RuntimeMetric[] }>(
+      "/apps/runtime-metrics",
+    );
+    const current = new Map(data.metrics.map((item) => [item.appId, item]));
+    apps.value = apps.value.map((app) => {
+      const metric = current.get(app.id);
+      return metric
+        ? {
+            ...app,
+            cpuUsageCores: metric.cpuUsageCores,
+            memoryUsageMiB: metric.memoryUsageMiB,
+            metricsSampledAt: metric.sampledAt,
+          }
+        : {
+            ...app,
+            cpuUsageCores: undefined,
+            memoryUsageMiB: undefined,
+            metricsSampledAt: undefined,
+          };
+    });
+  } catch (e) {
+    if (reportError) error.value = (e as Error).message;
+  } finally {
+    metricsClock.value = Date.now();
+    metricsRefreshInFlight = false;
   }
 }
 async function toggleBill(bill: Bill) {
@@ -530,8 +619,14 @@ async function markNotificationRead(item: Notification) {
   }
 }
 onMounted(async () => {
+  const flash = sessionStorage.getItem("cloudmeter_flash");
+  if (flash) {
+    message.value = flash;
+    sessionStorage.removeItem("cloudmeter_flash");
+  }
   try {
     await load();
+    await refreshRuntimeMetrics();
     if (page.value === "checkin") await loadCheckin();
   } catch (e) {
     error.value = (e as Error).message;
@@ -539,9 +634,13 @@ onMounted(async () => {
   appsRefreshTimer = window.setInterval(() => {
     if (!document.hidden) void refreshApps();
   }, 5000);
+  metricsRefreshTimer = window.setInterval(() => {
+    if (!document.hidden) void refreshRuntimeMetrics();
+  }, 3000);
 });
 onBeforeUnmount(() => {
   if (appsRefreshTimer !== undefined) window.clearInterval(appsRefreshTimer);
+  if (metricsRefreshTimer !== undefined) window.clearInterval(metricsRefreshTimer);
 });
 function openDeploy(p: Product) {
   if (!p.deployable) {
@@ -550,6 +649,9 @@ function openDeploy(p: Product) {
       : "该产品当前不可部署";
     return;
   }
+  deployMode.value = "create";
+  editingApp.value = null;
+  deployConfiguredSecretKeys.value = [];
   deployProduct.value = p;
   deploySlug.value = p.slug;
   deploySecrets.value = Object.fromEntries(
@@ -558,6 +660,7 @@ function openDeploy(p: Product) {
   deployCPU.value = p.runtimeSpec?.cpuCores || 1;
   deployMemory.value = p.runtimeSpec?.memoryMiB || 512;
   deployDataVolumeGiB.value = p.runtimeSpec?.dataVolumeGiB || Math.max(0, ...(p.runtimeSpec?.volumes || []).map((volume) => volume.sizeGiB));
+  deployVolumeFloorGiB.value = deployDataVolumeGiB.value;
   deployCommand.value = (p.runtimeSpec?.command || []).join(" ");
   deployPort.value = p.routeSpec?.containerPort || 8080;
   deployEnvironment.value = (p.runtimeSpec?.editableEnvKeys || []).map(
@@ -567,11 +670,69 @@ function openDeploy(p: Product) {
     (dependency) => ({ ...dependency }),
   );
 }
+async function openEditApp(app: App) {
+  try {
+    deployConfigurationLoading.value = true;
+    busy.value = app.id;
+    error.value = "";
+    const configuration = await api<AppConfiguration>(`/apps/${app.id}/configuration`);
+    const target: Product = {
+      id: configuration.target.productId,
+      slug: configuration.target.productSlug,
+      name: configuration.target.name,
+      iconUrl: configuration.target.iconUrl,
+      versionId: configuration.target.versionId,
+      version: configuration.target.version,
+      deployable: true,
+      runtimeSpec: configuration.target.runtimeSpec,
+      routeSpec: configuration.target.routeSpec,
+    };
+    const current = configuration.current.runtimeSpec || {};
+    const minimumCPU = target.runtimeSpec?.cpuCores || 1;
+    const minimumMemory = target.runtimeSpec?.memoryMiB || 512;
+    const minimumVolume = target.runtimeSpec?.dataVolumeGiB
+      || Math.max(0, ...(target.runtimeSpec?.volumes || []).map((volume) => volume.sizeGiB));
+    const currentVolume = current.dataVolumeGiB
+      || Math.max(0, ...(current.volumes || []).map((volume) => volume.sizeGiB));
+    deployMode.value = "update";
+    editingApp.value = app;
+    deployConfiguredSecretKeys.value = configuration.configuredSecretKeys || [];
+    deployProduct.value = target;
+    deploySlug.value = app.slug;
+    deploySecrets.value = Object.fromEntries(
+      (target.runtimeSpec?.secretKeys || []).map((key) => [key, ""]),
+    );
+    deployCPU.value = Math.max(Number(current.cpuCores || 0), minimumCPU);
+    deployMemory.value = Math.max(Number(current.memoryMiB || 0), minimumMemory);
+    deployDataVolumeGiB.value = Math.max(currentVolume, minimumVolume);
+    deployVolumeFloorGiB.value = deployDataVolumeGiB.value;
+    deployCommand.value = (current.command || target.runtimeSpec?.command || []).join(" " );
+    deployPort.value = target.routeSpec?.containerPort || 8080;
+    deployEnvironment.value = (target.runtimeSpec?.editableEnvKeys || []).map((key) => ({
+      key,
+      value: current.env?.[key] ?? target.runtimeSpec?.env?.[key] ?? "",
+    }));
+    deployDependencies.value = (
+      target.runtimeSpec?.editableOptions?.dependencies
+        ? current.dependencies || target.runtimeSpec?.dependencies || []
+        : target.runtimeSpec?.dependencies || []
+    ).map((dependency) => ({ ...dependency }));
+  } catch (e) {
+    error.value = (e as Error).message;
+  } finally {
+    deployConfigurationLoading.value = false;
+    busy.value = "";
+  }
+}
 function closeDeploy() {
   deployProduct.value = null;
+  deployMode.value = "create";
+  editingApp.value = null;
+  deployConfiguredSecretKeys.value = [];
   deploySlug.value = "";
   deploySecrets.value = {};
   deployDataVolumeGiB.value = 0;
+  deployVolumeFloorGiB.value = 0;
   deployCommand.value = "";
   deployEnvironment.value = [];
   deployDependencies.value = [];
@@ -586,55 +747,61 @@ function dependencyEndpoint(dependency: Dependency) {
 async function deploy() {
   const p = deployProduct.value;
   if (!p) return;
+  if (deployMode.value === "update" && missingDeploySecretKeys.value.length) {
+    error.value = `新版本需要先配置 Secret：${missingDeploySecretKeys.value.join("、")}`;
+    return;
+  }
   try {
     busy.value = "deploy";
-    await api("/apps", {
-      method: "POST",
-      body: JSON.stringify({
+    const resources = {
+      cpuCores: p.runtimeSpec?.editableOptions?.cpu !== false ? deployCPU.value : undefined,
+      memoryMiB: p.runtimeSpec?.editableOptions?.memory !== false ? deployMemory.value : undefined,
+      dataVolumeGiB: p.runtimeSpec?.editableOptions?.dataVolume !== false && (p.runtimeSpec?.volumes?.length || 0) ? deployDataVolumeGiB.value : undefined,
+      command: p.runtimeSpec?.editableOptions?.command
+        ? (deployCommand.value.trim() ? deployCommand.value.trim().split(/\s+/) : [])
+        : undefined,
+      environment: Object.fromEntries(
+        deployEnvironment.value
+          .filter((item) => item.key.trim())
+          .map((item) => [item.key.trim(), item.value]),
+      ),
+      dependencies: p.runtimeSpec?.editableOptions?.dependencies ? deployDependencies.value : undefined,
+    };
+    const changedSecrets = Object.fromEntries(
+      Object.entries(deploySecrets.value).filter(([, value]) => String(value).trim() !== ""),
+    );
+    if (deployMode.value === "update" && editingApp.value) {
+      await api(`/apps/${editingApp.value.id}/releases`, {
+        method: "POST",
+        body: JSON.stringify({
+          versionId: p.versionId,
+          idempotencyKey: crypto.randomUUID(),
+          resources,
+          secrets: changedSecrets,
+        }),
+      });
+      message.value = `${editingApp.value.slug} 的配置更新任务已创建`;
+      closeDeploy();
+      await refreshApps(true);
+    } else {
+      await api("/apps", {
+        method: "POST",
+        body: JSON.stringify({
         productId: p.id,
         versionId: p.versionId,
         slug: deploySlug.value.trim(),
         idempotencyKey: crypto.randomUUID(),
         secrets: deploySecrets.value,
-        resources: {
-          cpuCores: p.runtimeSpec?.editableOptions?.cpu !== false ? deployCPU.value : undefined,
-          memoryMiB: p.runtimeSpec?.editableOptions?.memory !== false ? deployMemory.value : undefined,
-          dataVolumeGiB: p.runtimeSpec?.editableOptions?.dataVolume !== false && (p.runtimeSpec?.volumes?.length || 0) ? deployDataVolumeGiB.value : undefined,
-          command: p.runtimeSpec?.editableOptions?.command && deployCommand.value.trim()
-            ? deployCommand.value.trim().split(/\s+/)
-            : undefined,
-          environment: Object.fromEntries(
-            deployEnvironment.value
-              .filter((item) => item.key.trim())
-              .map((item) => [item.key.trim(), item.value]),
-          ),
-          dependencies: p.runtimeSpec?.editableOptions?.dependencies ? deployDependencies.value : undefined,
-        },
-      }),
-    });
-    closeDeploy();
-    message.value = "部署任务已创建";
-    await load();
-  } catch (e) {
-    error.value = (e as Error).message;
-  } finally {
-    busy.value = "";
-  }
-}
-async function updateApp(app: App) {
-  const p = products.value.find((v) => v.slug === app.productSlug);
-  if (!p) return;
-  try {
-    busy.value = app.id;
-    await api("/apps/" + app.id + "/releases", {
-      method: "POST",
-      body: JSON.stringify({
-        versionId: p.versionId,
-        idempotencyKey: crypto.randomUUID(),
-      }),
-    });
-    message.value = "更新任务已创建";
-    await refreshApps(true);
+        resources,
+        }),
+      });
+      sessionStorage.setItem(
+        "cloudmeter_flash",
+        "部署任务已创建，已转到我的应用查看运行状态",
+      );
+      closeDeploy();
+      await router.push("/console/apps");
+    }
   } catch (e) {
     error.value = (e as Error).message;
   } finally {
@@ -665,6 +832,21 @@ async function openDeploymentDetails(app: App) {
   } finally {
     deploymentBusy.value = false;
   }
+}
+function metricAgeSeconds(app: App) {
+  if (!app.metricsSampledAt) return Number.POSITIVE_INFINITY;
+  const sampledAt = new Date(app.metricsSampledAt).getTime();
+  if (!Number.isFinite(sampledAt)) return Number.POSITIVE_INFINITY;
+  return Math.max(0, Math.floor((metricsClock.value - sampledAt) / 1000));
+}
+function metricsAvailable(app: App) {
+  return app.status === "running" && metricAgeSeconds(app) <= 15;
+}
+function metricFreshness(app: App) {
+  if (app.status !== "running") return "应用未运行";
+  if (!metricsAvailable(app)) return "等待实时采样";
+  const seconds = metricAgeSeconds(app);
+  return seconds < 5 ? "实时 · 刚刚更新" : `实时 · ${seconds} 秒前`;
 }
 async function deleteApp(app: App) {
   if (writeLocked.value || !window.confirm(`删除应用“${app.slug}”？运行容器、路由和持久数据卷会被回收，账单和发布审计历史仍会保留。此操作不可恢复。`)) return;
@@ -888,7 +1070,7 @@ async function exitImpersonation() {
     </section>
     <section v-if="page === 'overview'" class="overview-apps">
       <div class="section-heading"><div><p class="eyebrow">已部署资源</p><h2>应用概要</h2></div><RouterLink class="secondary compact" to="/console/apps">查看全部</RouterLink></div>
-      <div class="overview-app-grid"><article v-for="app in apps" :key="app.id" class="overview-app-card"><div class="overview-app-title"><span class="app-icon"><AppWindow :size="18" /></span><div><strong>{{ app.slug }}</strong><small>{{ app.productSlug }}</small></div><span :class="['status-pill', app.status === 'running' ? 'active' : 'pending']">{{ app.status === 'running' ? '运行中' : app.status }}</span></div><div class="app-resource-bars"><div><span>CPU 占用</span><b>{{ (app.cpuUsageCores || 0).toFixed(2) }} / {{ app.cpuCores || 0 }} 核</b><i><em :style="{width: Math.min(100, (app.cpuUsageCores || 0) / Math.max(app.cpuCores || 1, 0.1) * 100) + '%'}"></em></i></div><div><span>内存占用</span><b>{{ Math.round(app.memoryUsageMiB || 0) }} / {{ app.memoryMiB || 0 }} MiB</b><i><em :style="{width: Math.min(100, (app.memoryUsageMiB || 0) / Math.max(app.memoryMiB || 1, 1) * 100) + '%'}"></em></i></div></div><footer><div><small>预计每月</small><strong>¥ {{ ((app.estimatedMonthlyCents || 0) / 100).toFixed(2) }}</strong><small v-if="!app.estimateComplete">（不含未定价项与流量）</small></div><a v-if="app.publicPath" :href="app.publicPath" target="_blank" rel="noopener">访问应用<ExternalLink :size="14" /></a><span v-else class="quiet">尚无公网地址</span></footer></article><p v-if="!apps.length" class="quiet empty-copy">还没有部署应用，可从“部署应用”选择管理员发布的产品。</p></div>
+      <div class="overview-app-grid"><article v-for="app in apps" :key="app.id" class="overview-app-card"><div class="overview-app-title"><span class="app-icon"><AppWindow :size="18" /></span><div><strong>{{ app.slug }}</strong><small>{{ app.productSlug }}</small></div><span :class="['status-pill', app.status === 'running' ? 'active' : 'pending']">{{ app.status === 'running' ? '运行中' : app.status }}</span></div><div class="runtime-sample-state"><i :class="{ live: metricsAvailable(app) }"></i>{{ metricFreshness(app) }}</div><div class="app-resource-bars"><div><span>CPU 实时占用</span><b>{{ metricsAvailable(app) ? (app.cpuUsageCores || 0).toFixed(2) : '--' }} / {{ app.cpuCores || 0 }} 核</b><i><em :style="{width: metricsAvailable(app) ? Math.min(100, (app.cpuUsageCores || 0) / Math.max(app.cpuCores || 1, 0.1) * 100) + '%' : '0%'}"></em></i></div><div><span>内存实时占用</span><b>{{ metricsAvailable(app) ? Math.round(app.memoryUsageMiB || 0) : '--' }} / {{ app.memoryMiB || 0 }} MiB</b><i><em :style="{width: metricsAvailable(app) ? Math.min(100, (app.memoryUsageMiB || 0) / Math.max(app.memoryMiB || 1, 1) * 100) + '%' : '0%'}"></em></i></div></div><footer><div><small>预计每月</small><strong>¥ {{ ((app.estimatedMonthlyCents || 0) / 100).toFixed(2) }}</strong><small v-if="!app.estimateComplete">（不含未定价项与流量）</small></div><a v-if="app.publicPath" :href="app.publicPath" target="_blank" rel="noopener">访问应用<ExternalLink :size="14" /></a><span v-else class="quiet">尚无公网地址</span></footer></article><p v-if="!apps.length" class="quiet empty-copy">还没有部署应用，可从“部署应用”选择管理员发布的产品。</p></div>
     </section>
     <section
       v-if="
@@ -1128,9 +1310,9 @@ async function exitImpersonation() {
           ><button
             v-if="app.status === 'running'"
             class="icon-action"
-            title="更新应用"
-            :disabled="writeLocked || busy === app.id"
-            @click="updateApp(app)"
+            title="编辑配置并重新部署"
+            :disabled="writeLocked || busy === app.id || deployConfigurationLoading"
+            @click="openEditApp(app)"
           >
             <RefreshCw :size="17" /></button
           ><button
@@ -1474,8 +1656,8 @@ async function exitImpersonation() {
       <section class="secret-dialog deploy-dialog">
         <header>
           <div>
-            <p class="eyebrow">部署应用</p>
-            <h2>{{ deployProduct.name }}</h2>
+            <p class="eyebrow">{{ deployMode === 'update' ? '编辑配置 · 重新部署' : '部署应用' }}</p>
+            <h2>{{ deployProduct.name }}<small v-if="deployMode === 'update'"> · {{ deploySlug }}</small></h2>
           </div>
           <button class="icon-action" title="关闭" @click="closeDeploy">
             <X :size="18" />
@@ -1486,6 +1668,7 @@ async function exitImpersonation() {
             >应用标识<input
               v-model="deploySlug"
               required
+              :readonly="deployMode === 'update'"
               pattern="[a-z0-9][a-z0-9-]{0,62}"
               autocomplete="off"
           /></label>
@@ -1519,8 +1702,8 @@ async function exitImpersonation() {
             >
             <label
               >容器内网端口<input :value="deployPort" readonly /><small
-                >管理员按镜像监听端口固定，仅 Docker
-                内网可达；公网经统一反向代理访问</small
+                >管理员按镜像实际监听端口固定；公网请求由 Gateway 转发到容器的
+                {{ deployPort }} 端口，用户调整 CPU、内存或数据卷不会改变它</small
               ></label
             >
           </div>
@@ -1528,13 +1711,13 @@ async function exitImpersonation() {
             >共享数据卷容量 GiB<input
               v-model.number="deployDataVolumeGiB"
               type="number"
-              :min="deployProduct.runtimeSpec?.dataVolumeGiB || Math.max(...(deployProduct.runtimeSpec?.volumes || []).map((volume) => volume.sizeGiB))"
+              :min="deployVolumeFloorGiB || deployProduct.runtimeSpec?.dataVolumeGiB || Math.max(...(deployProduct.runtimeSpec?.volumes || []).map((volume) => volume.sizeGiB))"
               max="16384"
               step="1"
               required
               :readonly="deployProduct.runtimeSpec?.editableOptions?.dataVolume === false"
             /><small
-              >全部挂载（{{ (deployProduct.runtimeSpec?.volumes || []).map((volume) => volume.mountPath).join('、') }}）共享同一容量，最低 {{ deployProduct.runtimeSpec?.dataVolumeGiB || deployDataVolumeGiB }} GiB，只计费一次；停止后保留并继续计费</small
+              >全部挂载（{{ (deployProduct.runtimeSpec?.volumes || []).map((volume) => volume.mountPath).join('、') }}）和成功备份共享同一容量，{{ deployMode === 'update' ? '当前配置只允许扩容，最低' : '最低' }} {{ deployVolumeFloorGiB || deployProduct.runtimeSpec?.dataVolumeGiB || deployDataVolumeGiB }} GiB，只计费一次</small
             ></label
           >
           <label v-if="deployProduct.runtimeSpec?.editableOptions?.command"
@@ -1636,24 +1819,37 @@ async function exitImpersonation() {
               </button>
             </article>
           </div>
-          <template v-if="deployProduct.runtimeSpec?.secretKeys?.length">
+          <template v-if="deploySecretOptions.length">
             <div class="deploy-secret-heading">
               <KeyRound :size="17" />
               <div>
-                <strong>部署 Secret</strong
-                ><small>加密保存，提交后不会再次显示</small>
+                <strong>{{ deployMode === 'update' ? 'Secret 配置' : '部署 Secret' }}</strong
+                ><small v-if="deployMode === 'create'">加密保存，提交后不会再次显示</small
+                ><small v-else>明文不会回显；留空表示继续使用当前版本，只有管理员开放的字段可修改</small>
               </div>
             </div>
-            <label
-              v-for="key in deployProduct.runtimeSpec.secretKeys"
-              :key="key"
-              >{{ key
-              }}<input
-                v-model="deploySecrets[key]"
-                type="password"
-                required
-                autocomplete="new-password"
-            /></label>
+            <template v-if="deployMode === 'create'">
+              <label v-for="option in deploySecretOptions" :key="option.key" class="deploy-secret-field">
+                {{ option.key }}
+                <small v-if="option.description" class="env-help">{{ option.description }}</small>
+                <input v-model="deploySecrets[option.key]" type="password" required autocomplete="new-password" :placeholder="option.description || '请输入 Secret 值'" />
+              </label>
+            </template>
+            <div v-else class="deploy-secret-update-list">
+              <template v-for="option in deploySecretOptions" :key="option.key">
+                <label v-if="option.editable" class="deploy-secret-field">
+                  {{ option.key }}
+                  <small v-if="option.description" class="env-help">{{ option.description }}</small>
+                  <input v-model="deploySecrets[option.key]" type="password" autocomplete="new-password" :placeholder="deployConfiguredSecretKeys.includes(option.key) ? '留空继续使用当前版本' : '尚未配置，必须填写'" :required="!deployConfiguredSecretKeys.includes(option.key)" />
+                </label>
+                <div v-else class="deploy-secret-locked">
+                  <KeyRound :size="15" />
+                  <div><strong>{{ option.key }}</strong><small>{{ option.description || '管理员未提供说明' }}</small></div>
+                  <span>仅管理员</span>
+                </div>
+              </template>
+              <p v-if="missingDeploySecretKeys.length" class="deploy-secret-warning">尚未配置：{{ missingDeploySecretKeys.join('、') }}。固定 Secret 需要管理员先配置；可编辑 Secret 可在上方填写。</p>
+            </div>
           </template>
           <p v-else class="quiet">此模板不需要额外 Secret。</p>
           <div class="deploy-dialog-actions">
@@ -1667,7 +1863,7 @@ async function exitImpersonation() {
               class="primary compact"
               :disabled="writeLocked || busy === 'deploy'"
             >
-              <Rocket :size="16" />创建部署
+              <Rocket :size="16" />{{ deployMode === 'update' ? '保存配置并重新部署' : '创建部署' }}
             </button>
           </div>
         </form>
@@ -1685,6 +1881,10 @@ async function exitImpersonation() {
           <X :size="18" />
         </button>
       </header>
+      <div class="secret-explainer">
+        <KeyRound :size="18" />
+        <p><strong>应用 Secret 用于 API Key、令牌和数据库密码等敏感值。</strong><span>平台加密保存且永不回显；每次修改创建新版本。正在运行的容器继续使用当前发布固定的旧版本，执行“编辑配置并重新部署”后才会注入最新版本。</span></p>
+      </div>
       <div class="secret-list">
         <article v-for="item in secretItems" :key="item.key">
           <KeyRound :size="17" />

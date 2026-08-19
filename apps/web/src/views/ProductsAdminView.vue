@@ -45,6 +45,8 @@ type RuntimeSpec = {
   editableEnvKeys?: string[];
   envDescriptions?: Record<string, string>;
   secretKeys?: string[];
+  secretDescriptions?: Record<string, string>;
+  editableSecretKeys?: string[];
   volumes?: Volume[];
   dependencies?: Dependency[];
   dataVolumeGiB?: number;
@@ -63,6 +65,7 @@ type HealthSpec = {
   path?: string;
   intervalSeconds?: number;
   timeoutSeconds?: number;
+  acceptedStatusCodes?: number[];
 };
 type UpdateSpec = { dataPolicy?: string };
 type Version = {
@@ -92,6 +95,7 @@ type Product = {
   versions: Version[];
 };
 type KeyValue = { key: string; value: string; editable: boolean; description: string };
+type SecretForm = { key: string; description: string; editable: boolean };
 type VersionForm = {
   versionLabel: string;
   imageDigest: string;
@@ -99,7 +103,7 @@ type VersionForm = {
   memoryMiB: number;
   command: { value: string }[];
   environment: KeyValue[];
-  secrets: { key: string }[];
+  secrets: SecretForm[];
   volumes: Volume[];
   dependencies: Dependency[];
   containerPort: number;
@@ -111,6 +115,7 @@ type VersionForm = {
   healthPath: string;
   intervalSeconds: number;
   timeoutSeconds: number;
+  acceptedStatusCodes: string;
   dataPolicy: "stateless" | "volume_compatible" | "backup_required";
   dataVolumeGiB: number;
   editableOptions: EditableOptions;
@@ -136,11 +141,15 @@ const versionFormElement = ref<HTMLFormElement | null>(null);
 const versionEditorElement = ref<HTMLElement | null>(null);
 const fieldErrors = ref<Record<string, string>>({});
 const switchingProduct = ref(false);
-const versionDrafts = new Map<string, { form: VersionForm; summary: string[] }>();
+const versionDrafts = new Map<
+  string,
+  { form: VersionForm; summary: string[]; sourceVersion?: Version }
+>();
 const showTemplateExample = ref(false);
 const showCreateProduct = ref(false);
 const expandedVersions = ref(new Set<string>());
-const templateExample = JSON.stringify({ product: { name: "示例应用", slug: "example-app" }, version: { imageDigest: "ghcr.io/example/app:v1.0.0", runtimeSpec: { cpuCores: 1, memoryMiB: 512, dataVolumeGiB: 10, editableOptions: { cpu: true, memory: true, dataVolume: true, command: false, dependencies: false }, command: ["server", "--production"], env: { APP_MODE: "production", LOG_LEVEL: "info" }, envDescriptions: { APP_MODE: "应用运行模式", LOG_LEVEL: "日志级别，可选 debug/info/warn/error" }, editableEnvKeys: ["LOG_LEVEL"], secretKeys: ["API_KEY"], volumes: [{ name: "data", mountPath: "/data", sizeGiB: 10 }], dependencies: [] }, routeSpec: { containerPort: 3000, basePath: "/", stripPrefix: true, websocket: true, sse: true, cookiePath: "/" }, healthSpec: { path: "/health", intervalSeconds: 10, timeoutSeconds: 5 }, updateSpec: { dataPolicy: "volume_compatible" } } }, null, 2);
+const editingVersion = ref<Version | null>(null);
+const templateExample = JSON.stringify({ product: { name: "示例应用", slug: "example-app" }, version: { imageDigest: "ghcr.io/example/app:v1.0.0", runtimeSpec: { cpuCores: 1, memoryMiB: 512, dataVolumeGiB: 10, editableOptions: { cpu: true, memory: true, dataVolume: true, command: false, dependencies: false }, command: ["server", "--production"], env: { APP_MODE: "production", LOG_LEVEL: "info" }, envDescriptions: { APP_MODE: "应用运行模式", LOG_LEVEL: "日志级别，可选 debug/info/warn/error" }, editableEnvKeys: ["LOG_LEVEL"], secretKeys: ["API_KEY"], secretDescriptions: { API_KEY: "第三方服务 API 密钥" }, editableSecretKeys: ["API_KEY"], volumes: [{ name: "data", mountPath: "/data", sizeGiB: 10 }], dependencies: [] }, routeSpec: { containerPort: 3000, basePath: "/", stripPrefix: true, websocket: true, sse: true, cookiePath: "/" }, healthSpec: { path: "/health", intervalSeconds: 10, timeoutSeconds: 5, acceptedStatusCodes: [] }, updateSpec: { dataPolicy: "volume_compatible" } } }, null, 2);
 const templateExampleWithIcon = templateExample.replace('"slug": "example-app"', '"slug": "example-app",\n    "iconUrl": "https://example.com/app-icon.png"');
 async function copyTemplateExample() { await navigator.clipboard.writeText(templateExampleWithIcon); done("示例模板已复制"); }
 function downloadTemplateExample() { const link=document.createElement("a"); link.href=URL.createObjectURL(new Blob([templateExampleWithIcon],{type:"application/json"})); link.download="cloudmeter-product-template.example.json"; link.click(); URL.revokeObjectURL(link.href); }
@@ -174,6 +183,7 @@ function defaultVersionForm(): VersionForm {
     healthPath: "/health",
     intervalSeconds: 10,
     timeoutSeconds: 5,
+    acceptedStatusCodes: "",
     dataPolicy: "volume_compatible",
     dataVolumeGiB: 10,
     editableOptions: { cpu: true, memory: true, dataVolume: true, command: false, dependencies: false },
@@ -183,6 +193,7 @@ function resetVersionForm() {
   Object.assign(versionForm, defaultVersionForm());
   templateSummary.value = [];
   fieldErrors.value = {};
+  editingVersion.value = null;
   if (selected.value) versionDrafts.delete(selected.value);
 }
 function cloneVersionForm(source: VersionForm): VersionForm {
@@ -193,12 +204,14 @@ function saveCurrentDraft() {
   versionDrafts.set(selected.value, {
     form: cloneVersionForm(versionForm),
     summary: [...templateSummary.value],
+    sourceVersion: editingVersion.value || undefined,
   });
 }
 function loadDraft(productID: string) {
   const draft = versionDrafts.get(productID);
   Object.assign(versionForm, draft ? cloneVersionForm(draft.form) : defaultVersionForm());
   templateSummary.value = draft ? [...draft.summary] : [];
+  editingVersion.value = draft?.sourceVersion || null;
   fieldErrors.value = {};
 }
 async function selectProduct(productID: string) {
@@ -259,6 +272,14 @@ function numberValue(value: unknown, fallback: number) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
 }
+function importedEditableOption(
+  runtime: RuntimeSpec,
+  key: keyof EditableOptions,
+  legacyDefault: boolean,
+) {
+  const options = runtime.editableOptions;
+  return options ? options[key] === true : legacyDefault;
+}
 function importedEnvironment(
   value: unknown,
   editable: Set<string>,
@@ -289,17 +310,29 @@ function importedEnvironment(
     };
   });
 }
-function importedSecretKeys(value: unknown): { key: string }[] {
-  const keys = Array.isArray(value)
-    ? value.map((item) =>
-        item && typeof item === "object" && "key" in item
-          ? item.key
-          : item,
-      )
-    : value && typeof value === "object"
-      ? Object.keys(value)
-      : [];
-  return keys.map((key) => ({ key: String(key) }));
+function importedSecretKeys(
+  value: unknown,
+  descriptions: Record<string, unknown> = {},
+  editableKeys?: Set<string>,
+): SecretForm[] {
+  const entries: { key: string; description?: unknown; editable?: unknown }[] =
+    Array.isArray(value)
+      ? value.map((item) => {
+          if (item && typeof item === "object" && "key" in item) {
+            const record = item as Record<string, unknown>;
+            return { key: String(record.key), description: record.description, editable: record.editable };
+          }
+          return { key: String(item) };
+        })
+      : value && typeof value === "object"
+        ? Object.entries(value as Record<string, unknown>).map(([key, description]) => ({ key, description }))
+        : [];
+  return entries.map((entry) => ({
+    key: entry.key,
+    description: String(entry.description ?? descriptions[entry.key] ?? ""),
+    // Legacy templates did not have editableSecretKeys; keep those keys editable.
+    editable: entry.editable === undefined ? (editableKeys ? editableKeys.has(entry.key) : true) : entry.editable === true,
+  }));
 }
 function openTemplateImport() {
   templateInput.value?.click();
@@ -341,6 +374,9 @@ async function importTemplate(event: Event) {
         : [],
     );
     const secretSource = runtime.secretKeys || runtime.secrets || [];
+    const importedEditableSecrets: Set<string> | undefined = Array.isArray(runtime.editableSecretKeys)
+      ? new Set<string>(runtime.editableSecretKeys.map((value: unknown) => String(value)))
+      : undefined;
     const volumeSource = runtime.volumes || [];
     const dependencySource = runtime.dependencies || [];
 
@@ -358,7 +394,7 @@ async function importTemplate(event: Event) {
         editable,
         runtime.envDescriptions || {},
       ),
-      secrets: importedSecretKeys(secretSource),
+      secrets: importedSecretKeys(secretSource, runtime.secretDescriptions || {}, importedEditableSecrets),
       volumes: Array.isArray(volumeSource)
         ? volumeSource.map((volume: any) => ({
             name: String(volume.name || "data"),
@@ -371,11 +407,11 @@ async function importTemplate(event: Event) {
         Math.max(10, ...((Array.isArray(volumeSource) ? volumeSource : []).map((volume: any) => numberValue(volume.sizeGiB, 10)))),
       ),
       editableOptions: {
-        cpu: runtime.editableOptions?.cpu !== false,
-        memory: runtime.editableOptions?.memory !== false,
-        dataVolume: runtime.editableOptions?.dataVolume !== false,
-        command: runtime.editableOptions?.command === true,
-        dependencies: runtime.editableOptions?.dependencies === true,
+        cpu: importedEditableOption(runtime, "cpu", true),
+        memory: importedEditableOption(runtime, "memory", true),
+        dataVolume: importedEditableOption(runtime, "dataVolume", true),
+        command: importedEditableOption(runtime, "command", false),
+        dependencies: importedEditableOption(runtime, "dependencies", false),
       },
       containerPort: numberValue(
         route.containerPort ?? runtime.containerPort,
@@ -389,6 +425,9 @@ async function importTemplate(event: Event) {
       healthPath: String(health.path ?? "/health"),
       intervalSeconds: numberValue(health.intervalSeconds, 10),
       timeoutSeconds: numberValue(health.timeoutSeconds, 5),
+      acceptedStatusCodes: Array.isArray(health.acceptedStatusCodes)
+        ? health.acceptedStatusCodes.join(", " )
+        : "",
       dataPolicy: [
         "stateless",
         "volume_compatible",
@@ -655,6 +694,38 @@ function dependencies() {
     throw new Error("依赖服务名不能重复");
   return values;
 }
+function secretDescriptions() {
+  return Object.fromEntries(
+    versionForm.secrets
+      .filter((entry) => entry.key.trim() && entry.description.trim())
+      .map((entry) => [entry.key.trim().toUpperCase(), entry.description.trim()]),
+  );
+}
+function editableSecretKeys() {
+  return versionForm.secrets
+    .filter((entry) => entry.editable && entry.key.trim())
+    .map((entry) => entry.key.trim().toUpperCase());
+}
+function healthAcceptedStatusCodes() {
+  const raw = versionForm.acceptedStatusCodes.trim();
+  if (!raw) return [];
+  const values = raw
+    .split(/[\s,，]+/)
+    .filter(Boolean)
+    .map(Number);
+  if (
+    values.some(
+      (value) => !Number.isInteger(value) || value < 100 || value > 599,
+    )
+  )
+    throw new Error(
+      "额外成功状态码必须是 100 到 599 的整数，多个状态码用逗号分隔",
+    );
+  const unique = [...new Set(values)];
+  if (unique.length > 32)
+    throw new Error("额外成功状态码最多填写 32 个");
+  return unique;
+}
 async function createVersion() {
   if (!selected.value) {
     error.value = "请先选择产品";
@@ -680,6 +751,8 @@ async function createVersion() {
       editableEnvKeys: editableEnvironmentKeys(),
       envDescriptions: environmentDescriptions(),
       secretKeys: secretKeys(),
+      secretDescriptions: secretDescriptions(),
+      editableSecretKeys: editableSecretKeys(),
       dependencies: dependencies(),
     };
     if (versionForm.volumes.length) runtimeSpec.dataVolumeGiB = versionForm.dataVolumeGiB;
@@ -705,12 +778,14 @@ async function createVersion() {
           path: versionForm.healthPath.trim(),
           intervalSeconds: versionForm.intervalSeconds,
           timeoutSeconds: versionForm.timeoutSeconds,
+          acceptedStatusCodes: healthAcceptedStatusCodes(),
         },
         updateSpec: { dataPolicy: versionForm.dataPolicy },
       }),
     });
+    const basedOnPublishedVersion = Boolean(editingVersion.value);
     resetVersionForm();
-    done("新版本已创建");
+    done(basedOnPublishedVersion ? "已基于已发布版本创建新版本" : "新版本已创建");
     await load();
   } catch (value) {
     const text = (value as Error).message || "版本配置有误";
@@ -727,15 +802,98 @@ async function createVersion() {
       await focusInvalidField("dependency-0-key", text);
     } else if (text.includes("依赖服务名")) {
       await focusInvalidField("dependency-0-service", text);
+    } else if (text.includes("状态码")) {
+      await focusInvalidField("acceptedStatusCodes", text);
     } else failed(value);
   } finally {
     busy.value = "";
   }
 }
-function toggleVersion(id: string) {
+function versionFormFromItem(item: Version): VersionForm {
+  const runtime = item.runtimeSpec || {};
+  const volumes = (runtime.volumes || []).map((volume) => ({ ...volume }));
+  return {
+    ...defaultVersionForm(),
+    versionLabel: item.versionLabel || "",
+    imageDigest: item.imageDigest,
+    cpuCores: numberValue(runtime.cpuCores, 1),
+    memoryMiB: numberValue(runtime.memoryMiB, 512),
+    command: (runtime.command || []).map((value) => ({ value })),
+    environment: importedEnvironment(
+      runtime.env || {},
+      new Set(runtime.editableEnvKeys || []),
+      runtime.envDescriptions || {},
+    ),
+    secrets: importedSecretKeys(
+      runtime.secretKeys || [],
+      runtime.secretDescriptions || {},
+      Array.isArray(runtime.editableSecretKeys)
+        ? new Set(runtime.editableSecretKeys)
+        : undefined,
+    ),
+    volumes,
+    dependencies: (runtime.dependencies || []).map((dependency) => ({ ...dependency })),
+    dataVolumeGiB: numberValue(
+      runtime.dataVolumeGiB,
+      Math.max(1, ...volumes.map((volume) => numberValue(volume.sizeGiB, 1))),
+    ),
+    editableOptions: {
+      cpu: importedEditableOption(runtime, "cpu", true),
+      memory: importedEditableOption(runtime, "memory", true),
+      dataVolume: importedEditableOption(runtime, "dataVolume", true),
+      command: importedEditableOption(runtime, "command", false),
+      dependencies: importedEditableOption(runtime, "dependencies", false),
+    },
+    containerPort: numberValue(item.routeSpec?.containerPort, 8080),
+    basePath: item.routeSpec?.basePath ?? "/",
+    stripPrefix: item.routeSpec?.stripPrefix !== false,
+    websocket: item.routeSpec?.websocket !== false,
+    sse: item.routeSpec?.sse !== false,
+    cookiePath: item.routeSpec?.cookiePath ?? "",
+    healthPath: item.healthSpec?.path ?? "",
+    intervalSeconds: numberValue(item.healthSpec?.intervalSeconds, 5),
+    timeoutSeconds: numberValue(item.healthSpec?.timeoutSeconds, 5),
+    acceptedStatusCodes: (item.healthSpec?.acceptedStatusCodes || []).join(", "),
+    dataPolicy: ["stateless", "volume_compatible", "backup_required"].includes(
+      item.updateSpec?.dataPolicy || "",
+    )
+      ? (item.updateSpec?.dataPolicy as VersionForm["dataPolicy"])
+      : "volume_compatible",
+  };
+}
+async function loadVersionIntoEditor(item: Version) {
+  if (!selected.value) return;
+  const form = versionFormFromItem(item);
+  const summary = [
+    `已载入版本 ${item.versionLabel || `v${item.version}`}`,
+    `镜像 ${item.imageDigest}`,
+    `资源 ${form.cpuCores} 核 / ${form.memoryMiB} MiB`,
+    `环境变量 ${form.environment.length} 项`,
+    `数据卷 ${form.volumes.length} 项`,
+  ];
+  editingVersion.value = item;
+  versionDrafts.set(selected.value, {
+    form: cloneVersionForm(form),
+    summary: [...summary],
+    sourceVersion: item,
+  });
+  loadDraft(selected.value);
+  await revealVersionEditor(false);
+  done("已载入已发布版本；修改后创建的是新版本，原版本保持不变");
+}
+async function toggleVersion(item: Version) {
+  const id = item.id;
   const next = new Set(expandedVersions.value);
-  next.has(id) ? next.delete(id) : next.add(id);
+  const wasExpanded = next.has(id);
+  wasExpanded ? next.delete(id) : next.add(id);
   expandedVersions.value = next;
+  if (
+    !wasExpanded &&
+    editingVersion.value?.id !== item.id &&
+    item.publishedAt &&
+    selectedProduct.value?.status !== "retired"
+  )
+    await loadVersionIntoEditor(item);
 }
 async function deleteSelectedProduct() {
   const item = selectedProduct.value;
@@ -899,7 +1057,7 @@ function dataPolicyLabel(value?: string) {
           <div class="builder-heading">
             <div>
               <p class="eyebrow">{{ selectedProduct?.name }}</p>
-              <h2><Rocket :size="19" />添加版本</h2>
+              <h2><Rocket :size="19" />{{ editingVersion ? "编辑并创建新版本" : "添加版本" }}</h2>
               <div class="product-flow-steps" aria-label="产品发布流程"><span class="done">1 产品信息</span><ChevronRight :size="13"/><span class="current">2 配置版本</span><ChevronRight :size="13"/><span>3 测试部署</span><ChevronRight :size="13"/><span>4 发布上架</span></div>
             </div>
             <div v-if="selectedProduct" class="builder-heading-actions">
@@ -946,9 +1104,9 @@ function dataPolicyLabel(value?: string) {
             v-if="templateSummary.length"
             class="import-summary admin-import-summary"
           >
-            <strong>模板配置已回填</strong>
+            <strong>{{ editingVersion ? "已发布版本已回填" : "模板配置已回填" }}</strong>
             <small>{{ templateSummary.join(" · ") }}</small>
-            <small>产品已就绪；请检查配置后创建版本，测试通过后再发布。</small>
+            <small>{{ editingVersion ? "保存时会创建新的不可变版本，原版本与现有用户部署不受影响。" : "产品已就绪；请检查配置后创建版本，测试通过后再发布。" }}</small>
           </div>
           <div
             v-if="selectedProduct?.status === 'retired'"
@@ -1121,7 +1279,7 @@ function dataPolicyLabel(value?: string) {
                 <button
                   type="button"
                   class="secondary compact"
-                  @click="versionForm.secrets.push({ key: '' })"
+                  @click="versionForm.secrets.push({ key: '', description: '', editable: true })"
                 >
                   <Plus :size="15" />Secret
                 </button>
@@ -1130,7 +1288,7 @@ function dataPolicyLabel(value?: string) {
                 <div
                   v-for="(entry, index) in versionForm.secrets"
                   :key="index"
-                  class="repeat-row command-row"
+                  class="repeat-row secret-config-row"
                 >
                   <input
                     v-model="entry.key"
@@ -1139,7 +1297,14 @@ function dataPolicyLabel(value?: string) {
                     @input="clearFieldError(`secret-${index}`); clearFieldError('secret-0')"
                     placeholder="API_KEY"
                     @blur="entry.key = entry.key.trim().toUpperCase()"
-                  /><button
+                  /><input
+                    v-model="entry.description"
+                    class="env-description"
+                    placeholder="注释：帮助用户理解该 Secret"
+                  /><label class="toggle"
+                    ><input v-model="entry.editable" type="checkbox" />用户可修改</label
+                  ><span v-if="!entry.editable" class="locked-hint">仅管理员</span
+                  ><button
                     type="button"
                     class="icon-action"
                     title="删除 Secret"
@@ -1317,8 +1482,7 @@ function dataPolicyLabel(value?: string) {
                     step="1"
                     required
                   /><small
-                    >由镜像决定，仅 Docker 内网可达；同用户容器使用固定服务名 +
-                    此端口访问</small
+                    >必须与镜像进程实际监听端口一致；它不是宿主机映射端口。平台会用此端口执行健康检查、内网转发和同用户容器互访</small
                   ></label
                 ><label class="aligned-config-field"
                   ><span>内部 Base Path</span><input
@@ -1364,7 +1528,7 @@ function dataPolicyLabel(value?: string) {
                   ><small>通过后才会原子切换用户访问路由</small>
                 </div>
               </div>
-              <div class="config-grid three">
+              <div class="config-grid four health-grid">
                 <label class="aligned-config-field"
                   ><span>检查路径</span><input
                     v-model="versionForm.healthPath"
@@ -1392,7 +1556,20 @@ function dataPolicyLabel(value?: string) {
                     max="30"
                     step="1"
                     required
-                /><small>单次健康检查允许的最长响应时间</small></label>
+                /><small>单次健康检查允许的最长响应时间</small></label
+                ><label class="aligned-config-field"
+                  ><span>额外成功状态码</span><input
+                    v-model="versionForm.acceptedStatusCodes"
+                    data-field="acceptedStatusCodes"
+                    :class="{
+                      'field-invalid': fieldError('acceptedStatusCodes'),
+                    }"
+                    @input="clearFieldError('acceptedStatusCodes')"
+                    placeholder="例如 401"
+                  /><small
+                    >默认接受全部 2xx；认证型应用可填 401，多个用逗号分隔</small
+                  ></label
+                >
               </div>
             </section>
             <div class="builder-actions">
@@ -1403,7 +1580,7 @@ function dataPolicyLabel(value?: string) {
               >
                 重置</button
               ><button class="primary compact" :disabled="busy === 'version'">
-                <Plus :size="16" />创建
+                <Save v-if="editingVersion" :size="16" /><Plus v-else :size="16" />{{ editingVersion ? "保存为新版本" : "创建" }}
               </button>
             </div>
           </form>
@@ -1423,8 +1600,9 @@ function dataPolicyLabel(value?: string) {
               'version-row',
               item.latestTest?.state === 'failed' && 'version-row-failed',
               expandedVersions.has(item.id) && 'expanded',
+              editingVersion?.id === item.id && 'editing-source',
             ]"
-            @click="toggleVersion(item.id)"
+            @click="toggleVersion(item)"
           >
             <span class="version-number">{{ item.versionLabel || `v${item.version}` }}</span>
             <div class="version-copy">
@@ -1478,11 +1656,12 @@ function dataPolicyLabel(value?: string) {
               >
                 <Rocket :size="16" />发布
               </button>
-              <CheckCircle2
-                v-else-if="item.publishedAt"
-                class="ok"
-                :size="20"
-              />
+              <button
+                v-else-if="item.publishedAt && selectedProduct.status !== 'retired'"
+                class="secondary compact"
+                type="button"
+                @click="loadVersionIntoEditor(item)"
+              ><Pencil :size="15" />载入编辑</button>
               <Archive
                 v-else-if="selectedProduct.status === 'retired'"
                 class="quiet"

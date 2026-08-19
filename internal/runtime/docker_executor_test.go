@@ -21,6 +21,55 @@ func TestDecodeDockerLogs(t *testing.T) {
 	}
 }
 
+func TestLastHTTPStatusCodeUsesFinalResponse(t *testing.T) {
+	logs := "  HTTP/1.1 302 Found\n  Location: /login\n  HTTP/1.1 401 Unauthorized\n"
+	statusCode, ok := lastHTTPStatusCode(logs)
+	if !ok || statusCode != http.StatusUnauthorized {
+		t.Fatalf("last status code=(%d, %v)", statusCode, ok)
+	}
+	if _, ok = lastHTTPStatusCode("connection refused"); ok {
+		t.Fatal("non-HTTP diagnostics produced a status code")
+	}
+}
+
+func TestContainsStatusCode(t *testing.T) {
+	if !containsStatusCode([]int{401, 403}, 401) {
+		t.Fatal("declared status code was not accepted")
+	}
+	if containsStatusCode([]int{401, 403}, 500) {
+		t.Fatal("undeclared status code was accepted")
+	}
+}
+
+func TestStatsReturnsCPUCoresAndMemoryWorkingSet(t *testing.T) {
+	requests := 0
+	executor := &DockerExecutor{client: &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		requests++
+		if request.URL.Path != "/containers/cm-test/stats" || request.URL.Query().Get("stream") != "false" {
+			t.Fatalf("unexpected stats request %s", request.URL.String())
+		}
+		body := `{
+			"cpu_stats":{"cpu_usage":{"total_usage":300},"system_cpu_usage":1000,"online_cpus":4},
+			"precpu_stats":{"cpu_usage":{"total_usage":200},"system_cpu_usage":600},
+			"memory_stats":{"usage":314572800,"stats":{"inactive_file":104857600}}
+		}`
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+	})}}
+	cpu, memory, err := executor.Stats(context.Background(), "cm-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests != 1 {
+		t.Fatalf("requests=%d", requests)
+	}
+	if cpu != 1 {
+		t.Fatalf("cpu cores=%f", cpu)
+	}
+	if memory != 200*1024*1024 {
+		t.Fatalf("memory working set=%d", memory)
+	}
+}
+
 func TestConnectNetworkSendsStableAliases(t *testing.T) {
 	server, client := net.Pipe()
 	executor := &DockerExecutor{client: &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
@@ -73,6 +122,74 @@ func TestContainerNamesSkipsForeignOwner(t *testing.T) {
 	}
 	if strings.Join(names, ",") != "cm-owned" {
 		t.Fatalf("names=%v", names)
+	}
+}
+
+func TestRestartComposeServiceOnlyRestartsExactlyOwnedService(t *testing.T) {
+	requests := 0
+	executor := &DockerExecutor{owner: "stack-a", client: &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		requests++
+		switch requests {
+		case 1:
+			if request.Method != http.MethodGet || request.URL.Path != "/containers/json" || request.URL.Query().Get("all") != "true" {
+				t.Fatalf("unexpected lookup request %s %s", request.Method, request.URL.String())
+			}
+			var filters map[string][]string
+			if err := json.Unmarshal([]byte(request.URL.Query().Get("filters")), &filters); err != nil {
+				t.Fatal(err)
+			}
+			wanted := strings.Join(filters["label"], ",")
+			if wanted != "com.docker.compose.project=stack-a,com.docker.compose.service=api,cloudmeter.owner=stack-a" {
+				t.Fatalf("labels filter=%q", wanted)
+			}
+			body := `[{"Id":"owned-api","Labels":{"com.docker.compose.project":"stack-a","com.docker.compose.service":"api","cloudmeter.owner":"stack-a"}}]`
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+		case 2:
+			if request.Method != http.MethodPost || request.URL.Path != "/containers/owned-api/restart" || request.URL.Query().Get("t") != "10" {
+				t.Fatalf("unexpected restart request %s %s", request.Method, request.URL.String())
+			}
+			return &http.Response{StatusCode: http.StatusNoContent, Body: io.NopCloser(strings.NewReader("")), Header: make(http.Header)}, nil
+		default:
+			t.Fatalf("unexpected request %d", requests)
+			return nil, nil
+		}
+	})}}
+	if err := executor.RestartComposeService(context.Background(), "api", false); err != nil {
+		t.Fatal(err)
+	}
+	if requests != 2 {
+		t.Fatalf("requests=%d", requests)
+	}
+}
+
+func TestRestartComposeServiceRejectsForeignOrAmbiguousTargets(t *testing.T) {
+	for name, body := range map[string]string{
+		"foreign owner": `[{"Id":"foreign","Labels":{"com.docker.compose.project":"stack-b","com.docker.compose.service":"api","cloudmeter.owner":"stack-b"}}]`,
+		"duplicate":     `[{"Id":"one","Labels":{"com.docker.compose.project":"stack-a","com.docker.compose.service":"api","cloudmeter.owner":"stack-a"}},{"Id":"two","Labels":{"com.docker.compose.project":"stack-a","com.docker.compose.service":"api","cloudmeter.owner":"stack-a"}}]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			requests := 0
+			executor := &DockerExecutor{owner: "stack-a", client: &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+				requests++
+				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+			})}}
+			err := executor.RestartComposeService(context.Background(), "api", false)
+			if err == nil || !strings.Contains(err.Error(), "exactly one owned container") {
+				t.Fatalf("error=%v", err)
+			}
+			if requests != 1 {
+				t.Fatalf("unsafe restart request count=%d", requests)
+			}
+		})
+	}
+}
+
+func TestRestartComposeServiceRejectsServicesOutsideControlPlane(t *testing.T) {
+	executor := &DockerExecutor{owner: "stack-a"}
+	for _, service := range []string{"postgres", "redis", "migrate", "user-app", ""} {
+		if err := executor.RestartComposeService(context.Background(), service, false); err == nil {
+			t.Fatalf("service %q was accepted", service)
+		}
 	}
 }
 
@@ -134,7 +251,9 @@ func TestPullFetchesImageWhenLocalImageIsMissing(t *testing.T) {
 			}
 			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("{\"status\":\"Pull complete\"}\n")), Header: make(http.Header)}, nil
 		case 3:
-			if request.Method != http.MethodGet { t.Fatalf("verify method=%s", request.Method) }
+			if request.Method != http.MethodGet {
+				t.Fatalf("verify method=%s", request.Method)
+			}
 			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("{\"Id\":\"pulled\"}")), Header: make(http.Header)}, nil
 		default:
 			t.Fatalf("unexpected request %d: %s %s", requests, request.Method, request.URL.String())

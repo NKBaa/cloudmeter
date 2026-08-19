@@ -17,6 +17,8 @@ services:
       PLATFORM_ALLOWED_HOST: ${PLATFORM_ALLOWED_HOST:?PLATFORM_ALLOWED_HOST is required}
       GATEWAY_TRUSTED_PROXY_CIDRS: ${GATEWAY_TRUSTED_PROXY_CIDRS:?GATEWAY_TRUSTED_PROXY_CIDRS is required}
     networks: [edge_network, platform_network]
+    labels:
+      cloudmeter.owner: ${COMPOSE_PROJECT_NAME:-cloudmeter}
     security_opt: [no-new-privileges:true]
 
   web:
@@ -26,6 +28,8 @@ services:
     restart: unless-stopped
     expose: ["8080"]
     networks: [platform_network]
+    labels:
+      cloudmeter.owner: ${COMPOSE_PROJECT_NAME:-cloudmeter}
     security_opt: [no-new-privileges:true]
 
   egress-proxy:
@@ -97,6 +101,8 @@ services:
       interval: 10s
       timeout: 3s
       retries: 5
+    labels:
+      cloudmeter.owner: ${COMPOSE_PROJECT_NAME:-cloudmeter}
     security_opt: [no-new-privileges:true]
 
   worker:
@@ -126,6 +132,8 @@ services:
     volumes:
       - ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock
     networks: [data_network]
+    labels:
+      cloudmeter.owner: ${COMPOSE_PROJECT_NAME:-cloudmeter}
     security_opt: [no-new-privileges:true]
 
   migrate:

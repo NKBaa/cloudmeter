@@ -281,7 +281,7 @@ paths:
       operationId: listApps
       security: [{bearerAuth: []}]
       responses:
-        '200': {description: User applications including active publicPath}
+        '200': {description: "User applications including active publicPath, configured CPU and memory limits, latest point-in-time Docker CPU and memory usage, and metricsSampledAt. Runtime metrics are omitted until a fresh sample is available."}
     post:
       operationId: createApp
       security: [{bearerAuth: []}]
@@ -327,6 +327,13 @@ paths:
         '202': {description: Application hidden and resource cleanup queued}
         '404': {description: Application not found}
         '409': {description: An operation is active or another application depends on this service}
+  /apps/runtime-metrics:
+    get:
+      operationId: appRuntimeMetrics
+      description: Returns fresh point-in-time Docker CPU and memory samples for the authenticated user's running applications. Samples older than 15 seconds are omitted.
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: Fresh runtime metrics sampled by the worker}
   /apps/{appID}/route:
     get:
       operationId: appRoute
@@ -426,6 +433,31 @@ paths:
       responses:
         '202': {description: Restore queued and app entered maintenance state}
         '409': {description: Restore already in progress or idempotency key conflict}
+  /apps/{appID}/backups/{backupID}:
+    delete:
+      operationId: deleteAppBackup
+      summary: Delete one backup archive
+      description: Queues physical archive cleanup while retaining immutable backup history and audit metadata. A failed cleanup can be retried with the same endpoint.
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: appID, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: backupID, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '202': {description: Backup archive deletion queued}
+        '200': {description: Backup was already physically deleted; idempotent response}
+        '404': {description: Backup not found for current user}
+        '409': {description: Backup creation or restore is still in progress}
+  /apps/{appID}/configuration:
+    get:
+      operationId: appConfiguration
+      summary: Read editable application configuration
+      description: Returns the current successful runtime snapshot and the latest published product template. Secret values are never returned; only configured Secret key names are included.
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: appID, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200': {description: "Current configuration, latest template, route port, and configured Secret key names"}
+        '404': {description: Application has no successful configuration or is not owned by the caller}
   /admin/plans:
     get:
       operationId: adminPlans
@@ -1023,6 +1055,22 @@ paths:
         '200': {description: "Docker settings encrypted, saved, and audited"}
         '400': {description: "Mirror, Registry, proxy, or timeout validation failed"}
         '403': {description: Super administrator required}
+  /admin/system/restart:
+    get:
+      operationId: getPlatformRestart
+      description: Returns the latest auditable CloudMeter platform-service restart request.
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: "Latest restart request, or null when no restart has been requested"}
+        '403': {description: Administrator required}
+    post:
+      operationId: createPlatformRestart
+      description: Queues a fixed-scope restart of Gateway, Web, API, App Router, Egress Proxy, and Worker. PostgreSQL, Redis, Docker Engine, and user application containers are excluded.
+      security: [{bearerAuth: []}]
+      responses:
+        '202': {description: Platform restart queued and audited}
+        '403': {description: Administrator required}
+        '409': {description: Another platform restart is queued or running}
   /admin/users:
     get:
       operationId: listUsers
@@ -1486,6 +1534,12 @@ components:
         path: {type: string, pattern: '^/|^$', maxLength: 512}
         intervalSeconds: {type: integer, minimum: 1, maximum: 120}
         timeoutSeconds: {type: integer, minimum: 1, maximum: 30}
+        acceptedStatusCodes:
+          type: array
+          maxItems: 32
+          uniqueItems: true
+          description: Additional non-2xx HTTP status codes that prove an authenticated service is ready; all 2xx responses remain accepted by default.
+          items: {type: integer, minimum: 100, maximum: 599}
     ProductUpdateSpec:
       type: object
       additionalProperties: false

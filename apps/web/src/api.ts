@@ -30,6 +30,12 @@ const errorMessages: Record<string, string> = {
   product_dependency_conflict: '产品依赖当前不可用，无法完成此操作',
   required_secret_missing: '应用缺少必需的 Secret，请先补充配置',
   secret_not_declared: '该 Secret 未由此产品的已发布版本声明，不能保存',
+  backup_not_found: '没有找到这条备份，列表可能已经发生变化，请刷新后重试',
+  backup_in_progress: '备份仍在创建中，请等待完成后再操作',
+  backup_not_restorable: '这条备份当前不可恢复，可能已删除或状态尚未完成',
+  restore_in_progress: '应用已有恢复任务正在执行，请等待完成',
+  app_configuration_not_found: '应用还没有成功发布的配置，暂时不能编辑',
+  invalid_deployment_configuration: '部署配置无效，请检查标红字段后重试',
   insufficient_balance: '钱包余额不足，请先充值后再继续',
   refund_in_progress: '退款正在处理，请稍后刷新查看结果',
   order_not_refundable: '只有已入账且未退款的订单可以退款',
@@ -45,6 +51,7 @@ const errorMessages: Record<string, string> = {
   user_not_found: '没有找到这个用户，列表可能已经发生变化，请刷新后重试',
   ticket_not_found: '没有找到这个工单，或你没有查看权限',
   ticket_closed: '工单已经关闭，不能继续回复',
+  restart_in_progress: '已有系统重启任务正在执行，请等待完成',
 }
 
 export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {

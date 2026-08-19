@@ -1,15 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"os"
 	"os/signal"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -104,6 +107,9 @@ func routeHandler(db *pgxpool.Pool, logger *slog.Logger) http.Handler {
 			http.Error(w, "route lookup failed", http.StatusBadGateway)
 			return
 		}
+		if redirectAppRoot(w, r, prefix) {
+			return
+		}
 		if isWebSocketRequest(r) && !routeBoolean(routeSpec, "websocket", true) {
 			http.Error(w, "websocket is disabled for this application", http.StatusUpgradeRequired)
 			return
@@ -114,6 +120,7 @@ func routeHandler(db *pgxpool.Pool, logger *slog.Logger) http.Handler {
 		}
 		target, _ := url.Parse(fmt.Sprintf("http://%s:%d", host, port))
 		proxy := httputil.NewSingleHostReverseProxy(target)
+		rootRequest := r.Method == http.MethodGet && r.URL.Path == prefix+"/" && !isWebSocketRequest(r)
 		if routeBoolean(routeSpec, "sse", true) {
 			proxy.FlushInterval = -1
 		}
@@ -127,17 +134,33 @@ func routeHandler(db *pgxpool.Pool, logger *slog.Logger) http.Handler {
 				}
 				req.URL.Path = joinURLPath(routeString(routeSpec, "basePath", "/"), path)
 			}
+			if rootRequest {
+				// Let Go transparently decode an upstream gzip response so the
+				// public-path adapter can safely inspect the root HTML document.
+				req.Header.Del("Accept-Encoding")
+				// A 304 has no body to adapt. Always fetch the root document so a
+				// previously cached unprefixed <base> cannot bypass the adapter.
+				req.Header.Del("If-None-Match")
+				req.Header.Del("If-Modified-Since")
+			}
 			req.Header.Set("X-Forwarded-Prefix", prefix)
 		}
-		if cookiePath := routeString(routeSpec, "cookiePath", ""); cookiePath != "" {
+		cookiePath := routeString(routeSpec, "cookiePath", "")
+		if cookiePath != "" || rootRequest {
 			proxy.ModifyResponse = func(response *http.Response) error {
-				values := response.Header.Values("Set-Cookie")
-				if len(values) == 0 {
-					return nil
+				if rootRequest {
+					if err := rewriteRootHTMLBase(response, prefix); err != nil {
+						return err
+					}
 				}
-				response.Header.Del("Set-Cookie")
-				for _, value := range values {
-					response.Header.Add("Set-Cookie", rewriteCookiePath(value, cookiePath, prefix))
+				if cookiePath != "" {
+					values := response.Header.Values("Set-Cookie")
+					if len(values) > 0 {
+						response.Header.Del("Set-Cookie")
+						for _, value := range values {
+							response.Header.Add("Set-Cookie", rewriteCookiePath(value, cookiePath, prefix))
+						}
+					}
 				}
 				return nil
 			}
@@ -148,6 +171,55 @@ func routeHandler(db *pgxpool.Pool, logger *slog.Logger) http.Handler {
 		}
 		proxy.ServeHTTP(w, r)
 	})
+}
+
+const maxRootHTMLRewriteBytes = 4 << 20
+
+var rootHTMLBasePattern = regexp.MustCompile(`(?i)(<base\b[^>]*\bhref\s*=\s*["'])/(["'])`)
+
+type joinedReadCloser struct {
+	io.Reader
+	io.Closer
+}
+
+func rewriteRootHTMLBase(response *http.Response, publicPath string) error {
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices ||
+		!strings.HasPrefix(strings.ToLower(response.Header.Get("Content-Type")), "text/html") ||
+		(response.Header.Get("Content-Encoding") != "" && !strings.EqualFold(response.Header.Get("Content-Encoding"), "identity")) {
+		return nil
+	}
+	body := response.Body
+	payload, err := io.ReadAll(io.LimitReader(body, maxRootHTMLRewriteBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(payload) > maxRootHTMLRewriteBytes {
+		response.Body = &joinedReadCloser{Reader: io.MultiReader(bytes.NewReader(payload), body), Closer: body}
+		return nil
+	}
+	_ = body.Close()
+	prefix := strings.TrimRight(publicPath, "/") + "/"
+	rewritten := rootHTMLBasePattern.ReplaceAll(payload, []byte("$1"+prefix+"$2"))
+	response.Body = io.NopCloser(bytes.NewReader(rewritten))
+	response.ContentLength = int64(len(rewritten))
+	response.Header.Set("Content-Length", fmt.Sprint(len(rewritten)))
+	if !bytes.Equal(payload, rewritten) {
+		response.Header.Del("ETag")
+		response.Header.Del("Content-MD5")
+	}
+	return nil
+}
+
+func redirectAppRoot(w http.ResponseWriter, r *http.Request, prefix string) bool {
+	if r.URL.Path != prefix || isWebSocketRequest(r) {
+		return false
+	}
+	location := prefix + "/"
+	if r.URL.RawQuery != "" {
+		location += "?" + r.URL.RawQuery
+	}
+	http.Redirect(w, r, location, http.StatusPermanentRedirect)
+	return true
 }
 
 func routeBoolean(spec map[string]any, key string, fallback bool) bool {

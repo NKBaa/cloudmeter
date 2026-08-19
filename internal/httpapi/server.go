@@ -200,8 +200,10 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/admin/audit-logs", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.adminAuditLogs))))
 	s.mux.Handle("GET /api/products", s.authenticate(http.HandlerFunc(s.listProducts)))
 	s.mux.Handle("GET /api/apps", s.authenticate(http.HandlerFunc(s.listApps)))
+	s.mux.Handle("GET /api/apps/runtime-metrics", s.authenticate(http.HandlerFunc(s.appRuntimeMetrics)))
 	s.mux.Handle("GET /api/apps/{appID}/deployments", s.authenticate(http.HandlerFunc(s.appDeployments)))
 	s.mux.Handle("GET /api/apps/{appID}/releases", s.authenticate(http.HandlerFunc(s.appReleases)))
+	s.mux.Handle("GET /api/apps/{appID}/configuration", s.authenticate(http.HandlerFunc(s.appConfiguration)))
 	s.mux.Handle("GET /api/apps/{appID}/secrets", s.authenticate(http.HandlerFunc(s.listAppSecrets)))
 	s.mux.Handle("PUT /api/apps/{appID}/secrets/{key}", s.authenticate(http.HandlerFunc(s.putAppSecret)))
 	s.mux.Handle("GET /api/apps/{appID}/route", s.authenticate(http.HandlerFunc(s.appRoute)))
@@ -209,6 +211,7 @@ func (s *Server) routes() {
 	s.mux.Handle("POST /api/apps/{appID}/start", s.authenticate(http.HandlerFunc(s.startApp)))
 	s.mux.Handle("GET /api/apps/{appID}/backups", s.authenticate(http.HandlerFunc(s.listAppBackups)))
 	s.mux.Handle("POST /api/apps/{appID}/backups", s.authenticate(http.HandlerFunc(s.createAppBackup)))
+	s.mux.Handle("DELETE /api/apps/{appID}/backups/{backupID}", s.authenticate(http.HandlerFunc(s.deleteAppBackup)))
 	s.mux.Handle("POST /api/apps/{appID}/backups/{backupID}/restore", s.authenticate(http.HandlerFunc(s.restoreAppBackup)))
 	s.mux.Handle("GET /api/billing/summary", s.authenticate(http.HandlerFunc(s.billingSummary)))
 	s.mux.Handle("GET /api/billing/ledger", s.authenticate(http.HandlerFunc(s.billingLedger)))
@@ -241,6 +244,8 @@ func (s *Server) routes() {
 	// while financial/platform-owner settings remain super-admin only.
 	s.mux.Handle("GET /api/admin/settings/docker", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.getDockerSettings))))
 	s.mux.Handle("PUT /api/admin/settings/docker", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.updateDockerSettings))))
+	s.mux.Handle("GET /api/admin/system/restart", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.getPlatformRestart))))
+	s.mux.Handle("POST /api/admin/system/restart", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.createPlatformRestart))))
 	s.mux.Handle("PUT /api/admin/settings/homepage", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.updateHomepage))))
 	s.mux.Handle("PUT /api/admin/settings/checkin", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.updateCheckinSettings))))
 	s.mux.Handle("PUT /api/admin/settings/payments/{provider}", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.updatePaymentSettings))))
@@ -809,7 +814,7 @@ func selectedRuntimeSpec(template map[string]any, selected selectedResources) (m
 	if chosenVolume < minimumVolume {
 		return nil, fmt.Errorf("data volume capacity must be at least %.0f GiB", minimumVolume)
 	}
-	if volumes, ok := result["volumes"].([]any); ok {
+	if volumes, ok := result["volumes"].([]any); ok && len(volumes) > 0 {
 		for _, raw := range volumes {
 			volume, ok := raw.(map[string]any)
 			if !ok {
@@ -818,6 +823,12 @@ func selectedRuntimeSpec(template map[string]any, selected selectedResources) (m
 			volume["sizeGiB"] = chosenVolume
 		}
 		result["dataVolumeGiB"] = chosenVolume
+	} else {
+		// Keep the selected runtime snapshot byte-for-byte compatible with the
+		// immutable product version when the product has no persistent mounts.
+		// A zero-capacity data volume is not a real resource and must not be
+		// added to the snapshot, otherwise the parentage guard rejects deployment.
+		delete(result, "dataVolumeGiB")
 	}
 	if selected.Command != nil {
 		if !editableRuntimeOption(result, "command", false) {
@@ -964,6 +975,7 @@ func (s *Server) estimatedMonthlyAppCents(ctx context.Context, userID, appID str
 }
 
 func (s *Server) listApps(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	p, _ := r.Context().Value(principalKey).(principal)
 	rows, err := s.db.Query(r.Context(), "SELECT a.id,a.slug,a.service_slug,a.status,coalesce(a.suspension_reason,''),p.slug,coalesce(a.last_successful_release_id::text,''),coalesce(prev.id::text,''),coalesce(j.id::text,''),coalesce(j.state::text,''),coalesce(j.last_error,''),coalesce(j.updated_at,a.created_at),coalesce(ar.public_path,''),coalesce(current_release.immutable_snapshot->'runtime_spec','{}'::jsonb) FROM user_apps a JOIN app_products p ON p.id=a.product_id LEFT JOIN app_releases current_release ON current_release.id=a.last_successful_release_id LEFT JOIN app_routes ar ON ar.user_app_id=a.id AND ar.release_id=a.last_successful_release_id LEFT JOIN LATERAL (SELECT id FROM app_releases WHERE user_app_id=a.id AND state IN ('active','superseded') AND release_number < coalesce(current_release.release_number,2147483647) ORDER BY release_number DESC LIMIT 1) prev ON true LEFT JOIN LATERAL (SELECT id,state,last_error,updated_at FROM deployment_jobs WHERE user_app_id=a.id ORDER BY created_at DESC LIMIT 1) j ON true WHERE a.user_id=$1 AND a.deleted_at IS NULL ORDER BY a.created_at DESC", p.ID)
 	if err != nil {
@@ -972,25 +984,26 @@ func (s *Server) listApps(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 	type appView struct {
-		ID                    string    `json:"id"`
-		Slug                  string    `json:"slug"`
-		ServiceSlug           string    `json:"serviceSlug"`
-		Status                string    `json:"status"`
-		SuspensionReason      string    `json:"suspensionReason,omitempty"`
-		ProductSlug           string    `json:"productSlug"`
-		LastReleaseID         string    `json:"lastSuccessfulReleaseId"`
-		PreviousReleaseID     string    `json:"previousReleaseId"`
-		JobID                 string    `json:"jobId"`
-		JobState              string    `json:"jobState"`
-		JobLastError          string    `json:"jobLastError,omitempty"`
-		UpdatedAt             time.Time `json:"updatedAt"`
-		PublicPath            string    `json:"publicPath,omitempty"`
-		CPUCores              float64   `json:"cpuCores"`
-		MemoryMiB             float64   `json:"memoryMiB"`
-		CPUUsageCores         float64   `json:"cpuUsageCores"`
-		MemoryUsageMiB        float64   `json:"memoryUsageMiB"`
-		EstimatedMonthlyCents int64     `json:"estimatedMonthlyCents"`
-		EstimateComplete      bool      `json:"estimateComplete"`
+		ID                    string     `json:"id"`
+		Slug                  string     `json:"slug"`
+		ServiceSlug           string     `json:"serviceSlug"`
+		Status                string     `json:"status"`
+		SuspensionReason      string     `json:"suspensionReason,omitempty"`
+		ProductSlug           string     `json:"productSlug"`
+		LastReleaseID         string     `json:"lastSuccessfulReleaseId"`
+		PreviousReleaseID     string     `json:"previousReleaseId"`
+		JobID                 string     `json:"jobId"`
+		JobState              string     `json:"jobState"`
+		JobLastError          string     `json:"jobLastError,omitempty"`
+		UpdatedAt             time.Time  `json:"updatedAt"`
+		PublicPath            string     `json:"publicPath,omitempty"`
+		CPUCores              float64    `json:"cpuCores"`
+		MemoryMiB             float64    `json:"memoryMiB"`
+		CPUUsageCores         float64    `json:"cpuUsageCores"`
+		MemoryUsageMiB        float64    `json:"memoryUsageMiB"`
+		MetricsSampledAt      *time.Time `json:"metricsSampledAt,omitempty"`
+		EstimatedMonthlyCents int64      `json:"estimatedMonthlyCents"`
+		EstimateComplete      bool       `json:"estimateComplete"`
 	}
 	items := make([]appView, 0)
 	for rows.Next() {
@@ -1003,9 +1016,9 @@ func (s *Server) listApps(w http.ResponseWriter, r *http.Request) {
 		if resources, resourceErr := runtimepolicy.RuntimeResources(runtimeSpec, false); resourceErr == nil {
 			item.CPUCores, item.MemoryMiB = resources.CPUCores, resources.MemoryMiB
 		}
-		_ = s.db.QueryRow(r.Context(), `SELECT
-			coalesce((SELECT quantity::float8*12 FROM usage_events WHERE user_app_id=$1 AND usage_code='cpu.core_hours' ORDER BY window_end DESC LIMIT 1),0),
-			coalesce((SELECT quantity::float8*12*1024 FROM usage_events WHERE user_app_id=$1 AND usage_code='memory.gib_hours' ORDER BY window_end DESC LIMIT 1),0)`, item.ID).Scan(&item.CPUUsageCores, &item.MemoryUsageMiB)
+		if item.Status == "running" {
+			_ = s.db.QueryRow(r.Context(), "SELECT coalesce(cpu_usage_cores,0)::float8,coalesce(memory_usage_bytes,0)::float8/1048576,sampled_at FROM app_runtime_metrics WHERE user_app_id=$1 AND sampled_at>=now()-interval '15 seconds'", item.ID).Scan(&item.CPUUsageCores, &item.MemoryUsageMiB, &item.MetricsSampledAt)
+		}
 		item.EstimatedMonthlyCents, item.EstimateComplete = s.estimatedMonthlyAppCents(r.Context(), p.ID, item.ID, runtimeSpec, item.PublicPath != "")
 		items = append(items, item)
 	}

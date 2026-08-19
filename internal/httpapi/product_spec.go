@@ -70,6 +70,11 @@ func normalizeHealthSpec(spec map[string]any) error {
 		return err
 	}
 	spec["path"] = path
+	acceptedStatusCodes, err := normalizedAcceptedStatusCodes(spec["acceptedStatusCodes"])
+	if err != nil {
+		return err
+	}
+	spec["acceptedStatusCodes"] = acceptedStatusCodes
 	for _, field := range []struct {
 		name         string
 		defaultValue int
@@ -90,6 +95,39 @@ func normalizeHealthSpec(spec map[string]any) error {
 		spec[field.name] = float64(value)
 	}
 	return nil
+}
+
+func normalizedAcceptedStatusCodes(raw any) ([]int, error) {
+	if raw == nil {
+		return []int{}, nil
+	}
+	values, ok := raw.([]any)
+	if !ok {
+		if typed, typedOK := raw.([]int); typedOK {
+			values = make([]any, len(typed))
+			for index, value := range typed {
+				values[index] = float64(value)
+			}
+		} else {
+			return nil, fmt.Errorf("health acceptedStatusCodes must be an array")
+		}
+	}
+	if len(values) > 32 {
+		return nil, fmt.Errorf("health acceptedStatusCodes cannot contain more than 32 values")
+	}
+	result := make([]int, 0, len(values))
+	seen := map[int]bool{}
+	for _, rawValue := range values {
+		value, integer := exactInteger(rawValue)
+		if !integer || value < 100 || value > 599 {
+			return nil, fmt.Errorf("health acceptedStatusCodes values must be integers from 100 to 599")
+		}
+		if !seen[value] {
+			seen[value] = true
+			result = append(result, value)
+		}
+	}
+	return result, nil
 }
 
 func normalizeUpdateSpec(spec map[string]any) (string, error) {

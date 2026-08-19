@@ -24,7 +24,17 @@ func (s *Server) listAppBackups(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, err)
 		return
 	}
-	rows, err := s.db.Query(r.Context(), `SELECT b.id,b.volume_key,b.status,b.size_bytes,b.last_error,b.created_at,b.completed_at FROM app_backups b JOIN user_apps a ON a.id=b.user_app_id WHERE b.user_app_id=$1 AND a.user_id=$2 ORDER BY b.created_at DESC LIMIT 100`, appID, p.ID)
+	capacityGiB, _ := runtimepolicy.RuntimeDataVolumeGiB(runtimeSpec, false)
+	volumes := runtimepolicy.VolumeMounts(runtimeSpec)
+	activeVolumeKeys := make(map[string]bool, len(volumes))
+	for _, volume := range volumes {
+		activeVolumeKeys[volume.Key] = true
+	}
+	rows, err := s.db.Query(r.Context(), `SELECT b.id,b.volume_key,b.status,b.size_bytes,b.last_error,b.created_at,b.completed_at,coalesce(d.status,'')
+		FROM app_backups b JOIN user_apps a ON a.id=b.user_app_id
+		LEFT JOIN app_backup_deletion_jobs d ON d.backup_id=b.id
+		WHERE b.user_app_id=$1 AND a.user_id=$2 AND coalesce(d.status,'') <> 'succeeded'
+		ORDER BY b.volume_key,b.created_at DESC LIMIT 100`, appID, p.ID)
 	if err != nil {
 		s.internalError(w, err)
 		return
@@ -37,13 +47,123 @@ func (s *Server) listAppBackups(w http.ResponseWriter, r *http.Request) {
 		var lastError *string
 		var created time.Time
 		var completed *time.Time
-		if err := rows.Scan(&id, &key, &status, &size, &lastError, &created, &completed); err != nil {
+		var deletionStatus string
+		if err := rows.Scan(&id, &key, &status, &size, &lastError, &created, &completed, &deletionStatus); err != nil {
 			s.internalError(w, err)
 			return
 		}
-		items = append(items, map[string]any{"id": id, "volumeKey": key, "status": status, "sizeBytes": size, "lastError": lastError, "createdAt": created, "completedAt": completed})
+		items = append(items, map[string]any{"id": id, "volumeKey": key, "status": status, "sizeBytes": size, "lastError": lastError, "createdAt": created, "completedAt": completed, "deletionStatus": deletionStatus})
 	}
-	writeJSON(w, 200, map[string]any{"backups": items, "volumes": runtimepolicy.VolumeMounts(runtimeSpec)})
+	if err = rows.Err(); err != nil {
+		s.internalError(w, err)
+		return
+	}
+	volumeUsage := map[string]int64{}
+	metricRows, metricErr := s.db.Query(r.Context(), `SELECT volume_key,usage_bytes FROM app_storage_metrics WHERE user_app_id=$1 AND sampled_at>=now()-interval '15 minutes'`, appID)
+	if metricErr != nil {
+		s.internalError(w, metricErr)
+		return
+	}
+	for metricRows.Next() {
+		var key string
+		var bytes int64
+		if metricErr = metricRows.Scan(&key, &bytes); metricErr != nil {
+			metricRows.Close()
+			s.internalError(w, metricErr)
+			return
+		}
+		if activeVolumeKeys[key] {
+			volumeUsage[key] = bytes
+		}
+	}
+	metricRows.Close()
+	if metricErr = metricRows.Err(); metricErr != nil {
+		s.internalError(w, metricErr)
+		return
+	}
+	var backupUsage int64
+	if err = s.db.QueryRow(r.Context(), `SELECT coalesce(sum(backup.size_bytes),0)::bigint FROM app_backups backup
+		LEFT JOIN app_backup_deletion_jobs deletion ON deletion.backup_id=backup.id
+		WHERE backup.user_app_id=$1 AND backup.status='succeeded' AND coalesce(deletion.status,'') <> 'succeeded'`, appID).Scan(&backupUsage); err != nil {
+		s.internalError(w, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"backups": items, "volumes": volumes, "capacityGiB": capacityGiB, "volumeUsageBytes": volumeUsage, "backupUsageBytes": backupUsage})
+}
+
+// deleteAppBackup queues physical archive cleanup while retaining the
+// immutable app_backups row for audit/history. A failed cleanup can be
+// submitted again and will reuse the same deletion job.
+func (s *Server) deleteAppBackup(w http.ResponseWriter, r *http.Request) {
+	p, _ := r.Context().Value(principalKey).(principal)
+	appID, backupID := r.PathValue("appID"), r.PathValue("backupID")
+	if !validUUID(appID) || !validUUID(backupID) {
+		writeError(w, http.StatusNotFound, "backup_not_found", "backup not found")
+		return
+	}
+	tx, err := s.db.BeginTx(r.Context(), pgx.TxOptions{IsoLevel: pgx.Serializable})
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	defer tx.Rollback(r.Context())
+	var backupStatus, existingDeletion string
+	err = tx.QueryRow(r.Context(), `SELECT b.status,coalesce(d.status,'')
+		FROM app_backups b JOIN user_apps a ON a.id=b.user_app_id
+		LEFT JOIN app_backup_deletion_jobs d ON d.backup_id=b.id
+		WHERE b.id=$1 AND b.user_app_id=$2 AND a.user_id=$3 FOR UPDATE OF b`, backupID, appID, p.ID).Scan(&backupStatus, &existingDeletion)
+	if err == pgx.ErrNoRows {
+		writeError(w, http.StatusNotFound, "backup_not_found", "backup not found")
+		return
+	}
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	if backupStatus == "queued" || backupStatus == "running" {
+		writeError(w, http.StatusConflict, "backup_in_progress", "正在创建的备份不能删除，请等待任务完成")
+		return
+	}
+	var restoring bool
+	if err = tx.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM app_restore_jobs WHERE backup_id=$1 AND status IN ('queued','running'))`, backupID).Scan(&restoring); err != nil {
+		s.internalError(w, err)
+		return
+	}
+	if restoring {
+		writeError(w, http.StatusConflict, "restore_in_progress", "备份正在恢复，完成后才能删除")
+		return
+	}
+	if existingDeletion == "succeeded" {
+		_ = tx.Commit(r.Context())
+		writeJSON(w, http.StatusOK, map[string]any{"backupId": backupID, "status": "succeeded", "idempotent": true})
+		return
+	}
+	var jobID string
+	if existingDeletion == "failed" {
+		if err = tx.QueryRow(r.Context(), `UPDATE app_backup_deletion_jobs SET status='queued',attempts=0,available_at=now(),updated_at=now(),last_error=NULL,completed_at=NULL WHERE backup_id=$1 RETURNING id`, backupID).Scan(&jobID); err != nil {
+			s.internalError(w, err)
+			return
+		}
+	} else if existingDeletion == "queued" || existingDeletion == "running" {
+		if err = tx.QueryRow(r.Context(), `SELECT id::text FROM app_backup_deletion_jobs WHERE backup_id=$1`, backupID).Scan(&jobID); err != nil {
+			s.internalError(w, err)
+			return
+		}
+	} else {
+		if err = tx.QueryRow(r.Context(), `INSERT INTO app_backup_deletion_jobs(backup_id,requested_by) VALUES($1,$2) RETURNING id::text`, backupID, p.ID).Scan(&jobID); err != nil {
+			s.internalError(w, err)
+			return
+		}
+	}
+	if _, err = tx.Exec(r.Context(), `INSERT INTO audit_logs(actor_user_id,subject_user_id,action,resource_type,resource_id,request_id,metadata) VALUES($1,$2,'backup.delete_requested','app_backup',$3,$4,jsonb_build_object('deletion_job_id',$5::text))`, p.auditActorID(), p.ID, backupID, requestID(r.Context()), jobID); err != nil {
+		s.internalError(w, err)
+		return
+	}
+	if err = tx.Commit(r.Context()); err != nil {
+		s.internalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"backupId": backupID, "deletionJobId": jobID, "status": "queued"})
 }
 
 func (s *Server) createAppBackup(w http.ResponseWriter, r *http.Request) {
@@ -90,12 +210,12 @@ func (s *Server) createAppBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var active bool
-	if err = tx.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM app_backups WHERE user_app_id=$1 AND volume_key=$2 AND status IN ('queued','running'))`, appID, q.VolumeKey).Scan(&active); err != nil {
+	if err = tx.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM app_backups WHERE user_app_id=$1 AND status IN ('queued','running'))`, appID).Scan(&active); err != nil {
 		s.internalError(w, err)
 		return
 	}
 	if active {
-		writeError(w, 409, "backup_in_progress", "a backup is already in progress")
+		writeError(w, 409, "backup_in_progress", "this application already has a backup in progress")
 		return
 	}
 	var id, storageKey string
@@ -158,13 +278,15 @@ func (s *Server) restoreAppBackup(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, err)
 		return
 	}
-	var valid bool
-	if err = tx.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM app_backups b JOIN user_apps a ON a.id=b.user_app_id WHERE b.id=$1 AND b.user_app_id=$2 AND b.status='succeeded' AND a.user_id=$3 AND a.status='running')`, backupID, appID, p.ID).Scan(&valid); err != nil {
-		s.internalError(w, err)
-		return
-	}
-	if !valid {
+	var lockedBackupID string
+	if err = tx.QueryRow(r.Context(), `SELECT b.id::text FROM app_backups b JOIN user_apps a ON a.id=b.user_app_id
+		LEFT JOIN app_backup_deletion_jobs deletion ON deletion.backup_id=b.id
+		WHERE b.id=$1 AND b.user_app_id=$2 AND b.status='succeeded' AND a.user_id=$3 AND a.status='running'
+		  AND coalesce(deletion.status,'') NOT IN ('queued','running','succeeded') FOR UPDATE OF b`, backupID, appID, p.ID).Scan(&lockedBackupID); err == pgx.ErrNoRows {
 		writeError(w, 404, "backup_not_restorable", "successful backup not found")
+		return
+	} else if err != nil {
+		s.internalError(w, err)
 		return
 	}
 	// Serialize restore creation per application so two concurrent requests

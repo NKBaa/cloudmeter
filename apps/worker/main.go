@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"math/big"
 	"os"
 	"os/signal"
@@ -87,12 +88,14 @@ func main() {
 				syncDockerDaemonSettings(ctx, db)
 				lastDockerSettingsSync = time.Now()
 			}
+			processPlatformRestartOne(ctx, db, logger)
 			processAppDeletionOne(ctx, db, logger)
 			reconcileRouterNetworks(ctx, db, logger)
 			reconcileEgressNetworks(ctx, db, logger)
 			processStopOne(ctx, db, logger)
 			reconcileRuntimeContainers(ctx, db, logger)
 			reconcileProductTestContainers(ctx, db, logger)
+			processBackupDeletionOne(ctx, db, logger)
 			processBackupOne(ctx, db, logger)
 			processRestoreOne(ctx, db, logger)
 			processOne(ctx, db, logger)
@@ -494,9 +497,28 @@ func processBackupOne(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger
 		markBackupFailed(ctx, db, id, err, logger)
 		return
 	}
+	limitGiB, liveBytes, retainedBytes, usageErr := appBackupCapacityUsage(ctx, db, appID)
+	if usageErr != nil {
+		markBackupFailed(ctx, db, id, fmt.Errorf("shared data volume usage could not be measured: %w", usageErr), logger)
+		return
+	}
+	if backupStorageQuotaExceeded(limitGiB, liveBytes, retainedBytes) {
+		markBackupFailed(ctx, db, id, fmt.Errorf("shared data volume capacity is already exhausted; delete a backup or expand the application capacity"), logger)
+		return
+	}
 	sizeBytes, err := executor.ArchiveVolume(ctx, backupHelperImage, backupVolume, sourceVolume, storageKey, id)
 	if err != nil {
 		markBackupFailed(ctx, db, id, err, logger)
+		return
+	}
+	limitGiB, liveBytes, retainedBytes, usageErr = appBackupCapacityUsage(ctx, db, appID)
+	if usageErr != nil || backupStorageQuotaExceededParts(limitGiB, liveBytes, retainedBytes, sizeBytes) {
+		_ = executor.DeleteBackup(ctx, backupHelperImage, backupVolume, storageKey, id)
+		if usageErr != nil {
+			markBackupFailed(ctx, db, id, fmt.Errorf("shared data volume usage could not be verified: %w", usageErr), logger)
+		} else {
+			markBackupFailed(ctx, db, id, fmt.Errorf("backup exceeds the shared data volume capacity; delete an older backup or expand the application capacity"), logger)
+		}
 		return
 	}
 	tx, err = db.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
@@ -513,24 +535,15 @@ func processBackupOne(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger
 		markBackupFailed(ctx, db, id, err, logger)
 		return
 	}
-	// Record backup operation and retained storage usage in the same transaction as completion.
+	// The archive shares the application's single data-volume capacity and is
+	// not metered as a second storage product. Only the backup operation itself
+	// remains independently billable.
 	windowStart := completedAt.Add(-5 * time.Minute)
 	if _, err = tx.Exec(ctx, `INSERT INTO usage_events(user_id,user_app_id,usage_code,quantity,unit,window_start,window_end,price_version_id,idempotency_key)
 		SELECT $1,a.id,'backup.operation',1,'operation',$3,$4,resolve_pricing_version($1,a.id,'backup.operation','operation',$3),$5
 		FROM user_apps a WHERE a.id=(SELECT user_app_id FROM app_backups WHERE id=$2)
 		ON CONFLICT DO NOTHING`, userID, id, windowStart, completedAt, "backup:"+id+":operation"); err != nil {
 		logger.Error("backup operation usage event failed", "backup", id, "error", err)
-		_ = tx.Rollback(ctx)
-		_ = executor.DeleteBackup(ctx, backupHelperImage, backupVolume, storageKey, id)
-		markBackupFailed(ctx, db, id, err, logger)
-		return
-	}
-	storageQuantity := backupStorageQuantity(sizeBytes)
-	if _, err = tx.Exec(ctx, `INSERT INTO usage_events(user_id,user_app_id,usage_code,quantity,unit,window_start,window_end,price_version_id,idempotency_key)
-		SELECT $1,a.id,'backup.storage.gib_days',$3,'GiB_day',$4,$5,resolve_pricing_version($1,a.id,'backup.storage.gib_days','GiB_day',$4),$6
-		FROM user_apps a WHERE a.id=(SELECT user_app_id FROM app_backups WHERE id=$2)
-		ON CONFLICT DO NOTHING`, userID, id, storageQuantity, windowStart, completedAt, "backup:"+id+":storage:"+completedAt.Format(time.RFC3339)); err != nil {
-		logger.Error("backup storage usage event failed", "backup", id, "error", err)
 		_ = tx.Rollback(ctx)
 		_ = executor.DeleteBackup(ctx, backupHelperImage, backupVolume, storageKey, id)
 		markBackupFailed(ctx, db, id, err, logger)
@@ -545,6 +558,118 @@ func processBackupOne(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger
 	logger.Info("volume backup completed", "backup", id, "volume", sourceVolume)
 }
 
+func appBackupCapacityUsage(ctx context.Context, db *pgxpool.Pool, appID string) (string, int64, int64, error) {
+	var runtimeSpec map[string]any
+	if err := db.QueryRow(ctx, `SELECT release.immutable_snapshot->'runtime_spec' FROM user_apps app
+		JOIN app_releases release ON release.id=app.last_successful_release_id WHERE app.id=$1`, appID).Scan(&runtimeSpec); err != nil {
+		return "", 0, 0, err
+	}
+	capacity, err := runtimepolicy.RuntimeDataVolumeGiB(runtimeSpec, true)
+	if err != nil || capacity <= 0 {
+		if err == nil {
+			err = fmt.Errorf("application has no shared data volume capacity")
+		}
+		return "", 0, 0, err
+	}
+	liveBytes := int64(0)
+	rows, err := db.Query(ctx, `SELECT DISTINCT volume->>'name' FROM app_releases release
+		CROSS JOIN LATERAL jsonb_array_elements(coalesce(release.immutable_snapshot->'runtime_spec'->'volumes','[]'::jsonb)) volume
+		WHERE release.id=(SELECT last_successful_release_id FROM user_apps WHERE id=$1)
+		  AND coalesce(volume->>'name','')<>''`, appID)
+	if err != nil {
+		return "", 0, 0, err
+	}
+	volumeKeys := []string{}
+	for rows.Next() {
+		var key string
+		if err = rows.Scan(&key); err != nil {
+			rows.Close()
+			return "", 0, 0, err
+		}
+		volumeKeys = append(volumeKeys, key)
+	}
+	rows.Close()
+	if err = rows.Err(); err != nil {
+		return "", 0, 0, err
+	}
+	for _, key := range volumeKeys {
+		size, sizeErr := executor.VolumeSize(ctx, runtimepolicy.AppVolumeNameForOwner(runtimeOwner, appID, key))
+		if sizeErr != nil {
+			return "", 0, 0, sizeErr
+		}
+		if size > 0 && liveBytes > math.MaxInt64-size {
+			return "", 0, 0, fmt.Errorf("application volume usage overflow")
+		}
+		liveBytes += size
+	}
+	var retainedBytes int64
+	if err = db.QueryRow(ctx, `SELECT coalesce(sum(backup.size_bytes),0)::bigint FROM app_backups backup
+		LEFT JOIN app_backup_deletion_jobs deletion ON deletion.backup_id=backup.id
+		WHERE backup.user_app_id=$1 AND backup.status='succeeded' AND coalesce(deletion.status,'') <> 'succeeded'`, appID).Scan(&retainedBytes); err != nil {
+		return "", 0, 0, err
+	}
+	return strconv.FormatFloat(capacity, 'f', -1, 64), liveBytes, retainedBytes, nil
+}
+
+func processBackupDeletionOne(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		return
+	}
+	defer tx.Rollback(ctx)
+	var id, backupID, storageKey string
+	var attempts int
+	err = tx.QueryRow(ctx, `UPDATE app_backup_deletion_jobs deletion
+		SET status='running',attempts=attempts+1,updated_at=now(),last_error=NULL
+		FROM app_backups backup
+		WHERE deletion.id=(SELECT id FROM app_backup_deletion_jobs
+			WHERE available_at<=now() AND (status='queued' OR (status='running' AND updated_at<now()-interval '2 minutes'))
+			ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1)
+		  AND backup.id=deletion.backup_id
+		RETURNING deletion.id::text,deletion.backup_id::text,backup.storage_key,deletion.attempts`).Scan(&id, &backupID, &storageKey, &attempts)
+	if err == pgx.ErrNoRows {
+		return
+	}
+	if err != nil {
+		logger.Error("backup deletion claim failed", "error", err)
+		return
+	}
+	if err = tx.Commit(ctx); err != nil {
+		logger.Error("backup deletion claim commit failed", "error", err)
+		return
+	}
+	if executor == nil {
+		finishBackupDeletion(ctx, db, id, backupID, attempts, fmt.Errorf("docker executor is unavailable"), logger)
+		return
+	}
+	if err = executor.Pull(ctx, backupHelperImage); err == nil {
+		err = executor.DeleteBackup(ctx, backupHelperImage, backupVolume, storageKey, id)
+	}
+	finishBackupDeletion(ctx, db, id, backupID, attempts, err, logger)
+}
+
+func finishBackupDeletion(ctx context.Context, db *pgxpool.Pool, id, backupID string, attempts int, cause error, logger *slog.Logger) {
+	if cause == nil {
+		if _, err := db.Exec(ctx, `UPDATE app_backup_deletion_jobs SET status='succeeded',updated_at=now(),completed_at=now(),last_error=NULL WHERE id=$1`, id); err != nil {
+			logger.Error("backup deletion completion failed", "backup", backupID, "error", err)
+			return
+		}
+		logger.Info("backup archive deleted", "backup", backupID)
+		return
+	}
+	if attempts >= 5 {
+		_, err := db.Exec(ctx, `UPDATE app_backup_deletion_jobs SET status='failed',updated_at=now(),completed_at=now(),last_error=$2 WHERE id=$1`, id, cause.Error())
+		if err != nil {
+			logger.Error("backup deletion failure update failed", "backup", backupID, "error", err)
+		}
+		return
+	}
+	delay := time.Duration(attempts*attempts) * 15 * time.Second
+	if _, err := db.Exec(ctx, `UPDATE app_backup_deletion_jobs SET status='queued',updated_at=now(),available_at=now()+$2::interval,last_error=$3 WHERE id=$1`, id, delay.String(), cause.Error()); err != nil {
+		logger.Error("backup deletion retry update failed", "backup", backupID, "error", err)
+	}
+}
+
 func backupStorageQuantity(sizeBytes int64) string {
 	numerator := new(big.Int).Mul(big.NewInt(sizeBytes), big.NewInt(5))
 	denominator := new(big.Int).Mul(big.NewInt(1<<30), big.NewInt(24*60))
@@ -552,11 +677,21 @@ func backupStorageQuantity(sizeBytes int64) string {
 }
 
 func backupStorageQuotaExceeded(limitGiB string, usedBytes, additionalBytes int64) bool {
+	return backupStorageQuotaExceededParts(limitGiB, usedBytes, additionalBytes)
+}
+
+func backupStorageQuotaExceededParts(limitGiB string, byteParts ...int64) bool {
 	limit, ok := new(big.Rat).SetString(strings.TrimSpace(limitGiB))
-	if !ok || limit.Sign() < 0 || usedBytes < 0 || additionalBytes < 0 {
+	if !ok || limit.Sign() < 0 {
 		return true
 	}
-	totalBytes := new(big.Int).Add(big.NewInt(usedBytes), big.NewInt(additionalBytes))
+	totalBytes := new(big.Int)
+	for _, part := range byteParts {
+		if part < 0 {
+			return true
+		}
+		totalBytes.Add(totalBytes, big.NewInt(part))
+	}
 	totalGiB := new(big.Rat).SetFrac(totalBytes, big.NewInt(1<<30))
 	return totalGiB.Cmp(limit) > 0
 }
@@ -1024,9 +1159,16 @@ func meterRuntime(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
 		if executor == nil || container == "" {
 			continue
 		}
-		if _, _, statsErr := executor.Stats(ctx, container); statsErr != nil {
+		cpuUsage, memoryUsage, statsErr := executor.Stats(ctx, container)
+		if statsErr != nil {
 			logger.Warn("runtime usage interval not confirmed", "app", appID, "container", container, "error", statsErr)
 			continue
+		}
+		if _, err := db.Exec(ctx, `INSERT INTO app_runtime_metrics(user_app_id,cpu_usage_cores,memory_usage_bytes,sampled_at)
+			VALUES($1,$2,$3,now())
+			ON CONFLICT(user_app_id) DO UPDATE SET cpu_usage_cores=EXCLUDED.cpu_usage_cores,
+			memory_usage_bytes=EXCLUDED.memory_usage_bytes,sampled_at=EXCLUDED.sampled_at`, appID, cpuUsage, memoryUsage); err != nil {
+			logger.Warn("runtime metrics update failed", "app", appID, "error", err)
 		}
 		key := appID + ":runtime:" + windowStart.Format(time.RFC3339)
 		if _, err := db.Exec(ctx, "INSERT INTO usage_events(user_id,user_app_id,usage_code,quantity,unit,window_start,window_end,price_version_id,idempotency_key) VALUES($1,$2,'app.runtime.minutes',5,'minute',$3,$4,resolve_pricing_version($1,$2,'app.runtime.minutes','minute',$3),$5) ON CONFLICT DO NOTHING", userID, appID, windowStart, windowEnd, key); err != nil {
@@ -1050,30 +1192,56 @@ func meterStorage(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
 	if windowEnd.After(now) || windowEnd.Equal(windowStart) {
 		return
 	}
-	rows, err := db.Query(ctx, `SELECT app.id::text,app.user_id::text,min(volume->>'name'),max(coalesce((release.immutable_snapshot->'runtime_spec'->>'dataVolumeGiB')::numeric,(volume->>'sizeGiB')::numeric,10))::text
+	rows, err := db.Query(ctx, `SELECT app.id::text,app.user_id::text,volume->>'name',
+		max(coalesce((release.immutable_snapshot->'runtime_spec'->>'dataVolumeGiB')::numeric,(volume->>'sizeGiB')::numeric,10)) OVER (PARTITION BY app.id)::text
 		FROM user_apps app
-		JOIN app_releases release ON release.user_app_id=app.id
+		JOIN app_releases release ON release.id=app.last_successful_release_id
 		CROSS JOIN LATERAL jsonb_array_elements(coalesce(release.immutable_snapshot->'runtime_spec'->'volumes','[]'::jsonb)) volume
-		WHERE coalesce(volume->>'name','')<>'' AND app.deleted_at IS NULL
-		GROUP BY app.id,app.user_id`)
+		WHERE coalesce(volume->>'name','')<>'' AND app.deleted_at IS NULL`)
 	if err != nil {
 		logger.Error("storage usage query failed", "error", err)
 		return
 	}
-	defer rows.Close()
+	type storageApp struct {
+		userID, capacityGiB string
+		volumeKeys          map[string]bool
+	}
+	apps := map[string]*storageApp{}
 	for rows.Next() {
 		var appID, userID, key, sizeGiB string
 		if err = rows.Scan(&appID, &userID, &key, &sizeGiB); err != nil {
 			logger.Error("storage usage scan failed", "error", err)
 			continue
 		}
-		if _, sizeErr := executor.VolumeSize(ctx, runtimepolicy.AppVolumeNameForOwner(runtimeOwner, appID, key)); sizeErr != nil {
-			continue
+		item := apps[appID]
+		if item == nil {
+			item = &storageApp{userID: userID, capacityGiB: sizeGiB, volumeKeys: map[string]bool{}}
+			apps[appID] = item
 		}
-		insertUsage(ctx, db, userID, appID, "storage.data.gib_days", "GiB_day", decimalTimeQuantity(sizeGiB, 5, 24*60), windowStart, windowEnd, appID+":data-storage:shared:"+windowStart.Format(time.RFC3339), logger)
+		item.volumeKeys[key] = true
 	}
 	if err = rows.Err(); err != nil {
 		logger.Error("storage usage iteration failed", "error", err)
+		rows.Close()
+		return
+	}
+	rows.Close()
+	for appID, item := range apps {
+		observed := false
+		for key := range item.volumeKeys {
+			size, sizeErr := executor.VolumeSize(ctx, runtimepolicy.AppVolumeNameForOwner(runtimeOwner, appID, key))
+			if sizeErr != nil {
+				continue
+			}
+			observed = true
+			if _, metricErr := db.Exec(ctx, `INSERT INTO app_storage_metrics(user_app_id,volume_key,usage_bytes,sampled_at) VALUES($1,$2,$3,now())
+				ON CONFLICT(user_app_id,volume_key) DO UPDATE SET usage_bytes=EXCLUDED.usage_bytes,sampled_at=EXCLUDED.sampled_at`, appID, key, size); metricErr != nil {
+				logger.Warn("storage metric update failed", "app", appID, "volume", key, "error", metricErr)
+			}
+		}
+		if observed {
+			insertUsage(ctx, db, item.userID, appID, "storage.data.gib_days", "GiB_day", decimalTimeQuantity(item.capacityGiB, 5, 24*60), windowStart, windowEnd, appID+":data-storage:shared:"+windowStart.Format(time.RFC3339), logger)
+		}
 	}
 }
 
@@ -1394,7 +1562,7 @@ func processOne(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
 				target := fmt.Sprintf("http://%s:%d%s", releaseAlias(releaseID), routePort(probe.Route), path)
 				probeName := healthProbeName(id)
 				probeCtx, cancel := context.WithTimeout(ctx, time.Duration(healthTimeout(probe.Health)+5)*time.Second)
-				probeErr := executor.ProbeHTTP(probeCtx, probeName, backupHelperImage, runtimepolicy.UserNetworkName(runtimeOwner, userID), target, healthTimeout(probe.Health))
+				probeErr := executor.ProbeHTTP(probeCtx, probeName, backupHelperImage, runtimepolicy.UserNetworkName(runtimeOwner, userID), target, healthTimeout(probe.Health), healthAcceptedStatusCodes(probe.Health))
 				cancel()
 				healthy = probeErr == nil
 				if probeErr != nil {
@@ -1647,6 +1815,25 @@ func healthTimeout(spec map[string]any) int {
 		return 5
 	}
 	return int(value)
+}
+
+func healthAcceptedStatusCodes(spec map[string]any) []int {
+	values, ok := spec["acceptedStatusCodes"].([]any)
+	if !ok {
+		return nil
+	}
+	result := make([]int, 0, len(values))
+	seen := map[int]bool{}
+	for _, raw := range values {
+		value, number := raw.(float64)
+		statusCode := int(value)
+		if !number || value != float64(statusCode) || statusCode < 100 || statusCode > 599 || seen[statusCode] {
+			continue
+		}
+		seen[statusCode] = true
+		result = append(result, statusCode)
+	}
+	return result
 }
 
 func healthInterval(snapshot []byte) int {

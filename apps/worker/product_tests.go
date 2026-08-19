@@ -236,7 +236,7 @@ func productVersionTestHealthy(ctx context.Context, id string, spec productVersi
 	probeName := productTestHealthContainerName(id)
 	probeCtx, cancel := context.WithTimeout(ctx, time.Duration(healthTimeout(spec.Health)+5)*time.Second)
 	defer cancel()
-	err = executor.ProbeHTTP(probeCtx, probeName, backupHelperImage, network, target, healthTimeout(spec.Health))
+	err = executor.ProbeHTTP(probeCtx, probeName, backupHelperImage, network, target, healthTimeout(spec.Health), healthAcceptedStatusCodes(spec.Health))
 	if err == nil {
 		return true, "", nil
 	}
