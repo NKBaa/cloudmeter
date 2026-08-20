@@ -53,6 +53,8 @@ const router = createRouter({
       component: AppShell,
       children: [
         { path: 'console', component: ConsoleView, props: { page: 'overview' } },
+        { path: 'console/home', component: HomeView },
+        { path: 'console/docs', component: DocsView },
         { path: 'console/deploy', component: ConsoleView, props: { page: 'deploy' } },
         { path: 'console/apps', component: ConsoleView, props: { page: 'apps' } },
         { path: 'console/apps/:instanceId', component: AppDetailView, meta: { appDetail: true } },

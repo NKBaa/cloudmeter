@@ -203,7 +203,7 @@ function isAnchorActive(path: string, hash: string): boolean {
       </button>
     </aside>
     <main class="app-main">
-      <header class="shell-topbar"><nav><RouterLink to="/">主页</RouterLink><RouterLink to="/docs" active-class="active">文档</RouterLink><RouterLink to="/console" active-class="active">控制台</RouterLink></nav></header>
+      <header class="shell-topbar"><nav><RouterLink to="/console/home" active-class="active">主页</RouterLink><RouterLink to="/console/docs" active-class="active">文档</RouterLink><RouterLink to="/console" exact-active-class="active">控制台</RouterLink></nav></header>
       <RouterView v-slot="{ Component, route }">
         <Transition name="workspace-slide">
           <component :is="Component" :key="route.fullPath" />
