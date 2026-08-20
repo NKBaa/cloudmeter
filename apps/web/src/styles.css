@@ -16,6 +16,11 @@
   --paper: #292a2e;
   /* Shared depth tokens used by compact panels, controls and empty states. */
   --surface: #23252a;
+  --panel: #292a2e;
+  --surface-muted: #303238;
+  --text: #f0f1f3;
+  --text-muted: #9aa0a6;
+  --border: rgba(255, 255, 255, 0.1);
   --soft: rgba(255, 255, 255, 0.055);
   --line-strong: rgba(255, 255, 255, 0.18);
   --canvas: #1f2023;
@@ -34,6 +39,10 @@
 * {
   box-sizing: border-box;
 }
+/* Dark surfaces for metric cards and other scoped panels. */
+.host-metric-grid article { background: var(--panel) !important; border-color: var(--border) !important; box-shadow: var(--shadow-xs); }
+.host-metric-grid article strong { color: var(--text); }
+.host-metric-grid article i { background: var(--surface-muted); }
 body {
   margin: 0;
   min-width: 320px;
