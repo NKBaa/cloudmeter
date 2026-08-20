@@ -20,6 +20,9 @@ func processBalanceEmailOne(ctx context.Context, db *pgxpool.Pool, logger *slog.
 		return
 	}
 	defer tx.Rollback(ctx)
+	// A Worker restart can leave a claimed message in sending. Requeue it
+	// after a bounded lease so delivery is eventually retried.
+	_, _ = tx.Exec(ctx, `UPDATE user_notifications SET email_status='queued',email_next_attempt_at=now() WHERE kind='low_balance' AND email_status='sending' AND email_attempts<3 AND email_sent_at IS NULL AND created_at < now()-interval '10 minutes'`)
 	var id, email, title, content string
 	err = tx.QueryRow(ctx, `UPDATE user_notifications n SET email_status='sending',email_attempts=email_attempts+1 WHERE n.id=(SELECT n2.id FROM user_notifications n2 WHERE n2.kind='low_balance' AND n2.email_status IN ('queued','failed') AND n2.email_attempts<3 AND n2.email_next_attempt_at<=now() ORDER BY n2.created_at FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING n.id,(SELECT email FROM users WHERE id=n.user_id),n.title,n.content`).Scan(&id, &email, &title, &content)
 	if err == pgx.ErrNoRows {

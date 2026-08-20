@@ -41,3 +41,11 @@ END $$;
 DROP TRIGGER IF EXISTS wallets_balance_alert_recovery ON wallets;
 CREATE TRIGGER wallets_balance_alert_recovery AFTER UPDATE OF balance_cents ON wallets FOR EACH ROW EXECUTE FUNCTION reset_balance_alert_cycle();
 COMMIT;
+CREATE OR REPLACE FUNCTION reset_balance_alert_cycle() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+ UPDATE balance_alert_settings SET below_threshold=false,updated_at=now() WHERE user_id=NEW.user_id AND below_threshold AND NEW.balance_cents>threshold_cents;
+ RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS wallets_balance_alert_recovery ON wallets;
+CREATE TRIGGER wallets_balance_alert_recovery AFTER UPDATE OF balance_cents ON wallets FOR EACH ROW EXECUTE FUNCTION reset_balance_alert_cycle();
+COMMIT;
