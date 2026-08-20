@@ -443,9 +443,11 @@ func RuntimeCommand(spec map[string]any) ([]string, error) {
 
 func RuntimeStorage(spec map[string]any, required bool) (StorageResources, error) {
 	systemDisk, systemOK := numeric(spec["systemDiskGiB"])
-	if required && !systemOK {
-		return StorageResources{}, fmt.Errorf("systemDiskGiB is required")
-	}
+	// The writable container layer is an internal platform detail. It is kept
+	// for Docker runtime compatibility, but is never user-selectable or billed.
+	// Older specs may still include systemDiskGiB; missing values use the fixed
+	// platform default so new templates only need to declare shared data volume
+	// capacity.
 	if !systemOK {
 		systemDisk = DefaultSystemDiskGiB
 	}

@@ -87,8 +87,8 @@ func TestOwnerScopedRuntimeResourceNames(t *testing.T) {
 }
 
 func TestStorageSpecRequiresDeclaredCapacity(t *testing.T) {
-	if err := ValidateRuntimeSpec(map[string]any{"cpuCores": 1.0, "memoryMiB": 512.0}); err == nil {
-		t.Fatal("missing system disk capacity accepted")
+	if err := ValidateRuntimeSpec(map[string]any{"cpuCores": 1.0, "memoryMiB": 512.0}); err != nil {
+		t.Fatalf("system disk should be platform-managed: %v", err)
 	}
 	if err := ValidateRuntimeSpec(map[string]any{"cpuCores": 1.0, "memoryMiB": 512.0, "systemDiskGiB": 5.0, "volumes": []any{map[string]any{"name": "data", "mountPath": "/data"}}}); err == nil {
 		t.Fatal("missing data disk capacity accepted")
