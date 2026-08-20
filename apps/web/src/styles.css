@@ -827,6 +827,50 @@ nav a.active {
   }
   .apps-empty h2 { font-size: 21px; }
 }
+
+/* Final dark-mode surface pass: a few legacy panels still carried the old
+   light-theme fills. Keep their hierarchy, but use the same compact dark
+   palette as the rest of the console. */
+.product-sidebar .catalog-item,
+.product-sidebar .product-item,
+.compact-panel,
+.version-row,
+.billing-panel,
+.pricing-sidebar,
+.subscription-panel,
+.payment-method-edit-row,
+.dialog-panel .dialog-actions,
+.ticket-list,
+.ticket-detail,
+.user-table,
+.table-wrap {
+  background: var(--surface) !important;
+  color: var(--text);
+}
+.product-sidebar .catalog-item:hover,
+.product-sidebar .product-item:hover,
+.version-row:hover,
+.payment-method-edit-row:hover {
+  background: var(--surface-muted) !important;
+}
+.product-sidebar input,
+.product-sidebar select,
+.compact-panel input,
+.compact-panel select,
+.billing-panel input,
+.billing-panel select,
+.pricing-sidebar input,
+.pricing-sidebar select,
+.payment-method-edit-row input,
+.payment-method-edit-row select {
+  background: #1a1d23 !important;
+  color: var(--text);
+}
+.empty-state,
+.context-empty,
+.apps-empty {
+  box-shadow: var(--shadow-xs);
+}
 .compact-empty { min-height: 0; margin: 0; padding: 22px 20px; justify-content: flex-start; border-width: 1px 0 0; border-radius: 0; }
 .compact-empty > svg { flex: 0 0 auto; color: var(--muted); }
 .compact-empty p { margin-top: 4px; font-size: 12px; }
