@@ -23,6 +23,9 @@ import TicketsView from './views/TicketsView.vue'
 import AppDetailView from './views/AppDetailView.vue'
 import FAQView from './views/FAQView.vue'
 import HostMetricsView from './views/HostMetricsView.vue'
+import BalanceAlertView from './views/BalanceAlertView.vue'
+import QuotaSettingsView from './views/QuotaSettingsView.vue'
+import DocsView from './views/DocsView.vue'
 import './styles.css'
 
 const router = createRouter({
@@ -44,6 +47,7 @@ const router = createRouter({
     { path: '/register', component: RegisterView },
     { path: '/oauth/callback', component: OAuthCallbackView },
     { path: '/', component: HomeView },
+    { path: '/docs', component: DocsView },
     {
       path: '/',
       component: AppShell,
@@ -60,6 +64,7 @@ const router = createRouter({
         { path: 'console/backups', component: BackupsView },
         { path: 'console/tickets', component: TicketsView, props: { admin: false } },
         { path: 'console/faq', component: FAQView, props: { admin: false } },
+        { path: 'console/balance-alert', component: BalanceAlertView },
         { path: 'admin', component: AdminView, props: { page: 'overview' }, meta: { admin: true } },
         { path: 'admin/users', component: AdminView, props: { page: 'users' }, meta: { admin: true } },
         { path: 'admin/announcements', component: AdminView, props: { page: 'announcements' }, meta: { admin: true } },
@@ -71,6 +76,7 @@ const router = createRouter({
         { path: 'admin/pricing', component: PricingAdminView, meta: { superAdmin: true } },
         { path: 'admin/payment-settings', component: PaymentSettingsView, meta: { superAdmin: true } },
         { path: 'admin/checkin-settings', component: CheckinSettingsView, meta: { superAdmin: true } },
+        { path: 'admin/quota-settings', component: QuotaSettingsView, meta: { superAdmin: true } },
         { path: 'admin/audit', component: AuditAdminView, meta: { superAdmin: true } },
         { path: 'admin/homepage', component: HomeSettingsView, meta: { superAdmin: true } },
         { path: 'admin/tickets', component: TicketsView, props: { admin: true }, meta: { admin: true } },
@@ -89,7 +95,7 @@ router.beforeEach(async (to) => {
     if (!status.initialized && to.path !== '/setup') return '/setup'
     if (status.initialized && status.hasAdmin && to.path === '/setup') return '/login'
   } catch { /* Let the page surface service availability errors. */ }
-  if (!['/', '/setup', '/login', '/register', '/oauth/callback'].includes(to.path) && !localStorage.getItem('session_token')) return '/login'
+  if (!['/', '/docs', '/setup', '/login', '/register', '/oauth/callback'].includes(to.path) && !localStorage.getItem('session_token')) return '/login'
   if (to.meta.admin || to.meta.superAdmin) {
     try {
       const token = localStorage.getItem('session_token')

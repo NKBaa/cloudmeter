@@ -95,6 +95,7 @@ func main() {
 				lastDockerImageSync = time.Now()
 			}
 			processDockerImageDeletionOne(ctx, db, logger)
+			processBalanceEmailOne(ctx, db, logger)
 			if time.Since(lastDockerSettingsSync) >= 30*time.Second {
 				syncDockerDaemonSettings(ctx, db)
 				lastDockerSettingsSync = time.Now()
@@ -1214,8 +1215,22 @@ func billUsage(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
 	if err == nil {
 		_, err = tx.Exec(ctx, "UPDATE usage_aggregates SET sealed_at=now(),billing_disposition='charged',price_version_id=coalesce(price_version_id,$2) WHERE id=$1", aggregateID, pricingVersionID)
 	}
-	if err == nil && walletCharge > 0 && newBalance > 0 && newBalance <= 100 {
-		_, err = tx.Exec(ctx, `INSERT INTO user_notifications(user_id,event_key,kind,severity,title,content,metadata) VALUES($1,$2,'low_balance','warning','账户余额较低','当前余额不足 1 元，请及时充值以避免应用暂停。',jsonb_build_object('balance_cents',$3::bigint)) ON CONFLICT(user_id,event_key) DO NOTHING`, userID, fmt.Sprintf("low-balance/%d", aggregateID), newBalance)
+	if err == nil && walletCharge > 0 {
+		_, err = tx.Exec(ctx, `WITH settings AS (
+			SELECT enabled,threshold_cents,cooldown_hours,last_notified_at,below_threshold
+			FROM balance_alert_settings WHERE user_id=$1 FOR UPDATE
+		), eligible AS (
+			SELECT * FROM settings WHERE enabled AND $2 > 0 AND $2 <= threshold_cents
+			  AND (NOT below_threshold OR last_notified_at IS NULL OR last_notified_at <= now() - (cooldown_hours || ' hours')::interval)
+		), inserted AS (
+			INSERT INTO user_notifications(user_id,event_key,kind,severity,title,content,metadata,email_status)
+			SELECT $1,'low-balance/' || $3::text,'low_balance','warning','账户余额较低','当前余额已低于你设置的提醒阈值，请及时充值以避免应用暂停。',jsonb_build_object('balance_cents',$2::bigint,'threshold_cents',threshold_cents),'queued' FROM eligible
+			ON CONFLICT(user_id,event_key) DO NOTHING RETURNING user_id
+		)
+		UPDATE balance_alert_settings SET last_notified_at=now(),below_threshold=true,updated_at=now() WHERE user_id=$1 AND EXISTS (SELECT 1 FROM inserted)`, userID, newBalance, aggregateID)
+		if err == nil {
+			_, err = tx.Exec(ctx, `UPDATE balance_alert_settings SET below_threshold=false,updated_at=now() WHERE user_id=$1 AND below_threshold AND $2 > threshold_cents`, userID, newBalance)
+		}
 	}
 	if err == nil {
 		_, err = tx.Exec(ctx, `INSERT INTO usage_billing_attempts(user_id,user_app_id,usage_code,window_start,window_end,pricing_version_id,amount_cents,status,balance_cents,credit_balance_cents) VALUES($1,$2,$3,$4,$5,$6,$7,'charged',$8,$9) ON CONFLICT DO NOTHING`, userID, appID, usageCode, windowStart, windowEnd, pricingVersionID, amountCents, newBalance, creditBalance-creditUsed)

@@ -199,6 +199,30 @@ paths:
       responses:
         '200': {description: Notification marked read}
         '404': {description: Notification not found}
+  /settings/balance-alert:
+    get:
+      operationId: getBalanceAlertSettings
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: Current user's low balance alert settings}
+    put:
+      operationId: updateBalanceAlertSettings
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: Updated low balance alert settings}
+  /invites:
+    post:
+      operationId: createInvite
+      security: [{bearerAuth: []}]
+      responses:
+        '201': {description: Single-use invite code with a snapshotted reward}
+  /invites/redeem:
+    post:
+      operationId: redeemInvite
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: Invite redeemed and inviter rewarded through the immutable ledger}
+        '409': {description: Current account already redeemed an invite}
   /admin/summary:
     get:
       operationId: adminSummary
@@ -757,6 +781,17 @@ paths:
       responses:
         '200': {description: Encrypted Turnstile settings persisted and audited}
         '409': {description: Site Key or Secret Key is missing while enabling protection}
+  /admin/settings/quota:
+    get:
+      operationId: getQuotaSettings
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: Initial user grant and invite reward settings}
+    put:
+      operationId: updateQuotaSettings
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: Updated quota settings}
   /admin/docker/images:
     get:
       operationId: listDockerImages

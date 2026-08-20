@@ -1,0 +1,15 @@
+BEGIN;
+ALTER TABLE user_notifications DROP COLUMN IF EXISTS email_next_attempt_at;
+ALTER TABLE user_notifications DROP COLUMN IF EXISTS email_sent_at;
+ALTER TABLE user_notifications DROP COLUMN IF EXISTS email_last_error;
+ALTER TABLE user_notifications DROP COLUMN IF EXISTS email_attempts;
+ALTER TABLE user_notifications DROP COLUMN IF EXISTS email_status;
+DROP TRIGGER IF EXISTS wallets_balance_alert_recovery ON wallets;
+DROP FUNCTION IF EXISTS reset_balance_alert_cycle();
+DROP TRIGGER IF EXISTS wallets_initial_grant ON wallets;
+DROP FUNCTION IF EXISTS grant_initial_wallet_credit();
+DROP TABLE IF EXISTS user_invites;
+DROP TABLE IF EXISTS balance_alert_settings;
+ALTER TABLE system_state DROP COLUMN IF EXISTS invite_reward_cents;
+ALTER TABLE system_state DROP COLUMN IF EXISTS initial_grant_cents;
+COMMIT;

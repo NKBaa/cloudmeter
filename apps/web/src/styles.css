@@ -494,6 +494,15 @@ label small {
   overflow-x: hidden;
   background: var(--canvas);
 }
+.shell-topbar { height: 48px; padding: 0 28px; display: flex; align-items: center; justify-content: flex-end; border-bottom: 1px solid var(--border); background: color-mix(in srgb,var(--canvas) 92%,transparent); position: sticky; top: 0; z-index: 12; backdrop-filter: blur(14px); }
+.shell-topbar nav { display: flex; gap: 5px; }
+.shell-topbar a { padding: 7px 12px; border-radius: 9px; color: var(--text-muted); text-decoration: none; font-size: 13px; }
+.shell-topbar a:hover,.shell-topbar a.active { color: var(--text); background: var(--surface-muted); }
+.docs-grid { display: grid; gap: 10px; }
+.docs-grid article { display: flex; gap: 14px; padding: 16px; border: 1px solid var(--border); border-radius: 14px; }
+.docs-grid article h2 { margin: 0 0 5px; font-size: 15px; }
+.docs-grid article p { margin: 0 0 8px; color: var(--text-muted); }
+.docs-grid article a { display: inline-flex; align-items: center; gap: 5px; }
 .app-main > .workspace {
   min-height: 100vh;
 }
@@ -796,6 +805,7 @@ nav a.active {
 .apps-empty p:not(.eyebrow) { font-size: 14px; }
 .apps-empty a { text-decoration: none; }
 @media (max-width: 700px) {
+  .shell-topbar { padding: 0 12px; height: 44px; }
   .apps-empty {
     min-height: 0;
     padding: 30px 24px;

@@ -21,6 +21,8 @@ import {
   Container,
   MessageSquareText,
   CircleHelp,
+  BellRing,
+  Gift,
 } from "@lucide/vue";
 import { logout } from "../api";
 import BrandMark from "./BrandMark.vue";
@@ -110,6 +112,7 @@ function isAnchorActive(path: string, hash: string): boolean {
           ><MessageSquareText :size="18" />工单支持</RouterLink
         >
         <RouterLink v-if="shown('faq')" to="/console/faq" active-class="active"><CircleHelp :size="18" />常见问答</RouterLink>
+        <RouterLink to="/console/balance-alert" active-class="active"><BellRing :size="18" />余额提醒</RouterLink>
         <template v-if="isAdmin">
           <div class="nav-group">管理控制台</div>
           <RouterLink to="/admin" exact-active-class="active"
@@ -150,6 +153,7 @@ function isAnchorActive(path: string, hash: string): boolean {
             active-class="active"
             ><CalendarCheck :size="18" />签到设置</RouterLink
           >
+          <RouterLink v-if="isSuperAdmin" to="/admin/quota-settings" active-class="active"><Gift :size="18" />额度设置</RouterLink>
           <div class="nav-group">平台设置</div>
           <RouterLink to="/admin/announcements" active-class="active"
             ><Settings2 :size="18" />公告管理</RouterLink
@@ -199,6 +203,7 @@ function isAnchorActive(path: string, hash: string): boolean {
       </button>
     </aside>
     <main class="app-main">
+      <header class="shell-topbar"><nav><RouterLink to="/">主页</RouterLink><RouterLink to="/docs" active-class="active">文档</RouterLink><RouterLink to="/console" active-class="active">控制台</RouterLink></nav></header>
       <RouterView v-slot="{ Component, route }">
         <Transition name="workspace-slide">
           <component :is="Component" :key="route.fullPath" />
