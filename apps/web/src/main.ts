@@ -20,6 +20,9 @@ import HomeView from './views/HomeView.vue'
 import HomeSettingsView from './views/HomeSettingsView.vue'
 import DockerSettingsView from './views/DockerSettingsView.vue'
 import TicketsView from './views/TicketsView.vue'
+import AppDetailView from './views/AppDetailView.vue'
+import FAQView from './views/FAQView.vue'
+import HostMetricsView from './views/HostMetricsView.vue'
 import './styles.css'
 
 const router = createRouter({
@@ -48,6 +51,7 @@ const router = createRouter({
         { path: 'console', component: ConsoleView, props: { page: 'overview' } },
         { path: 'console/deploy', component: ConsoleView, props: { page: 'deploy' } },
         { path: 'console/apps', component: ConsoleView, props: { page: 'apps' } },
+        { path: 'console/apps/:instanceId', component: AppDetailView, meta: { appDetail: true } },
         { path: 'console/billing', component: ConsoleView, props: { page: 'billing' } },
         { path: 'console/recharge', component: ConsoleView, props: { page: 'recharge' } },
         { path: 'console/checkin', component: ConsoleView, props: { page: 'checkin' } },
@@ -55,6 +59,7 @@ const router = createRouter({
         { path: 'console/releases', component: ReleasesView },
         { path: 'console/backups', component: BackupsView },
         { path: 'console/tickets', component: TicketsView, props: { admin: false } },
+        { path: 'console/faq', component: FAQView, props: { admin: false } },
         { path: 'admin', component: AdminView, props: { page: 'overview' }, meta: { admin: true } },
         { path: 'admin/users', component: AdminView, props: { page: 'users' }, meta: { admin: true } },
         { path: 'admin/announcements', component: AdminView, props: { page: 'announcements' }, meta: { admin: true } },
@@ -70,6 +75,8 @@ const router = createRouter({
         { path: 'admin/homepage', component: HomeSettingsView, meta: { superAdmin: true } },
         { path: 'admin/tickets', component: TicketsView, props: { admin: true }, meta: { admin: true } },
         { path: 'admin/docker', component: DockerSettingsView, meta: { admin: true } },
+        { path: 'admin/metrics', component: HostMetricsView, meta: { admin: true } },
+        { path: 'admin/faq', component: FAQView, props: { admin: true }, meta: { admin: true } },
       ],
     },
   ],

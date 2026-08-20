@@ -46,6 +46,61 @@ func (s *Server) appReleases(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"releases": items})
 }
 
+// appVersions lists the versions that the owner may select for a new release.
+// Runtime and routing declarations are returned so the client can explain the
+// resulting configuration, but Secret values never live in these records and
+// are never read by this endpoint.
+func (s *Server) appVersions(w http.ResponseWriter, r *http.Request) {
+	p, _ := r.Context().Value(principalKey).(principal)
+	appID := r.PathValue("appID")
+	var currentVersionID string
+	if err := s.db.QueryRow(r.Context(), `SELECT coalesce(release.product_version_id::text,'')
+		FROM user_apps app
+		LEFT JOIN app_releases release ON release.id=app.last_successful_release_id
+		WHERE app.id=$1 AND app.user_id=$2 AND app.deleted_at IS NULL`, appID, p.ID).Scan(&currentVersionID); err != nil {
+		if err == pgx.ErrNoRows {
+			writeError(w, http.StatusNotFound, "app_not_found", "application not found")
+			return
+		}
+		s.internalError(w, err)
+		return
+	}
+	rows, err := s.db.Query(r.Context(), `SELECT version.id::text,version.version,version.version_label,
+		version.runtime_spec,version.route_spec,version.health_spec,version.update_spec,version.published_at
+		FROM user_apps app
+		JOIN app_product_versions version ON version.product_id=app.product_id
+		WHERE app.id=$1 AND app.user_id=$2 AND app.deleted_at IS NULL
+		  AND version.published_at IS NOT NULL AND version.archived_at IS NULL
+		ORDER BY version.version DESC`, appID, p.ID)
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	defer rows.Close()
+	items := []map[string]any{}
+	for rows.Next() {
+		var id, label string
+		var number int
+		var runtimeSpec, routeSpec, healthSpec, updateSpec map[string]any
+		var publishedAt time.Time
+		if err = rows.Scan(&id, &number, &label, &runtimeSpec, &routeSpec, &healthSpec, &updateSpec, &publishedAt); err != nil {
+			s.internalError(w, err)
+			return
+		}
+		items = append(items, map[string]any{
+			"id": id, "version": number, "versionLabel": label, "runtimeSpec": runtimeSpec,
+			"routeSpec": routeSpec, "healthSpec": healthSpec, "updateSpec": updateSpec,
+			"publishedAt": publishedAt, "current": id == currentVersionID,
+		})
+	}
+	if err = rows.Err(); err != nil {
+		s.internalError(w, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, map[string]any{"versions": items, "currentVersionId": currentVersionID})
+}
+
 // appConfiguration returns the active executable settings together with the
 // latest published product template. Secret values are deliberately omitted;
 // only declared/configured key names are returned.
@@ -58,12 +113,15 @@ func (s *Server) appConfiguration(w http.ResponseWriter, r *http.Request) {
 	var currentRuntime, currentRoute, targetRuntime, targetRoute map[string]any
 	err := s.db.QueryRow(r.Context(), `SELECT app.slug,app.status,product.id::text,product.slug,product.name,product.icon_url,
 		current_release.product_version_id::text,current_release.immutable_snapshot->'runtime_spec',current_release.immutable_snapshot->'route_spec',
-		target.id::text,target.version,target.runtime_spec,target.route_spec
+		coalesce(target.id,current_version.id)::text,coalesce(target.version,current_version.version),
+		coalesce(target.runtime_spec,current_release.immutable_snapshot->'runtime_spec'),
+		coalesce(target.route_spec,current_release.immutable_snapshot->'route_spec')
 		FROM user_apps app
 		JOIN app_products product ON product.id=app.product_id
 		JOIN app_releases current_release ON current_release.id=app.last_successful_release_id
-		JOIN LATERAL (SELECT id,version,runtime_spec,route_spec FROM app_product_versions
-			WHERE product_id=product.id AND published_at IS NOT NULL ORDER BY version DESC LIMIT 1) target ON true
+		JOIN app_product_versions current_version ON current_version.id=current_release.product_version_id
+		LEFT JOIN LATERAL (SELECT id,version,runtime_spec,route_spec FROM app_product_versions
+			WHERE product_id=product.id AND published_at IS NOT NULL AND archived_at IS NULL ORDER BY version DESC LIMIT 1) target ON true
 		WHERE app.id=$1 AND app.user_id=$2 AND app.deleted_at IS NULL`, appID, p.ID).Scan(
 		&appSlug, &appStatus, &productID, &productSlug, &productName, &iconURL,
 		&currentVersionID, &currentRuntime, &currentRoute, &targetVersionID, &targetVersion, &targetRuntime, &targetRoute,
@@ -246,7 +304,7 @@ func (s *Server) createReleaseJob(w http.ResponseWriter, r *http.Request, actorI
 	} else {
 		var productSlug, imageDigest string
 		var runtimeSpec, routeSpec, healthSpec, updateSpec map[string]any
-		if err = tx.QueryRow(r.Context(), `SELECT p.slug,pv.image_digest,pv.runtime_spec,pv.route_spec,pv.health_spec,pv.update_spec FROM user_apps a JOIN app_products p ON p.id=a.product_id JOIN app_product_versions pv ON pv.product_id=p.id WHERE a.id=$1 AND a.user_id=$2 AND pv.id=$3 AND pv.published_at IS NOT NULL`, appID, userID, versionID).Scan(&productSlug, &imageDigest, &runtimeSpec, &routeSpec, &healthSpec, &updateSpec); err != nil {
+		if err = tx.QueryRow(r.Context(), `SELECT p.slug,pv.image_digest,pv.runtime_spec,pv.route_spec,pv.health_spec,pv.update_spec FROM user_apps a JOIN app_products p ON p.id=a.product_id JOIN app_product_versions pv ON pv.product_id=p.id WHERE a.id=$1 AND a.user_id=$2 AND pv.id=$3 AND pv.published_at IS NOT NULL AND pv.archived_at IS NULL`, appID, userID, versionID).Scan(&productSlug, &imageDigest, &runtimeSpec, &routeSpec, &healthSpec, &updateSpec); err != nil {
 			if err == pgx.ErrNoRows {
 				writeError(w, 404, "version_not_found", "published version not found")
 				return

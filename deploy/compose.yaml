@@ -131,6 +131,8 @@ services:
       egress-proxy: {condition: service_healthy}
     volumes:
       - ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock
+      - /proc:/host/proc:ro
+      - ${DOCKER_DATA_ROOT:-/var/lib/docker}:/host/docker-data:ro
     networks: [data_network]
     labels:
       cloudmeter.owner: ${COMPOSE_PROJECT_NAME:-cloudmeter}

@@ -48,6 +48,48 @@ type containerCreate struct {
 	NetworkingConfig map[string]any    `json:"NetworkingConfig,omitempty"`
 }
 
+type DockerImage struct {
+	ID                  string
+	RepoTags            []string
+	SizeBytes           int64
+	CreatedUnix         int64
+	ContainerReferences int
+}
+
+func (e *DockerExecutor) Images(ctx context.Context) ([]DockerImage, error) {
+	var rawImages []struct {
+		ID       string   `json:"Id"`
+		RepoTags []string `json:"RepoTags"`
+		Size     int64    `json:"Size"`
+		Created  int64    `json:"Created"`
+	}
+	if err := e.request(ctx, http.MethodGet, "/images/json?all=false", nil, &rawImages); err != nil {
+		return nil, err
+	}
+	var containers []struct {
+		ImageID string `json:"ImageID"`
+	}
+	if err := e.request(ctx, http.MethodGet, "/containers/json?all=true", nil, &containers); err != nil {
+		return nil, err
+	}
+	references := map[string]int{}
+	for _, container := range containers {
+		references[container.ImageID]++
+	}
+	items := make([]DockerImage, 0, len(rawImages))
+	for _, image := range rawImages {
+		items = append(items, DockerImage{ID: image.ID, RepoTags: image.RepoTags, SizeBytes: image.Size, CreatedUnix: image.Created, ContainerReferences: references[image.ID]})
+	}
+	return items, nil
+}
+
+func (e *DockerExecutor) RemoveImage(ctx context.Context, imageID string) error {
+	if !strings.HasPrefix(imageID, "sha256:") || len(imageID) != 71 {
+		return fmt.Errorf("invalid docker image ID")
+	}
+	return e.request(ctx, http.MethodDelete, "/images/"+urlEscape(imageID)+"?force=false&noprune=false", nil, nil)
+}
+
 func (e *DockerExecutor) ContainerNames(ctx context.Context, namePrefix string) ([]string, error) {
 	filters, err := json.Marshal(map[string][]string{"name": {namePrefix}})
 	if err != nil {

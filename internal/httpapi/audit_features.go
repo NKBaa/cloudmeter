@@ -28,6 +28,12 @@ func (s *Server) adminAuditLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	action := strings.TrimSpace(r.URL.Query().Get("action"))
 	identity := strings.TrimSpace(r.URL.Query().Get("identity"))
+	category := strings.TrimSpace(r.URL.Query().Get("category"))
+	validCategories := map[string]bool{"user": true, "admin": true, "consumption": true, "recharge": true, "system": true, "error": true, "login": true, "refund": true, "management": true}
+	if category != "" && !validCategories[category] {
+		writeError(w, 400, "validation_failed", "invalid audit category")
+		return
+	}
 	if len(action) > 120 || len(identity) > 160 {
 		writeError(w, 400, "validation_failed", "audit filters are too long")
 		return
@@ -35,7 +41,15 @@ func (s *Server) adminAuditLogs(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := s.db.Query(r.Context(), `SELECT l.id,l.actor_user_id,actor.display_name,actor.email,
 		l.subject_user_id,subject.display_name,subject.email,l.action,l.resource_type,l.resource_id,
-		l.request_id,l.ip,l.metadata,l.created_at
+		l.request_id,l.ip,l.metadata,l.created_at,
+		CASE WHEN l.action ILIKE '%login%' OR l.action ILIKE '%logout%' OR l.action ILIKE '%register%' THEN 'login'
+		WHEN l.action ILIKE '%refund%' OR l.action ILIKE '%withdraw%' THEN 'refund'
+		WHEN l.action ILIKE '%recharge%' OR l.action ILIKE '%payment%' OR l.action ILIKE '%topup%' THEN 'recharge'
+		WHEN l.action ILIKE '%consum%' OR l.action ILIKE '%charge%' OR l.action ILIKE '%billing%' THEN 'consumption'
+		WHEN l.action ILIKE '%error%' OR l.action ILIKE '%fail%' THEN 'error'
+		WHEN l.action ILIKE '%admin%' OR l.action ILIKE '%setting%' OR l.action ILIKE '%config%' THEN 'admin'
+		WHEN l.resource_type IN ('user','account','session') THEN 'user'
+		WHEN l.resource_type IN ('product','version','app','backup','volume') THEN 'management' ELSE 'system' END AS category
 		FROM audit_logs l
 		LEFT JOIN users actor ON actor.id=l.actor_user_id
 		LEFT JOIN users subject ON subject.id=l.subject_user_id
@@ -43,7 +57,8 @@ func (s *Server) adminAuditLogs(w http.ResponseWriter, r *http.Request) {
 		  AND ($2::text='' OR l.action ILIKE '%' || $2 || '%')
 		  AND ($3::text='' OR actor.email ILIKE '%' || $3 || '%' OR actor.display_name ILIKE '%' || $3 || '%'
 		       OR subject.email ILIKE '%' || $3 || '%' OR subject.display_name ILIKE '%' || $3 || '%')
-		ORDER BY l.id DESC LIMIT $4`, before, action, identity, limit+1)
+		  AND ($4::text='' OR (CASE WHEN l.action ILIKE '%login%' OR l.action ILIKE '%logout%' OR l.action ILIKE '%register%' THEN 'login' WHEN l.action ILIKE '%refund%' OR l.action ILIKE '%withdraw%' THEN 'refund' WHEN l.action ILIKE '%recharge%' OR l.action ILIKE '%payment%' OR l.action ILIKE '%topup%' THEN 'recharge' WHEN l.action ILIKE '%consum%' OR l.action ILIKE '%charge%' OR l.action ILIKE '%billing%' THEN 'consumption' WHEN l.action ILIKE '%error%' OR l.action ILIKE '%fail%' THEN 'error' WHEN l.action ILIKE '%admin%' OR l.action ILIKE '%setting%' OR l.action ILIKE '%config%' THEN 'admin' WHEN l.resource_type IN ('user','account','session') THEN 'user' WHEN l.resource_type IN ('product','version','app','backup','volume') THEN 'management' ELSE 'system' END)=$4)
+		ORDER BY l.id DESC LIMIT $5`, before, action, identity, category, limit+1)
 	if err != nil {
 		s.internalError(w, err)
 		return
@@ -65,11 +80,12 @@ func (s *Server) adminAuditLogs(w http.ResponseWriter, r *http.Request) {
 		IP            *string        `json:"ip"`
 		Metadata      map[string]any `json:"metadata"`
 		CreatedAt     time.Time      `json:"createdAt"`
+		Category      string         `json:"category"`
 	}
 	items := []auditLog{}
 	for rows.Next() {
 		var item auditLog
-		if err := rows.Scan(&item.ID, &item.ActorUserID, &item.ActorName, &item.ActorEmail, &item.SubjectUserID, &item.SubjectName, &item.SubjectEmail, &item.Action, &item.ResourceType, &item.ResourceID, &item.RequestID, &item.IP, &item.Metadata, &item.CreatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.ActorUserID, &item.ActorName, &item.ActorEmail, &item.SubjectUserID, &item.SubjectName, &item.SubjectEmail, &item.Action, &item.ResourceType, &item.ResourceID, &item.RequestID, &item.IP, &item.Metadata, &item.CreatedAt, &item.Category); err != nil {
 			s.internalError(w, err)
 			return
 		}

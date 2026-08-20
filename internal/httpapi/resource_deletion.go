@@ -87,9 +87,9 @@ func (s *Server) deleteProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	var slug, name string
+	var slug, name, status string
 	var deletedAt any
-	if err = tx.QueryRow(r.Context(), `SELECT slug,name,deleted_at FROM app_products WHERE id=$1 FOR UPDATE`, productID).Scan(&slug, &name, &deletedAt); err == pgx.ErrNoRows {
+	if err = tx.QueryRow(r.Context(), `SELECT slug,name,status,deleted_at FROM app_products WHERE id=$1 FOR UPDATE`, productID).Scan(&slug, &name, &status, &deletedAt); err == pgx.ErrNoRows {
 		writeError(w, 404, "product_not_found", "product not found")
 		return
 	} else if err != nil {
@@ -100,15 +100,16 @@ func (s *Server) deleteProduct(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"id": productID, "deleted": true, "idempotent": true})
 		return
 	}
+	if status != "retired" {
+		writeError(w, http.StatusConflict, "product_must_be_retired", "产品必须先下架后才能完全删除模板")
+		return
+	}
 	var appCount, activeTests int
 	if err = tx.QueryRow(r.Context(), `SELECT (SELECT count(*) FROM user_apps WHERE product_id=$1),(SELECT count(*) FROM app_product_version_tests t JOIN app_product_versions v ON v.id=t.product_version_id WHERE v.product_id=$1 AND t.state NOT IN ('succeeded','failed'))`, productID).Scan(&appCount, &activeTests); err != nil {
 		s.internalError(w, err)
 		return
 	}
-	if appCount > 0 {
-		writeError(w, 409, "product_in_use", "product has application history and can only be retired")
-		return
-	}
+	_ = appCount
 	if activeTests > 0 {
 		writeError(w, 409, "product_test_in_progress", "wait for version tests to finish before deleting")
 		return
@@ -126,6 +127,10 @@ func (s *Server) deleteProduct(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, err)
 		return
 	}
+	if _, err = tx.Exec(r.Context(), `UPDATE app_product_versions SET archived_at=coalesce(archived_at,now()) WHERE product_id=$1`, productID); err != nil {
+		s.internalError(w, err)
+		return
+	}
 	if _, err = tx.Exec(r.Context(), `INSERT INTO audit_logs(actor_user_id,action,resource_type,resource_id,request_id,metadata) VALUES($1,'product.delete','app_product',$2,$3,jsonb_build_object('slug',$4::text,'name',$5::text))`, p.ID, productID, requestID(r.Context()), slug, name); err != nil {
 		s.internalError(w, err)
 		return
@@ -134,5 +139,5 @@ func (s *Server) deleteProduct(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"id": productID, "deleted": true})
+	writeJSON(w, 200, map[string]any{"id": productID, "deleted": true, "instancesPreserved": true})
 }

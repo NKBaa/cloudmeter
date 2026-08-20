@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-import { CheckCircle2, CircleAlert, Container, Copy, Database, KeyRound, Network, Power, Save, X } from '@lucide/vue'
+import { CheckCircle2, CircleAlert, Container, Copy, Database, KeyRound, Network, Power, RefreshCw, Save, Trash2, X } from '@lucide/vue'
 import { api } from '../api'
 
 type DockerSettings = {
@@ -31,6 +31,8 @@ type RestartRequest = {
   startedAt: string | null
   completedAt: string | null
 }
+type DockerImage={id:string;repoTags:string[];sizeBytes:number;createdAt:string|null;containerReferences:number;sampledAt:string}
+type ImageDeletionJob={id:string;imageId:string;status:string;lastError:string;createdAt:string;completedAt:string|null}
 
 const model = reactive<DockerSettings>({
   registryMirrors: [], defaultRegistry: '', registryUsername: '', registryPassword: '',
@@ -46,6 +48,7 @@ const restartRequest = ref<RestartRequest | null>(null)
 const restartDialogOpen = ref(false)
 const restartBusy = ref(false)
 const restartConnectionLost = ref(false)
+const images=ref<DockerImage[]>([]),imageJobs=ref<ImageDeletionJob[]>([]),imageBusy=ref('')
 let restartTimer: number | undefined
 
 const checkTime = computed(() => model.lastCheckedAt ? new Date(model.lastCheckedAt).toLocaleString('zh-CN') : '等待 Worker 首次探测')
@@ -79,6 +82,9 @@ async function load(silent = false) {
     if (!silent) failed(value)
   } finally { busy.value = '' }
 }
+async function loadImages(){try{imageBusy.value='load';const result=await api<{images:DockerImage[];deletionJobs:ImageDeletionJob[]}>('/admin/docker/images');images.value=result.images;imageJobs.value=result.deletionJobs}catch(value){failed(value)}finally{imageBusy.value=''}}
+function imageSize(bytes:number){if(bytes<1024*1024)return (bytes/1024).toFixed(1)+' KiB';if(bytes<1024*1024*1024)return (bytes/1024/1024).toFixed(1)+' MiB';return (bytes/1024/1024/1024).toFixed(2)+' GiB'}
+async function deleteImage(image:DockerImage){if(image.containerReferences>0){failed(new Error('镜像仍被容器引用，不能删除'));return}const suffix=image.id.slice(-12),confirmation=prompt('删除镜像后再次使用需要重新拉取。请输入镜像 ID 末 12 位确认：'+suffix,'')||'';if(!confirmation)return;try{imageBusy.value=image.id;await api('/admin/docker/images/'+encodeURIComponent(image.id),{method:'DELETE',body:JSON.stringify({confirmation})});done('镜像删除任务已提交，Worker 会再次检查容器引用');await loadImages()}catch(value){failed(value)}finally{imageBusy.value=''}}
 async function loadRestartStatus(polling = false) {
   try {
     const result = await api<{ request: RestartRequest | null }>('/admin/system/restart')
@@ -136,7 +142,7 @@ async function restartPlatform() {
   } finally { restartBusy.value = false }
 }
 
-onMounted(async () => { await Promise.all([load(), loadRestartStatus()]) })
+onMounted(async () => { await Promise.all([load(), loadRestartStatus(), loadImages()]) })
 onBeforeUnmount(clearRestartTimer)
 </script>
 
@@ -224,6 +230,14 @@ onBeforeUnmount(clearRestartTimer)
         </section>
       </aside>
     </div>
+
+    <section class="form-panel docker-images-panel">
+      <div class="section-heading"><div><p class="eyebrow">本机库存</p><h2>Docker 镜像</h2></div><button class="secondary compact" :disabled="imageBusy==='load'" @click="loadImages"><RefreshCw :class="{spin:imageBusy==='load'}" :size="16"/>刷新</button></div>
+      <p class="quiet">库存由 Worker 从 Docker Engine 同步。删除时 API 与 Worker 都会检查全部容器引用，运行中或已停止容器引用的镜像均不可删除。</p>
+      <div v-if="images.length" class="docker-image-list"><article v-for="image in images" :key="image.id" class="docker-image-row"><div><strong>{{image.repoTags.length?image.repoTags.join('、'):'未标记镜像'}}</strong><code>{{image.id}}</code></div><span>{{imageSize(image.sizeBytes)}}</span><span :class="['status-pill',image.containerReferences?'pending':'active']">{{image.containerReferences}} 个容器引用</span><button class="icon-action danger" title="删除镜像" :disabled="image.containerReferences>0||imageBusy===image.id" @click="deleteImage(image)"><Trash2 :size="16"/></button></article></div>
+      <div v-else class="context-empty"><Container :size="23"/><p>{{imageBusy==='load'?'正在同步镜像库存...':'没有可显示的 Docker 镜像，或 Worker 尚未完成首次同步。'}}</p></div>
+      <div v-if="imageJobs.length" class="image-job-history"><strong>最近删除任务</strong><div v-for="job in imageJobs.slice(0,8)" :key="job.id"><code>{{job.imageId.slice(0,24)}}…</code><span :class="['status-pill',job.status==='succeeded'?'active':'pending']">{{job.status}}</span><small>{{job.lastError||new Date(job.createdAt).toLocaleString('zh-CN')}}</small></div></div>
+    </section>
 
     <Transition name="dialog-fade">
       <div v-if="restartDialogOpen" class="dialog-backdrop" @click.self="restartDialogOpen = false">

@@ -189,6 +189,8 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/me", s.authenticate(http.HandlerFunc(s.me)))
 	s.mux.Handle("DELETE /api/impersonation", s.authenticate(http.HandlerFunc(s.endImpersonation)))
 	s.mux.Handle("GET /api/announcements", s.authenticate(http.HandlerFunc(s.listAnnouncements)))
+	s.mux.Handle("GET /api/faqs", s.authenticate(http.HandlerFunc(s.listFAQs)))
+	s.mux.Handle("GET /api/sidebar-visibility", s.authenticate(http.HandlerFunc(s.sidebarVisibility)))
 	s.mux.Handle("GET /api/notifications", s.authenticate(http.HandlerFunc(s.listNotifications)))
 	s.mux.Handle("PATCH /api/notifications/{notificationID}/read", s.authenticate(http.HandlerFunc(s.readNotification)))
 	s.mux.Handle("GET /api/tickets", s.authenticate(http.HandlerFunc(s.listTickets)))
@@ -197,6 +199,7 @@ func (s *Server) routes() {
 	s.mux.Handle("POST /api/tickets/{ticketID}/messages", s.authenticate(http.HandlerFunc(s.replyTicket)))
 	s.mux.Handle("POST /api/tickets/{ticketID}/close", s.authenticate(http.HandlerFunc(s.closeTicket)))
 	s.mux.Handle("GET /api/admin/summary", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.adminSummary))))
+	s.mux.Handle("GET /api/admin/host-metrics", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.hostMetrics))))
 	s.mux.Handle("GET /api/admin/audit-logs", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.adminAuditLogs))))
 	s.mux.Handle("GET /api/products", s.authenticate(http.HandlerFunc(s.listProducts)))
 	s.mux.Handle("GET /api/apps", s.authenticate(http.HandlerFunc(s.listApps)))
@@ -204,9 +207,11 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/apps/{appID}/deployments", s.authenticate(http.HandlerFunc(s.appDeployments)))
 	s.mux.Handle("GET /api/apps/{appID}/releases", s.authenticate(http.HandlerFunc(s.appReleases)))
 	s.mux.Handle("GET /api/apps/{appID}/configuration", s.authenticate(http.HandlerFunc(s.appConfiguration)))
+	s.mux.Handle("GET /api/apps/{appID}/versions", s.authenticate(http.HandlerFunc(s.appVersions)))
 	s.mux.Handle("GET /api/apps/{appID}/secrets", s.authenticate(http.HandlerFunc(s.listAppSecrets)))
 	s.mux.Handle("PUT /api/apps/{appID}/secrets/{key}", s.authenticate(http.HandlerFunc(s.putAppSecret)))
 	s.mux.Handle("GET /api/apps/{appID}/route", s.authenticate(http.HandlerFunc(s.appRoute)))
+	s.mux.Handle("POST /api/apps/{appID}/access", s.authenticate(http.HandlerFunc(s.createAppAccess)))
 	s.mux.Handle("POST /api/apps/{appID}/stop", s.authenticate(http.HandlerFunc(s.stopApp)))
 	s.mux.Handle("POST /api/apps/{appID}/start", s.authenticate(http.HandlerFunc(s.startApp)))
 	s.mux.Handle("GET /api/apps/{appID}/backups", s.authenticate(http.HandlerFunc(s.listAppBackups)))
@@ -244,6 +249,8 @@ func (s *Server) routes() {
 	// while financial/platform-owner settings remain super-admin only.
 	s.mux.Handle("GET /api/admin/settings/docker", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.getDockerSettings))))
 	s.mux.Handle("PUT /api/admin/settings/docker", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.updateDockerSettings))))
+	s.mux.Handle("GET /api/admin/docker/images", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.listDockerImages))))
+	s.mux.Handle("DELETE /api/admin/docker/images/{imageID}", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.deleteDockerImage))))
 	s.mux.Handle("GET /api/admin/system/restart", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.getPlatformRestart))))
 	s.mux.Handle("POST /api/admin/system/restart", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.createPlatformRestart))))
 	s.mux.Handle("PUT /api/admin/settings/homepage", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.updateHomepage))))
@@ -270,6 +277,7 @@ func (s *Server) routes() {
 	s.mux.Handle("PATCH /api/admin/products/{productID}/availability", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.updateProductAvailability))))
 	s.mux.Handle("DELETE /api/admin/products/{productID}", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.deleteProduct))))
 	s.mux.Handle("POST /api/admin/products/{productID}/versions", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.createProductVersion))))
+	s.mux.Handle("DELETE /api/admin/products/{productID}/versions/{versionID}", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.deleteProductVersion))))
 	s.mux.Handle("POST /api/admin/products/{productID}/versions/{versionID}/tests", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.startProductVersionTest))))
 	s.mux.Handle("POST /api/admin/products/{productID}/versions/{versionID}/publish", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.publishProductVersion))))
 	s.mux.Handle("GET /api/admin/users", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.listUsers))))
@@ -285,8 +293,15 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/admin/announcements", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.adminListAnnouncements))))
 	s.mux.Handle("POST /api/admin/announcements", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.createAnnouncement))))
 	s.mux.Handle("PATCH /api/admin/announcements/{announcementID}", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.updateAnnouncement))))
+	s.mux.Handle("GET /api/admin/faqs", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.adminListFAQs))))
+	s.mux.Handle("POST /api/admin/faqs", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.createFAQ))))
+	s.mux.Handle("PUT /api/admin/faqs/{faqID}", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.updateFAQ))))
+	s.mux.Handle("DELETE /api/admin/faqs/{faqID}", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.deleteFAQ))))
+	s.mux.Handle("PUT /api/admin/settings/sidebar-visibility", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.updateSidebarVisibility))))
 	s.mux.Handle("GET /api/admin/settings/auth", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.getAuthPolicy))))
 	s.mux.Handle("PUT /api/admin/settings/auth", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.updateAuthPolicy))))
+	s.mux.Handle("GET /api/admin/settings/turnstile", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.getTurnstileSettings))))
+	s.mux.Handle("PUT /api/admin/settings/turnstile", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.updateTurnstileSettings))))
 	s.mux.Handle("GET /api/admin/settings/oauth", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.getOAuthSettings))))
 	s.mux.Handle("PUT /api/admin/settings/oauth/{provider}", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.updateOAuthSettings))))
 	s.mux.Handle("GET /api/admin/tickets", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.adminListTickets))))
@@ -440,21 +455,27 @@ func (s *Server) initialize(w http.ResponseWriter, r *http.Request) {
 }
 
 type loginRequest struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
+	Email          string `json:"email"`
+	Password       string `json:"password"`
+	TurnstileToken string `json:"turnstileToken"`
 }
 
 type registerRequest struct {
-	Email       string `json:"email"`
-	Password    string `json:"password"`
-	DisplayName string `json:"displayName"`
-	Code        string `json:"code"`
+	Email          string `json:"email"`
+	Password       string `json:"password"`
+	DisplayName    string `json:"displayName"`
+	Code           string `json:"code"`
+	TurnstileToken string `json:"turnstileToken"`
 }
 
 func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 	var req registerRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	if err := s.verifyTurnstile(r, req.TurnstileToken, "registration"); err != nil {
+		writeError(w, http.StatusForbidden, "turnstile_verification_failed", err.Error())
 		return
 	}
 	req.Email = strings.ToLower(strings.TrimSpace(req.Email))
@@ -563,6 +584,10 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	var req loginRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, 400, "invalid_request", err.Error())
+		return
+	}
+	if err := s.verifyTurnstile(r, req.TurnstileToken, "login"); err != nil {
+		writeError(w, http.StatusForbidden, "turnstile_verification_failed", err.Error())
 		return
 	}
 	var id, email, displayName, passwordHash, status string
@@ -977,7 +1002,7 @@ func (s *Server) estimatedMonthlyAppCents(ctx context.Context, userID, appID str
 func (s *Server) listApps(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	p, _ := r.Context().Value(principalKey).(principal)
-	rows, err := s.db.Query(r.Context(), "SELECT a.id,a.slug,a.service_slug,a.status,coalesce(a.suspension_reason,''),p.slug,coalesce(a.last_successful_release_id::text,''),coalesce(prev.id::text,''),coalesce(j.id::text,''),coalesce(j.state::text,''),coalesce(j.last_error,''),coalesce(j.updated_at,a.created_at),coalesce(ar.public_path,''),coalesce(current_release.immutable_snapshot->'runtime_spec','{}'::jsonb) FROM user_apps a JOIN app_products p ON p.id=a.product_id LEFT JOIN app_releases current_release ON current_release.id=a.last_successful_release_id LEFT JOIN app_routes ar ON ar.user_app_id=a.id AND ar.release_id=a.last_successful_release_id LEFT JOIN LATERAL (SELECT id FROM app_releases WHERE user_app_id=a.id AND state IN ('active','superseded') AND release_number < coalesce(current_release.release_number,2147483647) ORDER BY release_number DESC LIMIT 1) prev ON true LEFT JOIN LATERAL (SELECT id,state,last_error,updated_at FROM deployment_jobs WHERE user_app_id=a.id ORDER BY created_at DESC LIMIT 1) j ON true WHERE a.user_id=$1 AND a.deleted_at IS NULL ORDER BY a.created_at DESC", p.ID)
+	rows, err := s.db.Query(r.Context(), "SELECT a.id,a.instance_id,a.slug,a.service_slug,a.status,coalesce(a.suspension_reason,''),p.slug,coalesce(a.last_successful_release_id::text,''),coalesce(prev.id::text,''),coalesce(j.id::text,''),coalesce(j.state::text,''),coalesce(j.last_error,''),coalesce(j.updated_at,a.created_at),coalesce(ar.public_path,''),coalesce(current_release.immutable_snapshot->'runtime_spec','{}'::jsonb) FROM user_apps a JOIN app_products p ON p.id=a.product_id LEFT JOIN app_releases current_release ON current_release.id=a.last_successful_release_id LEFT JOIN app_routes ar ON ar.user_app_id=a.id AND ar.release_id=a.last_successful_release_id LEFT JOIN LATERAL (SELECT id FROM app_releases WHERE user_app_id=a.id AND state IN ('active','superseded') AND release_number < coalesce(current_release.release_number,2147483647) ORDER BY release_number DESC LIMIT 1) prev ON true LEFT JOIN LATERAL (SELECT id,state,last_error,updated_at FROM deployment_jobs WHERE user_app_id=a.id ORDER BY created_at DESC LIMIT 1) j ON true WHERE a.user_id=$1 AND a.deleted_at IS NULL ORDER BY a.created_at DESC", p.ID)
 	if err != nil {
 		s.internalError(w, err)
 		return
@@ -985,6 +1010,7 @@ func (s *Server) listApps(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 	type appView struct {
 		ID                    string     `json:"id"`
+		InstanceID            string     `json:"instanceId"`
 		Slug                  string     `json:"slug"`
 		ServiceSlug           string     `json:"serviceSlug"`
 		Status                string     `json:"status"`
@@ -1009,7 +1035,7 @@ func (s *Server) listApps(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var item appView
 		var runtimeSpec map[string]any
-		if err := rows.Scan(&item.ID, &item.Slug, &item.ServiceSlug, &item.Status, &item.SuspensionReason, &item.ProductSlug, &item.LastReleaseID, &item.PreviousReleaseID, &item.JobID, &item.JobState, &item.JobLastError, &item.UpdatedAt, &item.PublicPath, &runtimeSpec); err != nil {
+		if err := rows.Scan(&item.ID, &item.InstanceID, &item.Slug, &item.ServiceSlug, &item.Status, &item.SuspensionReason, &item.ProductSlug, &item.LastReleaseID, &item.PreviousReleaseID, &item.JobID, &item.JobState, &item.JobLastError, &item.UpdatedAt, &item.PublicPath, &runtimeSpec); err != nil {
 			s.internalError(w, err)
 			return
 		}
@@ -1071,7 +1097,7 @@ func (s *Server) createApp(w http.ResponseWriter, r *http.Request) {
 	}
 	var productSlug, imageDigest string
 	var runtimeSpec, routeSpec, healthSpec, updateSpec map[string]any
-	err = tx.QueryRow(r.Context(), `SELECT p.slug,pv.image_digest,pv.runtime_spec,pv.route_spec,pv.health_spec,pv.update_spec FROM app_products p JOIN app_product_versions pv ON pv.product_id=p.id WHERE p.id=$1 AND pv.id=$2 AND p.status='published' AND pv.published_at IS NOT NULL`, req.ProductID, req.VersionID).Scan(&productSlug, &imageDigest, &runtimeSpec, &routeSpec, &healthSpec, &updateSpec)
+	err = tx.QueryRow(r.Context(), `SELECT p.slug,pv.image_digest,pv.runtime_spec,pv.route_spec,pv.health_spec,pv.update_spec FROM app_products p JOIN app_product_versions pv ON pv.product_id=p.id WHERE p.id=$1 AND pv.id=$2 AND p.status='published' AND pv.published_at IS NOT NULL AND pv.archived_at IS NULL`, req.ProductID, req.VersionID).Scan(&productSlug, &imageDigest, &runtimeSpec, &routeSpec, &healthSpec, &updateSpec)
 	if err != nil {
 		writeError(w, 404, "template_unavailable", "published product version not found")
 		return
@@ -1421,7 +1447,7 @@ func (s *Server) adminListProducts(w http.ResponseWriter, r *http.Request) {
 		coalesce(pv.runtime_spec,'{}'::jsonb),coalesce(pv.route_spec,'{}'::jsonb),coalesce(pv.health_spec,'{}'::jsonb),coalesce(pv.update_spec,'{}'::jsonb),pv.published_at,
 		t.id::text,t.state,t.attempts,t.last_error,t.created_at,t.updated_at,t.completed_at
 		FROM app_products p
-		LEFT JOIN app_product_versions pv ON pv.product_id=p.id
+		LEFT JOIN app_product_versions pv ON pv.product_id=p.id AND pv.archived_at IS NULL
 		LEFT JOIN LATERAL (SELECT id,state,attempts,last_error,created_at,updated_at,completed_at FROM app_product_version_tests WHERE product_version_id=pv.id ORDER BY created_at DESC LIMIT 1) t ON true
 		WHERE p.deleted_at IS NULL ORDER BY p.created_at DESC,pv.version DESC`)
 	if err != nil {

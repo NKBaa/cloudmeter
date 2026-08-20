@@ -101,13 +101,14 @@ func smtpConfigurationReady(enabled bool, host string, port int, username string
 }
 
 func (s *Server) registrationPolicy(w http.ResponseWriter, r *http.Request) {
-	var e, v, block bool
+	var e, v, block, turnstileEnabled, loginProtection, registrationProtection bool
+	var siteKey string
 	var domains []string
-	if err := s.db.QueryRow(r.Context(), "SELECT registration_enabled,email_verification_required,block_email_aliases,email_domain_whitelist FROM system_state WHERE singleton").Scan(&e, &v, &block, &domains); err != nil {
+	if err := s.db.QueryRow(r.Context(), "SELECT registration_enabled,email_verification_required,block_email_aliases,email_domain_whitelist,turnstile_enabled,turnstile_site_key,turnstile_login_protection,turnstile_registration_protection FROM system_state WHERE singleton").Scan(&e, &v, &block, &domains, &turnstileEnabled, &siteKey, &loginProtection, &registrationProtection); err != nil {
 		s.internalError(w, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"registrationEnabled": e, "emailVerificationRequired": v, "blockEmailAliases": block, "emailDomainWhitelist": domains})
+	writeJSON(w, 200, map[string]any{"registrationEnabled": e, "emailVerificationRequired": v, "blockEmailAliases": block, "emailDomainWhitelist": domains, "turnstileEnabled": turnstileEnabled, "turnstileSiteKey": siteKey, "turnstileLoginProtection": turnstileEnabled && loginProtection, "turnstileRegistrationProtection": turnstileEnabled && registrationProtection})
 }
 func (s *Server) getAuthPolicy(w http.ResponseWriter, r *http.Request) { s.registrationPolicy(w, r) }
 func (s *Server) updateAuthPolicy(w http.ResponseWriter, r *http.Request) {

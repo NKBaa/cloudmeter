@@ -25,6 +25,9 @@ const account=reactive({displayName:'',email:'',password:'',role:'user'})
 const smtp=reactive({enabled:false,host:'',port:587,username:'',password:'',passwordConfigured:false,fromEmail:'',fromName:'CloudMeter',tlsMode:'starttls'})
 const smtpReady=ref(false)
 const auth=reactive({registrationEnabled:false,emailVerificationRequired:false,blockEmailAliases:true,emailDomainWhitelist:[] as string[]})
+const turnstile=reactive({enabled:false,siteKey:'',secretKey:'',secretConfigured:false,loginProtection:false,registrationProtection:false})
+const sidebar=reactive<Record<string,boolean>>({overview:true,deploy:true,apps:true,releases:true,backups:true,billing:true,recharge:true,checkin:true,usage:true,tickets:true,faq:true})
+const sidebarLabels:Record<string,string>={overview:'概览',deploy:'部署应用',apps:'我的应用',releases:'版本历史',backups:'备份与恢复',billing:'余额与账单',recharge:'账户充值',checkin:'每日签到',usage:'用量明细',tickets:'工单支持',faq:'常见问答'}
 const github=reactive<OAuthSettings>({enabled:false,clientId:'',clientSecret:'',scopes:'read:user user:email',secretConfigured:false,minimumTrustLevel:0,publicBaseUrlConfigured:false,callbackUrl:''})
 const linuxdo=reactive<OAuthSettings>({enabled:false,clientId:'',clientSecret:'',scopes:'openid email profile',secretConfigured:false,minimumTrustLevel:0,publicBaseUrlConfigured:false,callbackUrl:''})
 const notice=reactive({title:'',content:'',severity:'info',published:true})
@@ -57,15 +60,19 @@ async function load(){
     if(!credit.userId&&users.value.length) credit.userId=users.value.find(item=>item.roles.includes('user'))?.id||users.value[0].id
 
     if(isSuperAdmin.value){
-      const [mailData,authData,oauthData]=await Promise.all([
+      const [mailData,authData,oauthData,turnstileData,sidebarData]=await Promise.all([
         api<typeof smtp & {ready:boolean}>('/admin/settings/mail'),
         api<typeof auth>('/admin/settings/auth'),
         api<{providers:(OAuthSettings&{provider:string})[]}>('/admin/settings/oauth'),
+        api<typeof turnstile>('/admin/settings/turnstile'),
+        api<{visibility:Record<string,boolean>}>('/sidebar-visibility'),
       ])
       const {ready,...mailSettings}=mailData
       smtpReady.value=ready
       Object.assign(smtp,mailSettings)
       Object.assign(auth,authData)
+      Object.assign(turnstile,turnstileData,{secretKey:''})
+      Object.assign(sidebar,sidebarData.visibility)
       oauthData.providers.forEach(item=>Object.assign(item.provider==='github'?github:linuxdo,item))
     }
     error.value=''
@@ -150,6 +157,11 @@ async function saveAuth(){
   if(auth.emailVerificationRequired&&!smtpReady.value){failed(new Error('请先启用并保存有效的 SMTP 配置，再开启注册邮箱验证'));return}
   try{busy.value='auth';await api('/admin/settings/auth',{method:'PUT',body:JSON.stringify(auth)});done('注册策略已保存')}catch(value){failed(value)}finally{busy.value=''}
 }
+async function saveTurnstile(){
+  if(turnstile.enabled&&(!turnstile.siteKey.trim()||!(turnstile.secretConfigured||turnstile.secretKey.trim()))){failed(new Error('启用前请填写完整的 Site Key 和 Secret Key'));return}
+  try{busy.value='turnstile';const result=await api<{secretConfigured:boolean}>('/admin/settings/turnstile',{method:'PUT',body:JSON.stringify(turnstile)});turnstile.secretConfigured=result.secretConfigured;turnstile.secretKey='';done('机器人保护设置已保存')}catch(value){failed(value)}finally{busy.value=''}
+}
+async function saveSidebar(){try{busy.value='sidebar';await api('/admin/settings/sidebar-visibility',{method:'PUT',body:JSON.stringify({visibility:sidebar})});done('普通用户侧栏显示设置已保存')}catch(value){failed(value)}finally{busy.value=''}}
 async function saveOAuth(provider:string,value:OAuthSettings){
   const payload={enabled:value.enabled,clientId:value.clientId,clientSecret:value.clientSecret,scopes:value.scopes,minimumTrustLevel:value.minimumTrustLevel}
   try{busy.value='oauth-'+provider;await api('/admin/settings/oauth/'+provider,{method:'PUT',body:JSON.stringify(payload)});value.clientSecret='';done('OAuth 设置已保存');await load()}catch(reason){failed(reason)}finally{busy.value=''}
@@ -275,6 +287,25 @@ async function grantCredit(){
             <label>邮箱域白名单<input :value="auth.emailDomainWhitelist.join(', ')" @input="auth.emailDomainWhitelist=($event.target as HTMLInputElement).value.split(',').map(item=>item.trim()).filter(Boolean)" placeholder="example.com, company.cn"/><small>留空允许全部域名；填写域名时也允许其子域名</small></label>
             <button class="primary compact" :disabled="busy==='auth'"><Save :size="16"/>保存策略</button>
           </form>
+        </section>
+
+        <section v-if="page==='registration'" class="form-panel">
+          <h2><ShieldPlus :size="19"/>Cloudflare Turnstile</h2>
+          <p class="configuration-hint neutral">Token 会由服务端向 Cloudflare 校验，Secret Key 仅加密保存且不会通过读取接口返回。</p>
+          <form @submit.prevent="saveTurnstile">
+            <label class="toggle"><input v-model="turnstile.enabled" type="checkbox"/>启用 Turnstile</label>
+            <label>Site Key<input v-model="turnstile.siteKey" maxlength="256" :required="turnstile.enabled" placeholder="0x4AAAAA..."/></label>
+            <label>Secret Key<input v-model="turnstile.secretKey" type="password" maxlength="512" autocomplete="new-password" :required="turnstile.enabled&&!turnstile.secretConfigured" :placeholder="turnstile.secretConfigured?'已加密保存，留空保持不变':'启用时必填'"/><small>{{turnstile.secretConfigured?'Secret 已配置，接口不会显示原文':'尚未配置 Secret'}}</small></label>
+            <label :class="['toggle',{disabled:!turnstile.enabled}]"><input v-model="turnstile.loginProtection" type="checkbox" :disabled="!turnstile.enabled"/>保护密码登录</label>
+            <label :class="['toggle',{disabled:!turnstile.enabled}]"><input v-model="turnstile.registrationProtection" type="checkbox" :disabled="!turnstile.enabled"/>保护用户注册</label>
+            <button class="primary compact" :disabled="busy==='turnstile'"><Save :size="16"/>保存机器人保护</button>
+          </form>
+        </section>
+
+        <section v-if="page==='registration'" class="form-panel">
+          <h2><Settings2 :size="19"/>普通用户侧栏</h2>
+          <p class="configuration-hint neutral">这里仅控制菜单是否显示，不等于取消用户权限；业务 API 仍按各自规则校验。</p>
+          <form @submit.prevent="saveSidebar"><label v-for="(label,key) in sidebarLabels" :key="key" class="toggle"><input v-model="sidebar[key]" type="checkbox"/>显示“{{label}}”</label><button class="primary compact" :disabled="busy==='sidebar'"><Save :size="16"/>保存侧栏设置</button></form>
         </section>
 
         <section v-if="page==='mail'" class="form-panel">

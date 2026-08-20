@@ -47,6 +47,26 @@ func TestWebSocketDetection(t *testing.T) {
 	}
 }
 
+func TestReservedAccessCookieIsNotForwarded(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "/apps/user/app/", nil)
+	request.Header.Set("Cookie", "theme=dark; cloudmeter_app_access=secret; app_session=ok")
+	removeRequestCookie(request, appAccessCookie)
+	if got := request.Header.Get("Cookie"); got != "theme=dark; app_session=ok" {
+		t.Fatalf("unexpected forwarded cookies: %q", got)
+	}
+}
+
+func TestUpstreamCannotOverwriteReservedAccessCookie(t *testing.T) {
+	header := http.Header{}
+	header.Add("Set-Cookie", "cloudmeter_app_access=stolen; Path=/")
+	header.Add("Set-Cookie", "app_session=ok; Path=/")
+	stripReservedResponseCookie(header, appAccessCookie)
+	values := header.Values("Set-Cookie")
+	if len(values) != 1 || values[0] != "app_session=ok; Path=/" {
+		t.Fatalf("unexpected response cookies: %#v", values)
+	}
+}
+
 func TestRedirectAppRoot(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/apps/user/demo?tab=chat", nil)
 	response := httptest.NewRecorder()

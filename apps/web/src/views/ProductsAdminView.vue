@@ -906,6 +906,16 @@ async function deleteSelectedProduct() {
     await load();
   } catch (value) { failed(value); } finally { busy.value = ""; }
 }
+async function archiveVersion(item: Version) {
+  const productID = selected.value;
+  if (!productID || !window.confirm(`归档版本“${item.versionLabel || `v${item.version}`}”？已部署应用的固化配置不会受到影响。`)) return;
+  try {
+    busy.value = `archive-${item.id}`;
+    await api(`/admin/products/${productID}/versions/${item.id}`, { method: 'DELETE' });
+    done('版本已归档');
+    await load();
+  } catch (value) { failed(value); } finally { busy.value = ''; }
+}
 async function publish(productID: string, item: Version) {
   try {
     busy.value = item.id;
@@ -1662,6 +1672,14 @@ function dataPolicyLabel(value?: string) {
                 type="button"
                 @click="loadVersionIntoEditor(item)"
               ><Pencil :size="15" />载入编辑</button>
+              <button
+                v-if="!isTestRunning(item)"
+                class="icon-action stop-action"
+                type="button"
+                :disabled="busy === 'archive-' + item.id"
+                title="归档版本"
+                @click="archiveVersion(item)"
+              ><Archive :size="16" /></button>
               <Archive
                 v-else-if="selectedProduct.status === 'retired'"
                 class="quiet"

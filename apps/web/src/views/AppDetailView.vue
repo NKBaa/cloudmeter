@@ -1,0 +1,52 @@
+<script setup lang="ts">
+import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { ArrowLeft, ExternalLink, RefreshCw, Rocket, Server } from '@lucide/vue'
+import { api, openApp } from '../api'
+
+type App = { id:string; instanceId?:string; slug:string; productSlug:string; status:string; publicPath?:string }
+type Release = { id:string; releaseNumber:number; productVersionId:string; state:string; createdAt:string; jobState?:string }
+type RuntimeSpec = { cpuCores?:number; memoryMiB?:number; dataVolumeGiB?:number; volumes?:Array<{name:string; mountPath:string; sizeGiB:number}>; editableOptions?:{cpu?:boolean; memory?:boolean; dataVolume?:boolean}; secretKeys?:string[]; editableSecretKeys?:string[]; secretDescriptions?:Record<string,string> }
+type Version = { id:string; version:number; versionLabel:string; current:boolean; publishedAt:string; runtimeSpec:RuntimeSpec; routeSpec:Record<string,unknown>; healthSpec:Record<string,unknown> }
+type Configuration = { current?:{runtimeSpec?:RuntimeSpec}; configuredSecretKeys:string[] }
+
+const route=useRoute(), router=useRouter()
+const loading=ref(true), updating=ref(false), error=ref(''), message=ref('')
+const app=ref<App|null>(null), releases=ref<Release[]>([]), versions=ref<Version[]>([]), configuredSecretKeys=ref<string[]>([])
+const currentRuntime=ref<RuntimeSpec>({})
+const selectedVersionID=ref(''), cpu=ref(1), memory=ref(512), volume=ref(0), secrets=ref<Record<string,string>>({})
+const selectedVersion=computed(()=>versions.value.find(item=>item.id===selectedVersionID.value)||null)
+const editableSecrets=computed(()=>{const spec=selectedVersion.value?.runtimeSpec; return (spec?.secretKeys||[]).filter(key=>(spec?.editableSecretKeys||[]).includes(key))})
+const currentVersion=computed(()=>versions.value.find(item=>item.current))
+const containerPort=computed(()=>Number(selectedVersion.value?.routeSpec?.containerPort||0))
+const volumeFloor=computed(()=>Number(selectedVersion.value?.runtimeSpec?.dataVolumeGiB||Math.max(0,...(selectedVersion.value?.runtimeSpec?.volumes||[]).map(item=>Number(item.sizeGiB||0)))))
+
+function versionName(item:Version){return item.versionLabel?item.versionLabel+'（版本 '+item.version+'）':'版本 '+item.version}
+function applyVersion(){const spec=selectedVersion.value?.runtimeSpec;if(!spec)return;cpu.value=Math.max(Number(currentRuntime.value.cpuCores||0),Number(spec.cpuCores||1));memory.value=Math.max(Number(currentRuntime.value.memoryMiB||0),Number(spec.memoryMiB||512));const currentVolume=Number(currentRuntime.value.dataVolumeGiB||Math.max(0,...(currentRuntime.value.volumes||[]).map(item=>Number(item.sizeGiB||0))));volume.value=Math.max(currentVolume,volumeFloor.value);secrets.value=Object.fromEntries(editableSecrets.value.map(key=>[key,'']))}
+watch(selectedVersionID,applyVersion)
+async function load(){loading.value=true;error.value='';try{const result=await api<{apps:App[]}>('/apps');app.value=result.apps.find(item=>item.instanceId===route.params.instanceId||item.id===route.params.instanceId)||null;if(!app.value){error.value='应用不存在或无权访问';return}const [releaseResult,versionResult,configuration]=await Promise.all([api<{releases:Release[]}>('/apps/'+app.value.id+'/releases'),api<{versions:Version[]}>('/apps/'+app.value.id+'/versions'),api<Configuration>('/apps/'+app.value.id+'/configuration')]);releases.value=releaseResult.releases;versions.value=versionResult.versions;currentRuntime.value=configuration.current?.runtimeSpec||{};configuredSecretKeys.value=configuration.configuredSecretKeys||[];selectedVersionID.value=(versions.value.find(item=>item.current)||versions.value[0])?.id||'';applyVersion()}catch(e){error.value=(e as Error).message}finally{loading.value=false}}
+async function updateApp(){if(!app.value||!selectedVersion.value||updating.value)return;error.value='';message.value='';updating.value=true;try{const spec=selectedVersion.value.runtimeSpec,resources:Record<string,number>={};if(spec.editableOptions?.cpu!==false)resources.cpuCores=cpu.value;if(spec.editableOptions?.memory!==false)resources.memoryMiB=memory.value;if(spec.editableOptions?.dataVolume!==false&&(spec.volumes?.length||0))resources.dataVolumeGiB=volume.value;const changedSecrets=Object.fromEntries(Object.entries(secrets.value).filter(([,value])=>value.trim()));await api('/apps/'+app.value.id+'/releases',{method:'POST',body:JSON.stringify({versionId:selectedVersion.value.id,idempotencyKey:crypto.randomUUID(),resources,secrets:changedSecrets})});message.value='更新任务已创建，系统正在重新部署。现有数据卷会继续保留。';await load()}catch(e){error.value=(e as Error).message}finally{updating.value=false}}
+async function visitApp(){if(!app.value)return;try{await openApp(app.value.id)}catch(e){error.value=(e as Error).message}}
+onMounted(load)
+</script>
+
+<template>
+  <main class="workspace app-detail-page">
+    <header class="detail-header"><div><button class="secondary compact" @click="router.push('/console/apps')"><ArrowLeft :size="16"/>我的应用</button><p class="eyebrow">应用实例</p><h1>{{ app?.slug||'应用详情' }}</h1><p>{{ app?.productSlug||'加载中...' }} · {{ app?.instanceId||route.params.instanceId }}</p></div><button class="secondary compact" :disabled="loading" @click="load"><RefreshCw :class="{spin:loading}" :size="16"/>刷新</button></header>
+    <p v-if="error" class="message error-message">{{ error }}</p><p v-if="message" class="message success-message">{{ message }}</p>
+    <section v-if="loading" class="context-empty"><RefreshCw class="spin" :size="22"/><p>正在加载应用详情...</p></section>
+    <template v-else-if="app">
+      <section class="metrics"><article class="metric-card"><Server :size="18"/><span>运行状态</span><strong>{{ app.status }}</strong></article><article class="metric-card"><Rocket :size="18"/><span>公网入口</span><button v-if="app.publicPath" class="link-button" @click="visitApp">打开应用 <ExternalLink :size="14"/></button><strong v-else>尚未启用</strong></article></section>
+      <section class="product-list update-panel"><div class="section-heading"><div><p class="eyebrow">配置更新</p><h2>选择版本并重新部署</h2></div><span>当前 {{ currentVersion?versionName(currentVersion):'未知' }}</span></div>
+        <div v-if="versions.length" class="update-form"><label class="wide-field"><span>目标版本</span><select v-model="selectedVersionID"><option v-for="item in versions" :key="item.id" :value="item.id">{{ versionName(item) }}{{ item.current?' · 当前':'' }}</option></select><small>仅显示管理员仍在发布的版本；历史版本配置不会自动覆盖实例。</small></label>
+          <div class="configuration-grid"><label><span>CPU 核数</span><input v-model.number="cpu" type="number" step="0.1" :min="selectedVersion?.runtimeSpec.cpuCores||0.1" :disabled="selectedVersion?.runtimeSpec.editableOptions?.cpu===false"><small>最低 {{ selectedVersion?.runtimeSpec.cpuCores||1 }} 核</small></label><label><span>内存（MiB）</span><input v-model.number="memory" type="number" step="64" :min="selectedVersion?.runtimeSpec.memoryMiB||64" :disabled="selectedVersion?.runtimeSpec.editableOptions?.memory===false"><small>最低 {{ selectedVersion?.runtimeSpec.memoryMiB||512 }} MiB</small></label><label v-if="selectedVersion?.runtimeSpec.volumes?.length"><span>共享数据卷（GiB）</span><input v-model.number="volume" type="number" step="1" :min="volumeFloor" :disabled="selectedVersion?.runtimeSpec.editableOptions?.dataVolume===false"><small>仅可扩容，备份与所有挂载共享容量</small></label><div class="config-fact"><span>容器内网端口</span><strong>{{ containerPort||'未声明' }}</strong><small>不映射宿主机端口，由内部网关反向代理</small></div></div>
+          <div v-if="editableSecrets.length" class="secret-editor"><div><strong>Secret</strong><small>留空表示继续使用已保存值，服务端不会返回明文。</small></div><label v-for="key in editableSecrets" :key="key"><span>{{ key }} <em v-if="configuredSecretKeys.includes(key)">已配置</em></span><input v-model="secrets[key]" type="password" autocomplete="new-password" placeholder="留空则不修改"><small>{{ selectedVersion?.runtimeSpec.secretDescriptions?.[key]||'敏感配置，保存后不可查看明文' }}</small></label></div>
+          <div class="update-actions"><p>更新会创建新的不可变发布快照；失败时保留当前成功版本。</p><button :disabled="updating||app.status!=='running'" @click="updateApp"><RefreshCw v-if="updating" class="spin" :size="16"/>{{ updating?'正在创建更新任务...':'更新并重新部署' }}</button></div></div><div v-else class="context-empty compact-empty"><p>当前没有可用于更新的已发布版本</p></div></section>
+      <section class="product-list"><div class="section-heading"><div><p class="eyebrow">发布记录</p><h2>部署历史</h2></div><span>{{ releases.length }} 个版本</span></div><article v-for="release in releases" :key="release.id" class="product-row"><div><strong>发布 #{{ release.releaseNumber }}</strong><small>{{ release.productVersionId }} · {{ new Date(release.createdAt).toLocaleString() }}</small></div><span :class="['status-pill',release.state==='active'?'active':'pending']">{{ release.state }}</span></article><div v-if="!releases.length" class="context-empty compact-empty"><p>还没有发布记录</p></div></section>
+    </template>
+  </main>
+</template>
+
+<style scoped>
+.app-detail-page{display:grid;gap:18px}.update-form{display:grid;gap:16px}.wide-field,.configuration-grid label,.secret-editor label{display:grid;gap:7px}.wide-field>span,.configuration-grid label>span,.secret-editor label>span,.config-fact>span{font-size:13px;font-weight:650}.wide-field small,.configuration-grid small,.secret-editor small,.config-fact small{color:var(--text-muted,#777);line-height:1.5}.configuration-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.configuration-grid input,.wide-field select,.secret-editor input{width:100%;box-sizing:border-box}.config-fact{display:grid;align-content:start;gap:7px;padding:11px 12px;border:1px solid var(--border,#ddd);border-radius:12px}.config-fact strong{font-size:18px}.secret-editor{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;padding-top:14px;border-top:1px solid var(--border,#ddd)}.secret-editor>div{grid-column:1/-1;display:grid;gap:4px}.secret-editor em{font-style:normal;font-size:11px;color:var(--text-muted,#777)}.update-actions{display:flex;align-items:center;justify-content:space-between;gap:16px;padding-top:14px;border-top:1px solid var(--border,#ddd)}.update-actions p{margin:0;color:var(--text-muted,#777);font-size:13px}.success-message{color:#166534}.error-message{color:#991b1b}@media(max-width:900px){.configuration-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:620px){.configuration-grid,.secret-editor{grid-template-columns:1fr}.update-actions{align-items:stretch;flex-direction:column}.update-actions button{width:100%}}
+</style>

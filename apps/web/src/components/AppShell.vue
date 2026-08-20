@@ -20,6 +20,7 @@ import {
   Users,
   Container,
   MessageSquareText,
+  CircleHelp,
 } from "@lucide/vue";
 import { logout } from "../api";
 import BrandMark from "./BrandMark.vue";
@@ -28,6 +29,8 @@ const route = useRoute();
 const roles = ref<string[]>([]);
 const user = ref<{ Email?: string; DisplayName?: string } | null>(null);
 const balanceCents = ref(0);
+const visibility=ref<Record<string,boolean>>({})
+const shown=(key:string)=>isAdmin.value||visibility.value[key]!==false
 const isAdmin = computed(() =>
   roles.value.some((role) => role === "admin" || role === "super_admin"),
 );
@@ -51,6 +54,8 @@ onMounted(async () => {
       const summary = await billingResponse.json();
       balanceCents.value = summary.balanceCents || 0;
     }
+    const visibilityResponse=await fetch('/api/sidebar-visibility',{headers:{Authorization:'Bearer '+token}})
+    if(visibilityResponse.ok)visibility.value=(await visibilityResponse.json()).visibility||{}
   } catch {
     /* The page surfaces session errors itself. */
   }
@@ -74,36 +79,37 @@ function isAnchorActive(path: string, hash: string): boolean {
       <BrandMark />
       <nav>
         <div class="nav-group">用户控制台</div>
-        <RouterLink to="/console" exact-active-class="active"
+        <RouterLink v-if="shown('overview')" to="/console" exact-active-class="active"
           ><Gauge :size="18" />概览</RouterLink
         >
-        <RouterLink to="/console/deploy" active-class="active"
+        <RouterLink v-if="shown('deploy')" to="/console/deploy" active-class="active"
           ><Package :size="18" />部署应用</RouterLink
         >
-        <RouterLink to="/console/apps" active-class="active"
+        <RouterLink v-if="shown('apps')" to="/console/apps" active-class="active"
           ><AppWindow :size="18" />我的应用</RouterLink
         >
-        <RouterLink to="/console/releases" active-class="active"
+        <RouterLink v-if="shown('releases')" to="/console/releases" active-class="active"
           ><ArchiveRestore :size="18" />版本历史</RouterLink
         >
-        <RouterLink to="/console/backups" active-class="active"
+        <RouterLink v-if="shown('backups')" to="/console/backups" active-class="active"
           ><Package :size="18" />备份与恢复</RouterLink
         >
-        <RouterLink to="/console/billing" active-class="active"
+        <RouterLink v-if="shown('billing')" to="/console/billing" active-class="active"
           ><CreditCard :size="18" />余额与账单</RouterLink
         >
-        <RouterLink to="/console/recharge" active-class="active"
+        <RouterLink v-if="shown('recharge')" to="/console/recharge" active-class="active"
           ><BadgeDollarSign :size="18" />账户充值</RouterLink
         >
-        <RouterLink to="/console/checkin" active-class="active"
+        <RouterLink v-if="shown('checkin')" to="/console/checkin" active-class="active"
           ><CalendarCheck :size="18" />每日签到</RouterLink
         >
-        <RouterLink to="/console/usage" active-class="active"
+        <RouterLink v-if="shown('usage')" to="/console/usage" active-class="active"
           ><Receipt :size="18" />用量明细</RouterLink
         >
-        <RouterLink to="/console/tickets" active-class="active"
+        <RouterLink v-if="shown('tickets')" to="/console/tickets" active-class="active"
           ><MessageSquareText :size="18" />工单支持</RouterLink
         >
+        <RouterLink v-if="shown('faq')" to="/console/faq" active-class="active"><CircleHelp :size="18" />常见问答</RouterLink>
         <template v-if="isAdmin">
           <div class="nav-group">管理控制台</div>
           <RouterLink to="/admin" exact-active-class="active"
@@ -118,6 +124,7 @@ function isAnchorActive(path: string, hash: string): boolean {
           <RouterLink to="/admin/tickets" active-class="active"
             ><MessageSquareText :size="18" />工单管理</RouterLink
           >
+          <RouterLink to="/admin/faq" active-class="active"><CircleHelp :size="18" />问答管理</RouterLink>
           <div v-if="isSuperAdmin" class="nav-group">资金与运营</div>
           <RouterLink
             v-if="isSuperAdmin"
@@ -177,6 +184,7 @@ function isAnchorActive(path: string, hash: string): boolean {
             class="infrastructure-nav-link"
             ><Container :size="18" />Docker 与镜像源</RouterLink
           >
+          <RouterLink v-if="isAdmin" to="/admin/metrics" active-class="active"><Gauge :size="18" />性能监控</RouterLink>
         </template>
       </nav>
       <div class="sidebar-user" v-if="user">

@@ -30,7 +30,7 @@ import {
   Trash2,
   X,
 } from "@lucide/vue";
-import { api, logout } from "../api";
+import { api, logout, openApp } from "../api";
 import BrandMark from "../components/BrandMark.vue";
 import { usageCodeLabel, usageUnitLabel } from "../billing-labels";
 
@@ -88,6 +88,7 @@ type AppConfiguration = {
 };
 type App = {
   id: string;
+  instanceId?: string;
   slug: string;
   status: string;
   productSlug: string;
@@ -833,6 +834,13 @@ async function openDeploymentDetails(app: App) {
     deploymentBusy.value = false;
   }
 }
+async function visitApp(app: App) {
+  try {
+    await openApp(app.id);
+  } catch (e) {
+    error.value = (e as Error).message;
+  }
+}
 function metricAgeSeconds(app: App) {
   if (!app.metricsSampledAt) return Number.POSITIVE_INFINITY;
   const sampledAt = new Date(app.metricsSampledAt).getTime();
@@ -1070,7 +1078,7 @@ async function exitImpersonation() {
     </section>
     <section v-if="page === 'overview'" class="overview-apps">
       <div class="section-heading"><div><p class="eyebrow">已部署资源</p><h2>应用概要</h2></div><RouterLink class="secondary compact" to="/console/apps">查看全部</RouterLink></div>
-      <div class="overview-app-grid"><article v-for="app in apps" :key="app.id" class="overview-app-card"><div class="overview-app-title"><span class="app-icon"><AppWindow :size="18" /></span><div><strong>{{ app.slug }}</strong><small>{{ app.productSlug }}</small></div><span :class="['status-pill', app.status === 'running' ? 'active' : 'pending']">{{ app.status === 'running' ? '运行中' : app.status }}</span></div><div class="runtime-sample-state"><i :class="{ live: metricsAvailable(app) }"></i>{{ metricFreshness(app) }}</div><div class="app-resource-bars"><div><span>CPU 实时占用</span><b>{{ metricsAvailable(app) ? (app.cpuUsageCores || 0).toFixed(2) : '--' }} / {{ app.cpuCores || 0 }} 核</b><i><em :style="{width: metricsAvailable(app) ? Math.min(100, (app.cpuUsageCores || 0) / Math.max(app.cpuCores || 1, 0.1) * 100) + '%' : '0%'}"></em></i></div><div><span>内存实时占用</span><b>{{ metricsAvailable(app) ? Math.round(app.memoryUsageMiB || 0) : '--' }} / {{ app.memoryMiB || 0 }} MiB</b><i><em :style="{width: metricsAvailable(app) ? Math.min(100, (app.memoryUsageMiB || 0) / Math.max(app.memoryMiB || 1, 1) * 100) + '%' : '0%'}"></em></i></div></div><footer><div><small>预计每月</small><strong>¥ {{ ((app.estimatedMonthlyCents || 0) / 100).toFixed(2) }}</strong><small v-if="!app.estimateComplete">（不含未定价项与流量）</small></div><a v-if="app.publicPath" :href="app.publicPath" target="_blank" rel="noopener">访问应用<ExternalLink :size="14" /></a><span v-else class="quiet">尚无公网地址</span></footer></article><p v-if="!apps.length" class="quiet empty-copy">还没有部署应用，可从“部署应用”选择管理员发布的产品。</p></div>
+      <div class="overview-app-grid"><article v-for="app in apps" :key="app.id" class="overview-app-card"><div class="overview-app-title"><span class="app-icon"><AppWindow :size="18" /></span><div><strong>{{ app.slug }}</strong><small>{{ app.productSlug }}</small></div><span :class="['status-pill', app.status === 'running' ? 'active' : 'pending']">{{ app.status === 'running' ? '运行中' : app.status }}</span></div><div class="runtime-sample-state"><i :class="{ live: metricsAvailable(app) }"></i>{{ metricFreshness(app) }}</div><div class="app-resource-bars"><div><span>CPU 实时占用</span><b>{{ metricsAvailable(app) ? (app.cpuUsageCores || 0).toFixed(2) : '--' }} / {{ app.cpuCores || 0 }} 核</b><i><em :style="{width: metricsAvailable(app) ? Math.min(100, (app.cpuUsageCores || 0) / Math.max(app.cpuCores || 1, 0.1) * 100) + '%' : '0%'}"></em></i></div><div><span>内存实时占用</span><b>{{ metricsAvailable(app) ? Math.round(app.memoryUsageMiB || 0) : '--' }} / {{ app.memoryMiB || 0 }} MiB</b><i><em :style="{width: metricsAvailable(app) ? Math.min(100, (app.memoryUsageMiB || 0) / Math.max(app.memoryMiB || 1, 1) * 100) + '%' : '0%'}"></em></i></div></div><footer><div><small>预计每月</small><strong>¥ {{ ((app.estimatedMonthlyCents || 0) / 100).toFixed(2) }}</strong><small v-if="!app.estimateComplete">（不含未定价项与流量）</small></div><button v-if="app.publicPath" class="link-button" @click="visitApp(app)">访问应用<ExternalLink :size="14" /></button><span v-else class="quiet">尚无公网地址</span></footer></article><p v-if="!apps.length" class="quiet empty-copy">还没有部署应用，可从“部署应用”选择管理员发布的产品。</p></div>
     </section>
     <section
       v-if="
@@ -1276,7 +1284,7 @@ async function exitImpersonation() {
         </div>
         <span>{{ apps.length }} 个应用</span>
       </div>
-      <article v-for="app in apps" :key="app.id" class="product-row app-product-row">
+      <article v-for="app in apps" :key="app.id" class="product-row app-product-row" role="link" tabindex="0" @click="router.push('/console/apps/' + (app.instanceId || app.id))" @keydown.enter="router.push('/console/apps/' + (app.instanceId || app.id))">
         <span class="product-icon"><AppWindow :size="20" /></span>
         <div>
           <strong>{{ app.slug }}</strong
@@ -1289,7 +1297,7 @@ async function exitImpersonation() {
             <code v-if="app.jobLastError">{{ deploymentErrorText(app.jobLastError) }}</code>
           </div>
         </div>
-        <div class="product-controls">
+        <div class="product-controls" @click.stop>
           <span class="status-pill" :class="appStateClass(app)">{{
             appState(app)
           }}</span
@@ -1299,14 +1307,12 @@ async function exitImpersonation() {
             @click="openSecrets(app)"
           >
             <KeyRound :size="17" /></button
-          ><a
+          ><button
             v-if="app.status === 'running' && app.publicPath"
             class="icon-action"
             title="打开应用"
-            :href="app.publicPath"
-            target="_blank"
-            rel="noopener"
-            ><ExternalLink :size="17" /></a
+            @click="visitApp(app)"
+            ><ExternalLink :size="17" /></button
           ><button
             v-if="app.status === 'running'"
             class="icon-action"

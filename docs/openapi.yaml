@@ -5,6 +5,44 @@ info:
 servers:
   - url: /api
 paths:
+  /faqs:
+    get:
+      operationId: listFAQs
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: Enabled FAQs ordered for users}
+  /sidebar-visibility:
+    get:
+      operationId: sidebarVisibility
+      security: [{bearerAuth: []}]
+      responses: {'200': {description: Persisted user-console navigation visibility}}
+  /admin/settings/sidebar-visibility:
+    put:
+      operationId: updateSidebarVisibility
+      security: [{bearerAuth: []}]
+      responses: {'200': {description: All user-console menu visibility values persisted and audited}}
+  /admin/faqs:
+    get:
+      operationId: adminListFAQs
+      security: [{bearerAuth: []}]
+      responses: {'200': {description: All FAQs including disabled entries}}
+    post:
+      operationId: createFAQ
+      security: [{bearerAuth: []}]
+      responses: {'201': {description: FAQ created and audited}}
+  /admin/faqs/{faqID}:
+    put:
+      operationId: updateFAQ
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: faqID, in: path, required: true, schema: {type: string, format: uuid}}
+      responses: {'200': {description: FAQ content, order, or enabled state updated}}
+    delete:
+      operationId: deleteFAQ
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: faqID, in: path, required: true, schema: {type: string, format: uuid}}
+      responses: {'200': {description: FAQ deleted and audited}}
   /homepage:
     get:
       operationId: getHomepage
@@ -177,6 +215,7 @@ paths:
         - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 50}}
         - {name: action, in: query, schema: {type: string}}
         - {name: identity, in: query, schema: {type: string}}
+        - {name: category, in: query, description: Audit category, schema: {type: string, enum: [user, admin, consumption, recharge, system, error, login, refund, management]}}
       responses:
         '200': {description: Cursor-paginated immutable audit records}
         '403': {description: Super administrator required}
@@ -458,6 +497,28 @@ paths:
       responses:
         '200': {description: "Current configuration, latest template, route port, and configured Secret key names"}
         '404': {description: Application has no successful configuration or is not owned by the caller}
+  /apps/{appID}/versions:
+    get:
+      operationId: appVersions
+      summary: List selectable product versions for an application
+      description: Returns only published, non-archived versions belonging to the application's product. Runtime and route declarations are included for configuration review; Secret values are never returned.
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: appID, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200': {description: Selectable versions, runtime summaries, and current version identity}
+        '404': {description: Application not found or not owned by the caller}
+  /apps/{appID}/access:
+    post:
+      operationId: createAppAccess
+      summary: Establish a short-lived browser session for an owned application
+      description: Sets an HttpOnly cookie scoped to /apps/. The application router validates the underlying platform session and instance ownership before every proxy request.
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: appID, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200': {description: Access cookie established and public path returned}
+        '404': {description: Active route not found or not owned by the caller}
   /admin/plans:
     get:
       operationId: adminPlans
@@ -684,6 +745,39 @@ paths:
         '200': {description: Registration policy updated}
         '400': {description: Email domain whitelist contains an invalid domain}
         '409': {description: Email verification requires a saved and enabled SMTP configuration}
+  /admin/settings/turnstile:
+    get:
+      operationId: getTurnstileSettings
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: Turnstile policy and Site Key; Secret is represented only by secretConfigured}
+    put:
+      operationId: updateTurnstileSettings
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: Encrypted Turnstile settings persisted and audited}
+        '409': {description: Site Key or Secret Key is missing while enabling protection}
+  /admin/docker/images:
+    get:
+      operationId: listDockerImages
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: Docker image inventory, live container reference counts, and recent deletion jobs}
+  /admin/host-metrics:
+    get:
+      operationId: hostMetrics
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: Host CPU, memory, Docker-data disk and network metrics with per-section errors}
+  /admin/docker/images/{imageID}:
+    delete:
+      operationId: deleteDockerImage
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: imageID, in: path, required: true, schema: {type: string}}
+      responses:
+        '202': {description: Safe image deletion queued after typed confirmation}
+        '409': {description: Image is referenced by a container or deletion is already active}
   /admin/settings/mail:
     get:
       operationId: getMailSettings
@@ -937,6 +1031,16 @@ paths:
       responses:
         '201': {description: Immutable structured product version created}
         '400': {description: "Image, runtime, dependency, route, health, or update policy validation failed"}
+  /admin/products/{productID}/versions/{versionID}:
+    delete:
+      operationId: archiveProductVersion
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: productID, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: versionID, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200': {description: Product version archived without changing deployed release snapshots}
+        '404': {description: Product version not found}
   /admin/products/{productID}/versions/{versionID}/publish:
     post:
       operationId: publishProductVersion

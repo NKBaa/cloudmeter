@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"fmt"
 	"io"
@@ -21,6 +22,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+const appAccessCookie = "cloudmeter_app_access"
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
@@ -83,6 +86,24 @@ func requireRouterToken(token string, next http.Handler) http.Handler {
 
 func routeHandler(db *pgxpool.Pool, logger *slog.Logger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cookie, cookieErr := r.Cookie(appAccessCookie)
+		if cookieErr != nil || strings.TrimSpace(cookie.Value) == "" {
+			http.Error(w, "application sign-in required", http.StatusUnauthorized)
+			return
+		}
+		tokenHash := sha256.Sum256([]byte(cookie.Value))
+		var sessionUserID string
+		if err := db.QueryRow(r.Context(), `SELECT session.user_id::text FROM sessions session
+			JOIN users ON users.id=session.user_id AND users.status='active'
+			WHERE session.token_hash=$1 AND session.revoked_at IS NULL AND session.expires_at>now()`, tokenHash[:]).Scan(&sessionUserID); err != nil {
+			if err == pgx.ErrNoRows {
+				http.Error(w, "application session is invalid or expired", http.StatusUnauthorized)
+				return
+			}
+			logger.Error("application session lookup failed", "error", err)
+			http.Error(w, "session lookup failed", http.StatusBadGateway)
+			return
+		}
 		var prefix, host string
 		var port int
 		var routeSpec map[string]any
@@ -92,12 +113,12 @@ func routeHandler(db *pgxpool.Pool, logger *slog.Logger) http.Handler {
 		coalesce(nullif(rel.immutable_snapshot->'route_spec'->>'port','')::int,nullif(rel.immutable_snapshot->'route_spec'->>'containerPort','')::int,8080),
 		coalesce(rel.immutable_snapshot->'route_spec','{}'::jsonb)
 		FROM app_routes ar
-		JOIN user_apps a ON a.id=ar.user_app_id
+		JOIN user_apps a ON a.id=ar.user_app_id AND a.instance_id=ar.instance_id
 		JOIN users u ON u.id=a.user_id
 		JOIN app_releases rel ON rel.id=ar.release_id AND rel.user_app_id=a.id
-		WHERE a.status IN ('running','updating') AND a.last_successful_release_id=rel.id AND rel.state='active'
+		WHERE a.user_id=$2 AND u.status='active' AND a.status IN ('running','updating') AND a.last_successful_release_id=rel.id AND rel.state='active'
 		  AND ($1='/apps/'||u.slug||'/'||a.slug OR $1 LIKE '/apps/'||u.slug||'/'||a.slug||'/%')
-		ORDER BY length('/apps/'||u.slug||'/'||a.slug) DESC LIMIT 1`, r.URL.Path).Scan(&prefix, &host, &port, &routeSpec)
+		ORDER BY length('/apps/'||u.slug||'/'||a.slug) DESC LIMIT 1`, r.URL.Path, sessionUserID).Scan(&prefix, &host, &port, &routeSpec)
 		if err == pgx.ErrNoRows {
 			http.NotFound(w, r)
 			return
@@ -127,6 +148,7 @@ func routeHandler(db *pgxpool.Pool, logger *slog.Logger) http.Handler {
 		original := proxy.Director
 		proxy.Director = func(req *http.Request) {
 			original(req)
+			removeRequestCookie(req, appAccessCookie)
 			if routeBoolean(routeSpec, "stripPrefix", true) {
 				path := strings.TrimPrefix(req.URL.Path, prefix)
 				if path == "" {
@@ -146,8 +168,9 @@ func routeHandler(db *pgxpool.Pool, logger *slog.Logger) http.Handler {
 			req.Header.Set("X-Forwarded-Prefix", prefix)
 		}
 		cookiePath := routeString(routeSpec, "cookiePath", "")
-		if cookiePath != "" || rootRequest {
-			proxy.ModifyResponse = func(response *http.Response) error {
+		proxy.ModifyResponse = func(response *http.Response) error {
+			stripReservedResponseCookie(response.Header, appAccessCookie)
+			if cookiePath != "" || rootRequest {
 				if rootRequest {
 					if err := rewriteRootHTMLBase(response, prefix); err != nil {
 						return err
@@ -162,8 +185,8 @@ func routeHandler(db *pgxpool.Pool, logger *slog.Logger) http.Handler {
 						}
 					}
 				}
-				return nil
 			}
+			return nil
 		}
 		proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, err error) {
 			logger.Error("upstream failed", "host", host, "error", err)
@@ -171,6 +194,34 @@ func routeHandler(db *pgxpool.Pool, logger *slog.Logger) http.Handler {
 		}
 		proxy.ServeHTTP(w, r)
 	})
+}
+
+func removeRequestCookie(r *http.Request, reserved string) {
+	values := make([]string, 0)
+	for _, cookie := range r.Cookies() {
+		if cookie.Name != reserved {
+			values = append(values, cookie.Name+"="+cookie.Value)
+		}
+	}
+	if len(values) == 0 {
+		r.Header.Del("Cookie")
+	} else {
+		r.Header.Set("Cookie", strings.Join(values, "; "))
+	}
+}
+
+func stripReservedResponseCookie(header http.Header, reserved string) {
+	values := header.Values("Set-Cookie")
+	if len(values) == 0 {
+		return
+	}
+	header.Del("Set-Cookie")
+	for _, value := range values {
+		name, _, _ := strings.Cut(value, "=")
+		if !strings.EqualFold(strings.TrimSpace(name), reserved) {
+			header.Add("Set-Cookie", value)
+		}
+	}
 }
 
 const maxRootHTMLRewriteBytes = 4 << 20

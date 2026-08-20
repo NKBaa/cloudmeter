@@ -79,11 +79,22 @@ func main() {
 	defer ticker.Stop()
 	logger.Info("worker started")
 	lastDockerSettingsSync := time.Now()
+	lastDockerImageSync := time.Time{}
+	lastHostMetricSync := time.Time{}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			if time.Since(lastHostMetricSync) >= 5*time.Second {
+				syncHostMetrics(ctx, db, logger)
+				lastHostMetricSync = time.Now()
+			}
+			if time.Since(lastDockerImageSync) >= 30*time.Second {
+				syncDockerImages(ctx, db, logger)
+				lastDockerImageSync = time.Now()
+			}
+			processDockerImageDeletionOne(ctx, db, logger)
 			if time.Since(lastDockerSettingsSync) >= 30*time.Second {
 				syncDockerDaemonSettings(ctx, db)
 				lastDockerSettingsSync = time.Now()
@@ -110,6 +121,94 @@ func main() {
 	}
 }
 
+func syncHostMetrics(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
+	s := readHostMetrics()
+	rx, tx := hostMetricsRates(s)
+	_, err := db.Exec(ctx, "UPDATE host_metrics SET cpu_usage_percent=$1,memory_total_bytes=$2,memory_used_bytes=$3,memory_available_bytes=$4,disk_total_bytes=$5,disk_used_bytes=$6,disk_available_bytes=$7,network_rx_bytes=$8,network_tx_bytes=$9,network_rx_bytes_per_second=$10,network_tx_bytes_per_second=$11,cpu_error=$12,memory_error=$13,disk_error=$14,network_error=$15,sampled_at=now() WHERE singleton", s.CPUPercent, s.MemoryTotal, s.MemoryUsed, s.MemoryAvailable, s.DiskTotal, s.DiskUsed, s.DiskAvailable, s.NetworkRX, s.NetworkTX, rx, tx, s.CPUErr, s.MemoryErr, s.DiskErr, s.NetworkErr)
+	if err != nil {
+		logger.Warn("host metrics persist failed", "error", err)
+	}
+}
+
+func syncDockerImages(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
+	if executor == nil {
+		return
+	}
+	images, err := executor.Images(ctx)
+	if err != nil {
+		logger.Warn("docker image inventory failed", "error", err)
+		return
+	}
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		return
+	}
+	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, "CREATE TEMP TABLE current_docker_images(image_id text PRIMARY KEY) ON COMMIT DROP"); err != nil {
+		return
+	}
+	for _, image := range images {
+		var created any
+		if image.CreatedUnix > 0 {
+			created = time.Unix(image.CreatedUnix, 0).UTC()
+		}
+		if _, err = tx.Exec(ctx, "INSERT INTO current_docker_images(image_id) VALUES($1)", image.ID); err != nil {
+			return
+		}
+		if _, err = tx.Exec(ctx, "INSERT INTO docker_image_inventory(image_id,repo_tags,size_bytes,created_at,container_references,sampled_at) VALUES($1,$2,$3,$4,$5,now()) ON CONFLICT(image_id) DO UPDATE SET repo_tags=EXCLUDED.repo_tags,size_bytes=EXCLUDED.size_bytes,created_at=EXCLUDED.created_at,container_references=EXCLUDED.container_references,sampled_at=now()", image.ID, image.RepoTags, image.SizeBytes, created, image.ContainerReferences); err != nil {
+			return
+		}
+	}
+	if _, err = tx.Exec(ctx, "DELETE FROM docker_image_inventory WHERE image_id NOT IN (SELECT image_id FROM current_docker_images)"); err != nil {
+		return
+	}
+	_ = tx.Commit(ctx)
+}
+
+func processDockerImageDeletionOne(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
+	if executor == nil {
+		return
+	}
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		return
+	}
+	defer tx.Rollback(ctx)
+	var id, imageID, requestedBy string
+	err = tx.QueryRow(ctx, "UPDATE docker_image_deletion_jobs SET status='running',updated_at=now() WHERE id=(SELECT id FROM docker_image_deletion_jobs WHERE status='queued' ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING id,image_id,requested_by").Scan(&id, &imageID, &requestedBy)
+	if err == pgx.ErrNoRows {
+		return
+	}
+	if err != nil || tx.Commit(ctx) != nil {
+		return
+	}
+	images, listErr := executor.Images(ctx)
+	references := 0
+	if listErr == nil {
+		for _, image := range images {
+			if image.ID == imageID {
+				references = image.ContainerReferences
+				break
+			}
+		}
+	}
+	cause := listErr
+	if cause == nil && references > 0 {
+		cause = fmt.Errorf("image is referenced by %d container(s)", references)
+	}
+	if cause == nil {
+		cause = executor.RemoveImage(ctx, imageID)
+	}
+	if cause != nil {
+		_, _ = db.Exec(ctx, "UPDATE docker_image_deletion_jobs SET status='failed',last_error=$2,updated_at=now(),completed_at=now() WHERE id=$1", id, cause.Error())
+		_, _ = db.Exec(ctx, "INSERT INTO audit_logs(actor_user_id,action,resource_type,resource_id,request_id,metadata) VALUES($1,'docker.image.delete.failed','docker_image',$2,$3,jsonb_build_object('error',$4::text))", requestedBy, imageID, "worker/docker-image/"+id, cause.Error())
+		return
+	}
+	_, _ = db.Exec(ctx, "UPDATE docker_image_deletion_jobs SET status='succeeded',updated_at=now(),completed_at=now() WHERE id=$1", id)
+	_, _ = db.Exec(ctx, "DELETE FROM docker_image_inventory WHERE image_id=$1", imageID)
+	_, _ = db.Exec(ctx, "INSERT INTO audit_logs(actor_user_id,action,resource_type,resource_id,request_id) VALUES($1,'docker.image.delete.complete','docker_image',$2,$3)", requestedBy, imageID, "worker/docker-image/"+id)
+}
+
 func processAppDeletionOne(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
 	tx, err := db.Begin(ctx)
 	if err != nil {
@@ -132,9 +231,18 @@ func processAppDeletionOne(ctx context.Context, db *pgxpool.Pool, logger *slog.L
 		_, _ = db.Exec(ctx, `UPDATE app_deletion_jobs SET status='queued',last_error='docker unavailable',available_at=now()+interval '10 seconds' WHERE id=$1`, id)
 		return
 	}
-	prefixes := []string{"cm-" + appID + "-"}
-	if runtimeScope != "" {
-		prefixes = append(prefixes, "cm-"+runtimeScope+"-"+appID+"-")
+	var instanceID string
+	_ = db.QueryRow(ctx, "SELECT instance_id::text FROM user_apps WHERE id=$1", appID).Scan(&instanceID)
+	identities := []string{appID}
+	if instanceID != "" && instanceID != appID {
+		identities = append(identities, instanceID)
+	}
+	prefixes := make([]string, 0, len(identities)*2)
+	for _, identity := range identities {
+		prefixes = append(prefixes, "cm-"+identity+"-")
+		if runtimeScope != "" {
+			prefixes = append(prefixes, "cm-"+runtimeScope+"-"+identity+"-")
+		}
 	}
 	for _, prefix := range prefixes {
 		names, _ := executor.ContainerNames(ctx, prefix)
@@ -184,8 +292,10 @@ func processStopOne(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) 
 		return
 	}
 
+	var instanceID string
+	_ = db.QueryRow(ctx, "SELECT instance_id::text FROM user_apps WHERE id=$1", appID).Scan(&instanceID)
 	if container != "" {
-		if !stopContainerMatches(appID, releaseID, container) {
+		if !stopContainerMatches(instanceID, releaseID, container) && !stopContainerMatches(appID, releaseID, container) {
 			err = fmt.Errorf("stop job container identity is invalid")
 		} else if executor == nil {
 			err = fmt.Errorf("docker executor is unavailable")
@@ -311,10 +421,13 @@ func reconcileRuntimeContainers(ctx context.Context, db *pgxpool.Pool, logger *s
 			continue
 		}
 		var appExists, keep bool
-		err = db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM user_apps WHERE id=$1), EXISTS(
+		err = db.QueryRow(ctx, `WITH owned_app AS (
+			SELECT id FROM user_apps WHERE instance_id=$1 OR id=$1 LIMIT 1
+		) SELECT EXISTS(SELECT 1 FROM owned_app), EXISTS(
 			SELECT 1 FROM user_apps app
+			JOIN owned_app owned ON owned.id=app.id
 			LEFT JOIN app_routes route ON route.user_app_id=app.id
-			WHERE app.id=$1 AND (
+			WHERE (
 				(app.status IN ('deploying','running','updating') AND (
 					route.upstream_container=$3 OR EXISTS(SELECT 1 FROM deployment_jobs job WHERE job.user_app_id=app.id AND job.release_id=$2 AND job.state NOT IN ('succeeded','failed'))
 				)) OR (app.status='stopping' AND EXISTS(
@@ -1363,6 +1476,7 @@ func declaredSecretVersions(runtimeSpec map[string]any, versions map[string]any)
 func processOne(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
 	var oldContainer string
 	var rollbackContainer string
+	var instanceID string
 	tx, err := db.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return
@@ -1372,10 +1486,11 @@ func processOne(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
 	var attempts int
 	var state domain.DeploymentState
 	var snapshot []byte
-	err = tx.QueryRow(ctx, `SELECT j.id,j.user_app_id,j.release_id,j.state,j.operation,j.attempts,r.immutable_snapshot
+	err = tx.QueryRow(ctx, `SELECT j.id,j.user_app_id,j.release_id,j.state,j.operation,j.attempts,r.immutable_snapshot,a.instance_id::text
 		FROM deployment_jobs j JOIN app_releases r ON r.id=j.release_id AND r.user_app_id=j.user_app_id
+		JOIN user_apps a ON a.id=j.user_app_id
 		WHERE j.state NOT IN ('succeeded','failed') AND j.available_at<=now()
-		ORDER BY j.created_at FOR UPDATE SKIP LOCKED LIMIT 1`).Scan(&id, &appID, &releaseID, &state, &operation, &attempts, &snapshot)
+		ORDER BY j.created_at FOR UPDATE SKIP LOCKED LIMIT 1`).Scan(&id, &appID, &releaseID, &state, &operation, &attempts, &snapshot, &instanceID)
 	if err == pgx.ErrNoRows {
 		return
 	}
@@ -1451,7 +1566,7 @@ func processOne(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
 	}
 	if state == domain.DeploymentStarting && executor != nil {
 		var userID, serviceSlug, image string
-		if err = tx.QueryRow(ctx, `SELECT user_id::text,service_slug FROM user_apps WHERE id=$1`, appID).Scan(&userID, &serviceSlug); err != nil {
+		if err = tx.QueryRow(ctx, `SELECT user_id::text,service_slug,instance_id::text FROM user_apps WHERE id=$1`, appID).Scan(&userID, &serviceSlug, &instanceID); err != nil {
 			logger.Error("user lookup failed", "error", err)
 			return
 		}
@@ -1521,7 +1636,7 @@ func processOne(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
 			snap.Runtime["env"] = secretEnv
 		}
 		snap.Runtime["appId"] = appID
-		name := containerName(appID, releaseID)
+		name := containerName(instanceID, releaseID)
 		if err = executor.Create(ctx, name, image, runtimepolicy.UserNetworkName(runtimeOwner, userID), []string{serviceSlug, releaseAlias(releaseID)}, snap.Runtime); err != nil {
 			tx.Rollback(ctx)
 			markJobError(ctx, db, id, err, logger)
@@ -1536,7 +1651,11 @@ func processOne(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
 	healthFailure := ""
 	if state == domain.DeploymentChecking && executor != nil {
 		var healthErr error
-		healthy, healthErr = executor.Healthy(ctx, containerName(appID, releaseID))
+		if err = tx.QueryRow(ctx, `SELECT instance_id::text FROM user_apps WHERE id=$1`, appID).Scan(&instanceID); err != nil {
+			logger.Error("instance identity lookup failed", "error", err)
+			return
+		}
+		healthy, healthErr = executor.Healthy(ctx, containerName(instanceID, releaseID))
 		if healthErr != nil {
 			tx.Rollback(ctx)
 			markJobError(ctx, db, id, healthErr, logger)
@@ -1656,7 +1775,11 @@ func processOne(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
 		_ = json.Unmarshal(snapshot, &routeSnapshot)
 		port := routePort(routeSnapshot.Route)
 		_ = tx.QueryRow(ctx, `SELECT upstream_container FROM app_routes WHERE user_app_id=$1`, appID).Scan(&oldContainer)
-		if _, err = tx.Exec(ctx, `INSERT INTO app_routes(user_app_id,release_id,public_path,upstream_host,upstream_port,upstream_container) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(user_app_id) DO UPDATE SET release_id=EXCLUDED.release_id,public_path=EXCLUDED.public_path,upstream_host=EXCLUDED.upstream_host,upstream_port=EXCLUDED.upstream_port,upstream_container=EXCLUDED.upstream_container,updated_at=now()`, appID, releaseID, `/apps/`+userSlug+`/`+slug, releaseAlias(releaseID), port, containerName(appID, releaseID)); err != nil {
+		if err = tx.QueryRow(ctx, `SELECT instance_id::text FROM user_apps WHERE id=$1`, appID).Scan(&instanceID); err != nil {
+			logger.Error("route instance identity lookup failed", "error", err)
+			return
+		}
+		if _, err = tx.Exec(ctx, `INSERT INTO app_routes(user_app_id,instance_id,release_id,public_path,upstream_host,upstream_port,upstream_container) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(user_app_id) DO UPDATE SET instance_id=EXCLUDED.instance_id,release_id=EXCLUDED.release_id,public_path=EXCLUDED.public_path,upstream_host=EXCLUDED.upstream_host,upstream_port=EXCLUDED.upstream_port,upstream_container=EXCLUDED.upstream_container,updated_at=now()`, appID, instanceID, releaseID, `/apps/`+userSlug+`/`+slug, releaseAlias(releaseID), port, containerName(instanceID, releaseID)); err != nil {
 			logger.Error("route update failed", "error", err)
 			return
 		}
@@ -1664,7 +1787,8 @@ func processOne(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
 	}
 	if next == domain.DeploymentFailed {
 		if state == domain.DeploymentRollingBack {
-			rollbackContainer = containerName(appID, releaseID)
+			_ = tx.QueryRow(ctx, `SELECT instance_id::text FROM user_apps WHERE id=$1`, appID).Scan(&instanceID)
+			rollbackContainer = containerName(instanceID, releaseID)
 			var hasLast bool
 			if err = tx.QueryRow(ctx, `SELECT last_successful_release_id IS NOT NULL FROM user_apps WHERE id=$1`, appID).Scan(&hasLast); err != nil {
 				logger.Error("app rollback state lookup failed", "error", err)
@@ -1707,7 +1831,7 @@ func processOne(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
 		return
 	}
 	logger.Info("deployment claimed", "job", id, "state", next)
-	if oldContainer != "" && oldContainer != containerName(appID, releaseID) && executor != nil {
+	if oldContainer != "" && oldContainer != containerName(instanceID, releaseID) && executor != nil {
 		if removeErr := executor.Remove(ctx, oldContainer); removeErr != nil {
 			logger.Warn("old release cleanup failed", "container", oldContainer, "error", removeErr)
 		} else {
@@ -1854,11 +1978,11 @@ func runtimeScopeToken(owner string) string {
 	return runtimepolicy.ResourceScopeToken(owner)
 }
 
-func containerName(appID, releaseID string) string {
+func containerName(instanceID, releaseID string) string {
 	if runtimeScope == "" {
-		return "cm-" + appID + "-" + releaseID
+		return "cm-" + instanceID + "-" + releaseID
 	}
-	return "cm-" + runtimeScope + "-" + appID + "-" + releaseID
+	return "cm-" + runtimeScope + "-" + instanceID + "-" + releaseID
 }
 func healthProbeName(jobID string) string {
 	compact := strings.ReplaceAll(jobID, "-", "")
@@ -1978,7 +2102,9 @@ func markJobError(ctx context.Context, db *pgxpool.Pool, id string, cause error,
 		return
 	}
 	if executor != nil {
-		if removeErr := executor.RemoveIfExists(ctx, containerName(appID, releaseID)); removeErr != nil {
+		var instanceID string
+		_ = db.QueryRow(ctx, `SELECT instance_id::text FROM user_apps WHERE id=$1`, appID).Scan(&instanceID)
+		if removeErr := executor.RemoveIfExists(ctx, containerName(instanceID, releaseID)); removeErr != nil {
 			logger.Warn("failed deployment container cleanup failed", "job", id, "error", removeErr)
 		}
 	}

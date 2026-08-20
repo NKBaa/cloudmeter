@@ -52,6 +52,8 @@ const errorMessages: Record<string, string> = {
   ticket_not_found: '没有找到这个工单，或你没有查看权限',
   ticket_closed: '工单已经关闭，不能继续回复',
   restart_in_progress: '已有系统重启任务正在执行，请等待完成',
+  turnstile_verification_failed: '人机验证失败或已过期，请重新验证',
+  turnstile_incomplete: '请先完整填写 Turnstile Site Key 和 Secret Key',
 }
 
 export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
@@ -71,6 +73,19 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
     throw new Error(errorMessages[code] || body.error?.message || `请求失败（${response.status}）`)
   }
   return body
+}
+
+export async function openApp(appID: string): Promise<void> {
+  const popup = window.open('about:blank', '_blank')
+  if (popup) popup.opener = null
+  try {
+    const result = await api<{ publicPath: string }>(`/apps/${appID}/access`, { method: 'POST', body: '{}' })
+    if (popup) popup.location.replace(result.publicPath)
+    else window.location.assign(result.publicPath)
+  } catch (error) {
+    popup?.close()
+    throw error
+  }
 }
 
 async function revokeSession(token: string): Promise<void> {
