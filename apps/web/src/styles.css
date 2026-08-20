@@ -503,6 +503,15 @@ label small {
   overflow-x: hidden;
   background: var(--canvas);
 }
+.console-header { height: 58px; padding: 0 24px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); background: color-mix(in srgb,var(--canvas) 94%,transparent); position: sticky; top: 0; z-index: 13; backdrop-filter: blur(16px); }
+.console-header-brand { display:flex; align-items:center; gap:10px; min-width:0; }
+.console-header-brand .brand-mark { width:30px; height:30px; border-radius:10px; }
+.console-header-brand > div { display:flex; align-items:baseline; gap:10px; min-width:0; }
+.console-header-brand strong { font-size:14px; }
+.console-header-brand span { color:var(--text-muted); font-size:12px; white-space:nowrap; }
+.console-header-actions { display:flex; align-items:center; gap:10px; }
+.header-balance { color:var(--text-muted); font-size:12px; padding:6px 10px; border:1px solid var(--border); border-radius:999px; background:var(--surface); }
+.header-avatar { width:30px; height:30px; display:grid; place-items:center; border-radius:10px; background:var(--surface-muted); color:var(--text); font-size:12px; font-weight:700; }
 .shell-topbar { height: 48px; padding: 0 28px; display: flex; align-items: center; justify-content: flex-end; border-bottom: 1px solid var(--border); background: color-mix(in srgb,var(--canvas) 92%,transparent); position: sticky; top: 0; z-index: 12; backdrop-filter: blur(14px); }
 .shell-topbar nav { display: flex; gap: 5px; }
 .shell-topbar a { padding: 7px 12px; border-radius: 9px; color: var(--text-muted); text-decoration: none; font-size: 13px; }
@@ -562,7 +571,7 @@ label small {
   filter: blur(1px);
 }
 .app-shell aside {
-  padding: 16px 12px;
+  padding: 14px 10px;
   display: flex;
   flex-direction: column;
   background: var(--sidebar);
@@ -602,7 +611,7 @@ nav {
 }
 nav a,
 .icon-text {
-  height: 38px;
+  height: 35px;
   display: flex;
   align-items: center;
   gap: 11px;
@@ -649,7 +658,7 @@ nav a.active {
   margin-top: 0;
 }
 .workspace {
-  padding: 28px 32px;
+  padding: 22px 26px 34px;
   max-width: 1600px;
   width: 100%;
 }
@@ -659,7 +668,7 @@ nav a.active {
   align-items: center;
 }
 .workspace h1 {
-  font-size: 25px;
+  font-size: 23px;
   margin: 0;
 }
 
@@ -2601,7 +2610,7 @@ input.field-invalid, select.field-invalid, textarea.field-invalid {
 .danger-action { color: #d78d8d; }
 .backup-table-head {
   min-height: 31px;
-  padding: 0 13px;
+  padding: 0 11px;
   color: #737982;
   border-bottom: 1px solid var(--line);
   background: rgba(255,255,255,.025);
@@ -4236,7 +4245,7 @@ input::placeholder, textarea::placeholder {
   gap: 12px;
 }
 .ticket-list-heading > div strong {
-  font-size: 14px;
+  font-size: 13px;
 }
 .ticket-list-heading > div small {
   color: var(--muted);

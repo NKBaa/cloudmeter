@@ -70,6 +70,19 @@ const balanceText = computed(() => {
 const userInitial = computed(() =>
   user.value?.Email ? user.value.Email[0].toUpperCase() : "?",
 );
+const pageTitle = computed(() => {
+  const titles: Record<string, string> = {
+    "/console": "概览", "/console/deploy": "部署应用", "/console/apps": "我的应用",
+    "/console/releases": "版本历史", "/console/backups": "备份与恢复", "/console/billing": "余额与账单",
+    "/console/recharge": "账户充值", "/console/checkin": "每日签到", "/console/usage": "用量明细",
+    "/console/tickets": "工单支持", "/console/faq": "常见问答",
+  };
+  if (route.path.startsWith("/admin/products")) return "产品管理";
+  if (route.path.startsWith("/admin/users")) return "用户管理";
+  if (route.path.startsWith("/admin/tickets")) return "工单管理";
+  if (route.path.startsWith("/admin")) return "管理控制台";
+  return titles[route.path] || "CloudMeter";
+});
 
 function isAnchorActive(path: string, hash: string): boolean {
   return route.path === path && route.hash === hash;
@@ -204,6 +217,10 @@ function isAnchorActive(path: string, hash: string): boolean {
       </button>
     </aside>
     <main class="app-main">
+      <header class="console-header">
+        <div class="console-header-brand"><BrandMark /><div><strong>CloudMeter</strong><span>{{ pageTitle }}</span></div></div>
+        <div class="console-header-actions"><span class="header-balance">{{ balanceText }}</span><span v-if="user" class="header-avatar" :title="user.Email">{{ userInitial }}</span></div>
+      </header>
       <header v-if="showShellTopbar" class="shell-topbar"><nav><RouterLink to="/console/home" active-class="active">主页</RouterLink><RouterLink to="/console/docs" active-class="active">文档</RouterLink><RouterLink to="/console" exact-active-class="active">控制台</RouterLink></nav></header>
       <RouterView v-slot="{ Component, route }">
         <Transition name="workspace-slide">
