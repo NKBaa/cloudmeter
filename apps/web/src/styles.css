@@ -761,9 +761,9 @@ nav a.active {
 .admin-quick-grid .docker-quick-link { border-color: rgba(148, 163, 184, .34); }
 @media (max-width: 1050px) { .admin-quick-grid { grid-template-columns: 1fr; } }
 .context-empty {
-  min-height: 230px;
-  margin-top: 22px;
-  padding: 32px;
+  min-height: 150px;
+  margin-top: 14px;
+  padding: 22px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -772,6 +772,10 @@ nav a.active {
   border-radius: var(--radius-md);
   background: var(--paper);
 }
+.faq-page { gap: 12px !important; }
+.faq-page > header { align-items: flex-start; }
+.faq-page > header p { margin: 6px 0 0; }
+.faq-page .context-empty { min-height: 180px; }
 .context-empty-icon {
   width: 54px;
   height: 54px;
