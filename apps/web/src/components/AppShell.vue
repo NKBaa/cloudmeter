@@ -28,6 +28,7 @@ import { logout } from "../api";
 import BrandMark from "./BrandMark.vue";
 
 const route = useRoute();
+const showShellTopbar = computed(() => !route.path.startsWith('/console') && !route.path.startsWith('/admin'));
 const roles = ref<string[]>([]);
 const user = ref<{ Email?: string; DisplayName?: string } | null>(null);
 const balanceCents = ref(0);
@@ -203,7 +204,7 @@ function isAnchorActive(path: string, hash: string): boolean {
       </button>
     </aside>
     <main class="app-main">
-      <header class="shell-topbar"><nav><RouterLink to="/console/home" active-class="active">主页</RouterLink><RouterLink to="/console/docs" active-class="active">文档</RouterLink><RouterLink to="/console" exact-active-class="active">控制台</RouterLink></nav></header>
+      <header v-if="showShellTopbar" class="shell-topbar"><nav><RouterLink to="/console/home" active-class="active">主页</RouterLink><RouterLink to="/console/docs" active-class="active">文档</RouterLink><RouterLink to="/console" exact-active-class="active">控制台</RouterLink></nav></header>
       <RouterView v-slot="{ Component, route }">
         <Transition name="workspace-slide">
           <component :is="Component" :key="route.fullPath" />
