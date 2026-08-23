@@ -5,27 +5,33 @@ import { api } from '../api'
 import BrandMark from '../components/BrandMark.vue'
 import TurnstileWidget from '../components/TurnstileWidget.vue'
 
-type RegistrationPolicy = { emailVerificationRequired: boolean; registrationEnabled: boolean; turnstileSiteKey:string; turnstileRegistrationProtection:boolean }
+type RegistrationPolicy = { emailVerificationRequired: boolean; registrationEnabled: boolean; passwordRegistrationEnabled: boolean; turnstileSiteKey:string; turnstileRegistrationProtection:boolean; emailDomainWhitelist?:string[]; blockEmailAliases?:boolean }
 
 const form = reactive({ displayName: '', email: '', password: '', code: '', turnstileToken: '' })
 const loading = ref(false)
 const message = ref('')
 const verificationRequired = ref(false)
 const registrationEnabled = ref(false)
+const passwordRegistrationEnabled = ref(true)
+const emailDomainWhitelist = ref<string[]>([])
+const blockEmailAliases = ref(false)
 const policyLoaded = ref(false)
 const policyAvailable = ref(false)
 const sending = ref(false)
 const countdown = ref(0)
 const turnstileSiteKey=ref(''), turnstileRequired=ref(false)
-const formDisabled = computed(() => !policyAvailable.value || !registrationEnabled.value)
+const formDisabled = computed(() => !policyAvailable.value || !registrationEnabled.value || !passwordRegistrationEnabled.value)
 const submitLabel = computed(() => {
   if (!policyLoaded.value) return '正在检查注册状态'
   if (!policyAvailable.value) return '暂无法确认注册状态'
   if (!registrationEnabled.value) return '暂未开放注册'
+  if (!passwordRegistrationEnabled.value) return '密码注册已关闭'
   return '创建账户'
 })
 
 function unavailableMessage() {
+  if (policyAvailable.value && !registrationEnabled.value) return '当前暂未开放公开注册'
+  if (policyAvailable.value && !passwordRegistrationEnabled.value) return '密码注册已由管理员关闭'
   return policyAvailable.value ? '当前暂未开放公开注册' : '暂时无法确认注册状态，请稍后重试'
 }
 
@@ -34,10 +40,14 @@ onMounted(async () => {
     const policy = await api<RegistrationPolicy>('/auth/registration-policy')
     verificationRequired.value = policy.emailVerificationRequired
     registrationEnabled.value = policy.registrationEnabled
+    passwordRegistrationEnabled.value = policy.passwordRegistrationEnabled !== false
+    emailDomainWhitelist.value = policy.emailDomainWhitelist || []
+    blockEmailAliases.value = policy.blockEmailAliases === true
     turnstileSiteKey.value=policy.turnstileSiteKey||''
     turnstileRequired.value=policy.turnstileRegistrationProtection
     policyAvailable.value = true
     if (!policy.registrationEnabled) message.value = '当前暂未开放公开注册'
+    else if (!policy.passwordRegistrationEnabled) message.value = '密码注册已由管理员关闭'
   } catch (error) {
     message.value = (error as Error).message
   } finally {
@@ -92,4 +102,4 @@ async function register() {
   }
 }
 </script>
-<template><main class="auth-shell"><div class="auth-card"><div class="auth-brand"><BrandMark/><p class="eyebrow">加入平台</p><h1>从一个应用开始你的工作区</h1><p class="lede">注册后即可查看管理员发布的应用模板，并管理自己的部署。</p></div><form class="auth-form" :aria-busy="loading" @submit.prevent="register"><h2>创建账户</h2><p>{{ verificationRequired ? '使用真实邮箱完成验证后创建账户' : '使用真实邮箱接收平台通知' }}</p><label>姓名<input v-model="form.displayName" required maxlength="80" autocomplete="name" :disabled="formDisabled" /></label><label>邮箱<input v-model="form.email" type="email" required autocomplete="email" :disabled="formDisabled" /></label><div v-if="verificationRequired" class="code-field"><label>邮箱验证码<input v-model="form.code" required inputmode="numeric" maxlength="6" autocomplete="one-time-code" :disabled="formDisabled" /></label><button type="button" class="secondary send-btn" :disabled="formDisabled||sending||countdown>0" @click="sendCode">{{sending?'发送中':countdown>0?`${countdown}s`:'发送验证码'}}</button></div><label>密码<input v-model="form.password" type="password" required minlength="12" autocomplete="new-password" :disabled="formDisabled" /><small>至少 12 个字符</small></label><TurnstileWidget v-if="turnstileRequired&&turnstileSiteKey" :site-key="turnstileSiteKey" @token="form.turnstileToken=$event"/><p v-if="message" class="message" role="status">{{message}}</p><button class="primary" :disabled="loading||formDisabled||(turnstileRequired&&!form.turnstileToken)"><LoaderCircle v-if="loading" class="spin" :size="18"/><template v-else>{{submitLabel}}<ArrowRight v-if="registrationEnabled&&policyAvailable" :size="18"/></template></button></form><small class="auth-foot">已有账户？<a href="/login">返回登录</a></small></div></main></template>
+<template><main class="auth-shell"><div class="auth-card"><div class="auth-brand"><BrandMark/><p class="eyebrow">加入平台</p><h1>从一个应用开始你的工作区</h1><p class="lede">注册后即可查看管理员发布的应用模板，并管理自己的部署。</p></div><form class="auth-form" :aria-busy="loading" @submit.prevent="register"><h2>创建账户</h2><p>{{ verificationRequired ? '使用真实邮箱完成验证后创建账户' : '使用真实邮箱接收平台通知' }}</p><label>姓名<input v-model="form.displayName" required maxlength="80" autocomplete="name" :disabled="formDisabled" /></label><label>邮箱<input v-model="form.email" type="email" required autocomplete="email" :disabled="formDisabled" /><small v-if="emailDomainWhitelist.length">仅允许域名：{{ emailDomainWhitelist.join('、') }}</small><small v-else-if="blockEmailAliases">不允许使用包含 + 或 . 的别名邮箱</small></label><div v-if="verificationRequired" class="code-field"><label>邮箱验证码<input v-model="form.code" required inputmode="numeric" maxlength="6" autocomplete="one-time-code" :disabled="formDisabled" /></label><button type="button" class="secondary send-btn" :disabled="formDisabled||sending||countdown>0" @click="sendCode">{{sending?'发送中':countdown>0?`${countdown}s`:'发送验证码'}}</button></div><label>密码<input v-model="form.password" type="password" required minlength="12" autocomplete="new-password" :disabled="formDisabled" /><small>至少 12 个字符</small></label><TurnstileWidget v-if="turnstileRequired&&turnstileSiteKey" :site-key="turnstileSiteKey" @token="form.turnstileToken=$event"/><p v-if="message" class="message" role="status">{{message}}</p><button class="primary" :disabled="loading||formDisabled||(turnstileRequired&&!form.turnstileToken)"><LoaderCircle v-if="loading" class="spin" :size="18"/><template v-else>{{submitLabel}}<ArrowRight v-if="registrationEnabled&&policyAvailable" :size="18"/></template></button></form><small class="auth-foot">已有账户？<a href="/login">返回登录</a></small></div></main></template>

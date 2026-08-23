@@ -141,11 +141,25 @@ wait_restore() {
   return 1
 }
 
+APP_COOKIE_JAR="$(mktemp)"
+
+establish_app_access() {
+  local app="$1" token="$2"
+  rm -f "$APP_COOKIE_JAR"
+  curl -sS -o /dev/null -c "$APP_COOKIE_JAR" -X POST \
+    -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
+    --data '{}' "$API/apps/$app/access" || return 1
+}
+
 wait_http() {
   local uri="$1" expected="$2" seconds="${3:-45}" deadline
   deadline="$((SECONDS + seconds))"
   while (( SECONDS < deadline )); do
-    request GET "$uri"
+    if [[ -f "$APP_COOKIE_JAR" ]]; then
+      RESPONSE_STATUS="$(curl -sS -o /dev/null -w '%{http_code}' -b "$APP_COOKIE_JAR" "$uri")"
+    else
+      request GET "$uri"
+    fi
     [[ "$RESPONSE_STATUS" == "$expected" ]] && return 0
     sleep 0.5
   done
@@ -222,6 +236,7 @@ IFS='|' read -r admin_session_id admin_token < <(new_session "$admin_id")
 marker="$(openssl rand -hex 6)"
 password="Lifecycle-$marker-Password!"
 user_id='' user_session_id='' plan_id='' product_id='' app_id='' volume='' backup_id='' backup_storage_key='' restore_id=''
+APP_COOKIE_JAR="$(mktemp)"
 
 cleanup() {
   set +e
@@ -240,7 +255,7 @@ cleanup() {
   [[ -z "$user_id" ]] || db_quiet "UPDATE users SET status='suspended',updated_at=now() WHERE id='$user_id'"
   [[ -z "$plan_id" ]] || db_quiet "UPDATE plans SET purchase_enabled=false WHERE id='$plan_id'"
   [[ -z "$product_id" ]] || db_quiet "UPDATE app_products SET status='retired' WHERE id='$product_id'"
-  rm -f "$RESPONSE_FILE"
+  rm -f "$RESPONSE_FILE" "$APP_COOKIE_JAR"
 }
 trap cleanup EXIT
 
@@ -267,7 +282,7 @@ request POST "$API/admin/products/$product_id/versions/$version_id/publish" "$ad
 request POST "$API/admin/plans" "$admin_token" "$(jq -cn --arg code "verify-control-$marker" --arg name "Application control $marker" '{code:$code,name:$name}')"
 [[ "$RESPONSE_STATUS" == 201 ]] || { echo 'plan creation failed' >&2; exit 1; }
 plan_id="$(response_value .id)"
-plan_version_body="$(jq -cn --arg product "$product_id" --arg effective "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{cyclePriceCents:0,apps:2,cpuCores:2,memoryGiB:2,systemDiskGiB:10,dataDiskGiB:2,backupStorageGiB:1,backupOperationsPerMonth:2,concurrentDeployments:2,publicIngresses:2,ingressOverageEnabled:false,egressGiB:1,egressOverageEnabled:false,creditGrantCents:0,allowedProductIds:[$product],effectiveAt:$effective}')"
+plan_version_body="$(jq -cn --arg product "$product_id" --arg effective "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{cyclePriceCents:0,apps:2,cpuCores:2,memoryGiB:2,dataDiskGiB:2,backupStorageGiB:1,backupOperationsPerMonth:2,concurrentDeployments:2,publicIngresses:2,ingressOverageEnabled:false,egressGiB:1,egressOverageEnabled:false,creditGrantCents:0,allowedProductIds:[$product],effectiveAt:$effective}')"
 request POST "$API/admin/plans/$plan_id/versions" "$admin_token" "$plan_version_body"
 [[ "$RESPONSE_STATUS" == 201 ]] || { echo 'plan version creation failed' >&2; exit 1; }
 plan_version_id="$(response_value .id)"
@@ -313,6 +328,7 @@ expect_db_failure 'BEGIN; TRUNCATE app_secret_versions CASCADE; ROLLBACK;' 'immu
 container="$(db "SELECT upstream_container FROM app_routes WHERE user_app_id='$app_id'")"
 public_path="$(db "SELECT public_path FROM app_routes WHERE user_app_id='$app_id'")"
 [[ -n "$container" ]] && docker_object_exists container inspect "$container" || { echo 'runtime container was not created' >&2; exit 1; }
+establish_app_access "$app_id" "$user_token"
 wait_http "$BASE_URL$public_path" 200
 expect_db_failure "UPDATE users SET slug=slug || '-changed' WHERE id='$user_id'" 'user public identity is immutable'
 expect_db_failure "UPDATE user_apps SET slug=slug || '-changed' WHERE id='$app_id'" 'user application identity is immutable'
@@ -323,7 +339,7 @@ expect_db_failure "INSERT INTO user_apps(user_id,product_id,slug,service_slug,st
 expect_db_failure "UPDATE app_routes SET public_path='/apps/hijacked/path' WHERE user_app_id='$app_id'" 'application route public path does not match application identity'
 expect_db_failure "UPDATE app_routes SET upstream_host='release-000000000000' WHERE user_app_id='$app_id'" 'application route upstream host does not match release identity'
 expect_db_failure "UPDATE app_routes SET upstream_port=upstream_port+1 WHERE user_app_id='$app_id'" 'application route upstream port does not match release snapshot'
-expect_db_failure "UPDATE app_routes SET upstream_container='cm-00000000000-$app_id-$source_release' WHERE user_app_id='$app_id'" 'application route container does not match application and release identity'
+expect_db_failure "UPDATE app_routes SET upstream_container='cm-00000000000-$app_id-$source_release' WHERE user_app_id='$app_id'" 'application route container does not match instance and release identity'
 compose up -d --no-build --force-recreate --no-deps app-router >/dev/null
 wait_http "$BASE_URL$public_path" 200
 
@@ -369,7 +385,12 @@ deployment_charge_count="$(db "SELECT count(*) FROM usage_events WHERE user_app_
 stop_worker
 stop_key="control-stop/$marker"
 request POST "$API/apps/$app_id/stop" "$user_token" "$(jq -cn --arg key "$stop_key" '{idempotencyKey:$key}')"
-[[ "$RESPONSE_STATUS" == 202 && "$(response_value .status)" == stopping ]] || { echo 'stop request was not accepted' >&2; exit 1; }
+if [[ "$RESPONSE_STATUS" != 202 || "$(response_value .status)" != stopping ]]; then
+  echo "stop request was not accepted: $RESPONSE_STATUS code=$(response_error_code) body=$(cat "$RESPONSE_FILE")" >&2
+  echo "deployment jobs: $(db "SELECT state FROM deployment_jobs WHERE user_app_id='$app_id' ORDER BY created_at")" >&2
+  echo "restore jobs: $(db "SELECT status FROM app_restore_jobs WHERE user_app_id='$app_id' ORDER BY created_at")" >&2
+  exit 1
+fi
 stop_job_id="$(response_value .stopJobId)"
 [[ "$(db "SELECT status FROM user_apps WHERE id='$app_id'")" == stopping ]] || { echo 'application did not enter stopping state' >&2; exit 1; }
 [[ "$(db "SELECT count(*) FROM app_routes WHERE user_app_id='$app_id'")" == 0 ]] || { echo 'public route was not removed atomically' >&2; exit 1; }

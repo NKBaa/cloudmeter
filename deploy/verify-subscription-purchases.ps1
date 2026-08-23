@@ -58,7 +58,7 @@ try {
   $lowerPlan = Invoke-RestMethod -Method Post "$api/admin/plans" -Headers $adminHeaders -ContentType 'application/json' -Body (@{code="verify-lower-$marker";name="降级验收 $marker"}|ConvertTo-Json -Compress)
   $planID = $plan.id
   $lowerPlanID = $lowerPlan.id
-  $version = @{cyclePriceCents=1000;apps=2;cpuCores=2;memoryGiB=2;systemDiskGiB=10;dataDiskGiB=10;backupStorageGiB=0;backupOperationsPerMonth=0;concurrentDeployments=1;publicIngresses=1;ingressOverageEnabled=$false;egressGiB=1;egressOverageEnabled=$false;creditGrantCents=100;allowedProductIds=@();effectiveAt=(Get-Date).ToUniversalTime().ToString('o')}
+  $version = @{cyclePriceCents=1000;apps=2;cpuCores=2;memoryGiB=2;dataDiskGiB=10;backupStorageGiB=0;backupOperationsPerMonth=0;concurrentDeployments=1;publicIngresses=1;ingressOverageEnabled=$false;egressGiB=1;egressOverageEnabled=$false;creditGrantCents=100;allowedProductIds=@();effectiveAt=(Get-Date).ToUniversalTime().ToString('o')}
   $v1 = Invoke-RestMethod -Method Post "$api/admin/plans/$($plan.id)/versions" -Headers $adminHeaders -ContentType 'application/json' -Body ($version|ConvertTo-Json -Compress)
   $version.cyclePriceCents=500; $version.creditGrantCents=0
   $lower = Invoke-RestMethod -Method Post "$api/admin/plans/$($lowerPlan.id)/versions" -Headers $adminHeaders -ContentType 'application/json' -Body ($version|ConvertTo-Json -Compress)

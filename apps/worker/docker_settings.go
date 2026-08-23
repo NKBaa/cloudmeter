@@ -85,11 +85,15 @@ func pullConfiguredProductImage(ctx context.Context, db *pgxpool.Pool, image str
 		username, password = settings.RegistryUsername, settings.RegistryPassword
 		serverAddress = imageRegistryHost(resolved)
 	}
-	if err = executor.PullWithRegistry(pullCtx, resolved, username, password, serverAddress); err != nil {
-		if pullCtx.Err() == context.DeadlineExceeded {
-			return "", fmt.Errorf("镜像拉取超过管理员设置的 %s 超时：%s", settings.PullTimeout, resolved)
+	// Reuse images that are already present locally so repeated deployments of
+	// the same product version never re-pull the same digest.
+	if executor == nil || !executor.ImageExists(ctx, resolved) {
+		if err = executor.PullWithRegistry(pullCtx, resolved, username, password, serverAddress); err != nil {
+			if pullCtx.Err() == context.DeadlineExceeded {
+				return "", fmt.Errorf("镜像拉取超过管理员设置的 %s 超时：%s", settings.PullTimeout, resolved)
+			}
+			return "", err
 		}
-		return "", err
 	}
 	return resolved, nil
 }

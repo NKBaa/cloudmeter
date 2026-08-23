@@ -154,14 +154,14 @@ func (s *Server) updateProductAvailability(w http.ResponseWriter, r *http.Reques
 	if *q.Enabled {
 		if currentStatus == "retired" {
 			var hasPublishedVersion, hasTestHistory bool
-			if err = tx.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM app_product_versions WHERE product_id=$1 AND published_at IS NOT NULL),
+			if err = tx.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM app_product_versions WHERE product_id=$1 AND published_at IS NOT NULL AND deleted_at IS NULL),
 				EXISTS(SELECT 1 FROM app_product_versions pv JOIN app_product_version_tests t ON t.product_version_id=pv.id WHERE pv.product_id=$1)`, productID).Scan(&hasPublishedVersion, &hasTestHistory); err != nil {
 				s.internalError(w, err)
 				return
 			}
 			targetStatus = restoredProductStatus(hasPublishedVersion, hasTestHistory)
 			if hasPublishedVersion {
-				rows, queryErr := tx.Query(r.Context(), `SELECT runtime_spec FROM app_product_versions WHERE product_id=$1 AND published_at IS NOT NULL ORDER BY version`, productID)
+				rows, queryErr := tx.Query(r.Context(), `SELECT runtime_spec FROM app_product_versions WHERE product_id=$1 AND published_at IS NOT NULL AND deleted_at IS NULL ORDER BY version`, productID)
 				if queryErr != nil {
 					s.internalError(w, queryErr)
 					return
@@ -202,7 +202,7 @@ func (s *Server) updateProductAvailability(w http.ResponseWriter, r *http.Reques
 		var dependentProducts string
 		if err = tx.QueryRow(r.Context(), `SELECT coalesce(string_agg(DISTINCT p.slug,', ' ORDER BY p.slug),'')
 			FROM app_products p JOIN app_product_versions pv ON pv.product_id=p.id
-			WHERE p.id<>$1 AND p.status='published' AND pv.published_at IS NOT NULL
+			WHERE p.id<>$1 AND p.status='published' AND pv.published_at IS NOT NULL AND pv.deleted_at IS NULL
 			  AND EXISTS (SELECT 1 FROM jsonb_array_elements(coalesce(pv.runtime_spec->'dependencies','[]'::jsonb)) dependency WHERE dependency->>'productId'=$1::text)`, productID).Scan(&dependentProducts); err != nil {
 			s.internalError(w, err)
 			return

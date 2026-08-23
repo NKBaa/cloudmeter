@@ -31,3 +31,5 @@ _wsl_deploy_env/
 # local reference sources and temporary acceptance script
 references/
 .codex_tmp_feature_acceptance.ps1
+
+*.exe

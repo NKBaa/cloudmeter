@@ -10,7 +10,7 @@ $a=Session $admin; $ah=@{Authorization="Bearer $($a.Token)"}; $marker=[guid]::Ne
 try {
   $createdUser=Invoke-RestMethod -Method Post "$api/admin/users" -Headers $ah -ContentType 'application/json' -Body (@{email=$email;password=$password;displayName='套餐额度验收';role='user'}|ConvertTo-Json -Compress); $userID=$createdUser.id
   $plan=Invoke-RestMethod -Method Post "$api/admin/plans" -Headers $ah -ContentType 'application/json' -Body (@{code=$planCode;name="额度验收 $marker"}|ConvertTo-Json -Compress)
-  $versionBody=@{cyclePriceCents=0;apps=1;cpuCores=1;memoryGiB=1;systemDiskGiB=5;dataDiskGiB=0;backupStorageGiB=0;backupOperationsPerMonth=0;concurrentDeployments=1;publicIngresses=1;ingressOverageEnabled=$false;egressGiB=1;egressOverageEnabled=$false;creditGrantCents=1234;allowedProductIds=@();effectiveAt=(Get-Date).ToUniversalTime().ToString('o')}
+  $versionBody=@{cyclePriceCents=0;apps=1;cpuCores=1;memoryGiB=1;dataDiskGiB=0;backupStorageGiB=0;backupOperationsPerMonth=0;concurrentDeployments=1;publicIngresses=1;ingressOverageEnabled=$false;egressGiB=1;egressOverageEnabled=$false;creditGrantCents=1234;allowedProductIds=@();effectiveAt=(Get-Date).ToUniversalTime().ToString('o')}
   $v1=Invoke-RestMethod -Method Post "$api/admin/plans/$($plan.id)/versions" -Headers $ah -ContentType 'application/json' -Body ($versionBody|ConvertTo-Json -Compress)
   $assignBody=@{planVersionId=$v1.id;endsAt=$null}|ConvertTo-Json -Compress
   Invoke-RestMethod -Method Put "$api/admin/users/$userID/subscription" -Headers $ah -ContentType 'application/json' -Body $assignBody|Out-Null

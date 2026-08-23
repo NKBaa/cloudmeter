@@ -54,7 +54,7 @@ user_auth=(-H "Authorization: Bearer $ut" -H 'Content-Type: application/json')
 [[ "$(curl -sS -o /dev/null -w '%{http_code}' "${auth[@]}" -d '{"amountCents":1,"businessRef":"subscription-credit/reserved","note":"must fail"}' "$API/admin/users/$user_id/credits")" == 400 ]]
 
 plan_id="$(curl -fsS "${auth[@]}" -d "{\"code\":\"verify-credit-$marker\",\"name\":\"Credit verification $marker\"}" "$API/admin/plans" | jq -r .id)"
-body1="$(jq -cn --arg effectiveAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{cyclePriceCents:0,apps:1,cpuCores:1,memoryGiB:1,systemDiskGiB:5,dataDiskGiB:0,backupStorageGiB:0,backupOperationsPerMonth:0,concurrentDeployments:1,publicIngresses:1,ingressOverageEnabled:false,egressGiB:1,egressOverageEnabled:false,creditGrantCents:1234,allowedProductIds:[],effectiveAt:$effectiveAt}')"
+body1="$(jq -cn --arg effectiveAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{cyclePriceCents:0,apps:1,cpuCores:1,memoryGiB:1,dataDiskGiB:0,backupStorageGiB:0,backupOperationsPerMonth:0,concurrentDeployments:1,publicIngresses:1,ingressOverageEnabled:false,egressGiB:1,egressOverageEnabled:false,creditGrantCents:1234,allowedProductIds:[],effectiveAt:$effectiveAt}')"
 v1="$(curl -fsS "${auth[@]}" -d "$body1" "$API/admin/plans/$plan_id/versions" | jq -r .id)"
 assign1="$(jq -cn --arg id "$v1" '{planVersionId:$id,endsAt:null}')"
 curl -fsS "${auth[@]}" -X PUT -d "$assign1" "$API/admin/users/$user_id/subscription" >/dev/null

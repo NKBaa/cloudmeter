@@ -44,6 +44,7 @@ type containerCreate struct {
 	Env              []string          `json:"Env,omitempty"`
 	Cmd              []string          `json:"Cmd,omitempty"`
 	Labels           map[string]string `json:"Labels,omitempty"`
+	ExposedPorts     map[string]any    `json:"ExposedPorts,omitempty"`
 	HostConfig       map[string]any    `json:"HostConfig,omitempty"`
 	NetworkingConfig map[string]any    `json:"NetworkingConfig,omitempty"`
 }
@@ -83,10 +84,34 @@ func (e *DockerExecutor) Images(ctx context.Context) ([]DockerImage, error) {
 	return items, nil
 }
 
+// ImageExists reports whether an image is already present locally, matching by
+// ID or the repository@digest reference so repeated deployments reuse the
+// cached image instead of re-pulling it.
+func (e *DockerExecutor) ImageExists(ctx context.Context, reference string) bool {
+	var rawImages []struct {
+		ID       string   `json:"Id"`
+		RepoTags []string `json:"RepoTags"`
+		RepoDigests []string `json:"RepoDigests"`
+	}
+	if err := e.request(ctx, http.MethodGet, "/images/json?all=false", nil, &rawImages); err != nil {
+		return false
+	}
+	for _, image := range rawImages {
+		if image.ID == reference {
+			return true
+		}
+		for _, digest := range image.RepoDigests {
+			if digest == reference {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (e *DockerExecutor) RemoveImage(ctx context.Context, imageID string) error {
 	if !strings.HasPrefix(imageID, "sha256:") || len(imageID) != 71 {
-		return fmt.Errorf("invalid docker image ID")
-	}
+		return fmt.Errorf("invalid docker image ID")	}
 	return e.request(ctx, http.MethodDelete, "/images/"+urlEscape(imageID)+"?force=false&noprune=false", nil, nil)
 }
 
@@ -496,9 +521,17 @@ func (e *DockerExecutor) waitComposeServiceReady(ctx context.Context, containerI
 	}
 }
 
-func (e *DockerExecutor) Create(ctx context.Context, name, image, network string, aliases []string, spec map[string]any) error {
+// PortMapping describes an optional direct host-port publish for a container.
+// HostPort 0 requests Docker to auto-assign a free host port.
+type PortMapping struct {
+	Enabled      bool
+	InternalPort int // container port to publish
+	HostPort     int // 0 = auto-assign
+}
+
+func (e *DockerExecutor) Create(ctx context.Context, name, image, network string, aliases []string, spec map[string]any, mapping *PortMapping) (string, error) {
 	if err := e.assertNetworkOwner(ctx, network); err != nil {
-		return err
+		return "", err
 	}
 	env := []string{}
 	if values, ok := spec["env"].(map[string]any); ok {
@@ -509,20 +542,20 @@ func (e *DockerExecutor) Create(ctx context.Context, name, image, network string
 	hostConfig := map[string]any{"RestartPolicy": map[string]any{"Name": "unless-stopped"}, "SecurityOpt": []string{"no-new-privileges:true"}}
 	resources, err := RuntimeResources(spec, false)
 	if err != nil {
-		return err
+		return "", err
 	}
 	hostConfig["Memory"] = int64(resources.MemoryMiB * 1024 * 1024)
 	hostConfig["NanoCpus"] = int64(resources.CPUCores * 1_000_000_000)
 	storage, err := RuntimeStorage(spec, false)
 	if err != nil {
-		return err
+		return "", err
 	}
 	hostConfig["StorageOpt"] = map[string]string{"size": fmt.Sprintf("%gG", storage.SystemDiskGiB)}
 	binds := []string{}
 	for _, mount := range VolumeMounts(spec) {
 		volume := AppVolumeNameForOwner(e.owner, fmt.Sprint(spec["appId"]), mount.Key)
 		if err := e.EnsureVolume(ctx, volume); err != nil {
-			return err
+			return "", err
 		}
 		binds = append(binds, volume+":"+mount.MountPath)
 	}
@@ -531,21 +564,92 @@ func (e *DockerExecutor) Create(ctx context.Context, name, image, network string
 	}
 	command, err := RuntimeCommand(spec)
 	if err != nil {
-		return err
+		return "", err
 	}
 	endpoint := map[string]any{}
 	if len(aliases) > 0 {
 		endpoint["Aliases"] = aliases
 	}
-	body := containerCreate{Image: image, Env: env, Cmd: command, Labels: e.managedLabels(map[string]string{"cloudmeter.app_id": fmt.Sprint(spec["appId"])}), HostConfig: hostConfig, NetworkingConfig: map[string]any{"EndpointsConfig": map[string]any{network: endpoint}}}
+	endpoints := map[string]any{network: endpoint}
+	exposed := map[string]any{}
+	if mapping != nil && mapping.Enabled && mapping.InternalPort >= 1 && mapping.InternalPort <= 65535 {
+		portKey := fmt.Sprintf("%d/tcp", mapping.InternalPort)
+		host := fmt.Sprintf("%d", mapping.HostPort)
+		exposed[portKey] = struct{}{}
+		hostConfig["PortBindings"] = map[string]any{portKey: []any{map[string]any{"HostPort": host}}}
+		// Internal user networks cannot publish host ports. Attach the default
+		// bridge as a secondary network so the direct host mapping materializes,
+		// while the app keeps its service aliases on the user network.
+		endpoints["bridge"] = map[string]any{}
+	}
+	body := containerCreate{Image: image, Env: env, Cmd: command, Labels: e.managedLabels(map[string]string{"cloudmeter.app_id": fmt.Sprint(spec["appId"])}), ExposedPorts: exposed, HostConfig: hostConfig, NetworkingConfig: map[string]any{"EndpointsConfig": endpoints}}
 	var out struct {
 		ID string `json:"Id"`
 	}
-	return e.request(ctx, http.MethodPost, "/containers/create?name="+urlEscape(name), body, &out)
+	if err := e.request(ctx, http.MethodPost, "/containers/create?name="+urlEscape(name), body, &out); err != nil {
+		return "", err
+	}
+	return out.ID, nil
 }
 
 // CreateProductTest starts from the same immutable runtime specification as a
 // user release, but maps declared data volumes to disposable tmpfs mounts.
+// NetworkGateway returns the default gateway IP of a Docker network, used to
+// reach host-published ports from helper containers on the default bridge.
+func (e *DockerExecutor) NetworkGateway(ctx context.Context, name string) (string, error) {
+	var out struct {
+		IPAM struct {
+			Config []struct {
+				Gateway string `json:"Gateway"`
+			} `json:"Config"`
+		} `json:"IPAM"`
+	}
+	if err := e.request(ctx, http.MethodGet, "/networks/"+urlEscape(name), nil, &out); err != nil {
+		return "", err
+	}
+	for _, config := range out.IPAM.Config {
+		if config.Gateway != "" {
+			return config.Gateway, nil
+		}
+	}
+	return "", fmt.Errorf("docker network %s has no gateway", name)
+}
+
+// PublishedPort returns the host port Docker bound to the given container
+// internal port. Used to resolve auto-assigned host ports after creation.
+// Docker populates the published binding shortly after the container starts,
+// so the lookup retries briefly before giving up.
+func (e *DockerExecutor) PublishedPort(ctx context.Context, containerID string, internalPort int) (int, error) {
+	key := fmt.Sprintf("%d/tcp", internalPort)
+	for attempt := 0; attempt < 10; attempt++ {
+		var inspected struct {
+			NetworkSettings struct {
+				Ports map[string][]struct {
+					HostPort string `json:"HostPort"`
+				} `json:"Ports"`
+			} `json:"NetworkSettings"`
+		}
+		if err := e.request(ctx, http.MethodGet, "/containers/"+urlEscape(containerID)+"/json", nil, &inspected); err != nil {
+			return 0, err
+		}
+		for _, binding := range inspected.NetworkSettings.Ports[key] {
+			if binding.HostPort != "" {
+				if port, err := strconv.Atoi(binding.HostPort); err == nil {
+					return port, nil
+				}
+			}
+		}
+		if attempt < 9 {
+			select {
+			case <-time.After(300 * time.Millisecond):
+			case <-ctx.Done():
+				return 0, ctx.Err()
+			}
+		}
+	}
+	return 0, fmt.Errorf("no published host port found for container internal port %d", internalPort)
+}
+
 func (e *DockerExecutor) CreateProductTest(ctx context.Context, name, image, network string, aliases []string, spec map[string]any) error {
 	if err := e.assertNetworkOwner(ctx, network); err != nil {
 		return err

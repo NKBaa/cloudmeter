@@ -216,6 +216,8 @@ func (s *Server) routes() {
 	s.mux.Handle("PUT /api/apps/{appID}/secrets/{key}", s.authenticate(http.HandlerFunc(s.putAppSecret)))
 	s.mux.Handle("GET /api/apps/{appID}/route", s.authenticate(http.HandlerFunc(s.appRoute)))
 	s.mux.Handle("POST /api/apps/{appID}/access", s.authenticate(http.HandlerFunc(s.createAppAccess)))
+	s.mux.Handle("GET /api/apps/{appID}/logs", s.authenticate(http.HandlerFunc(s.getAppLogs)))
+	s.mux.Handle("POST /api/apps/{appID}/logs/refresh", s.authenticate(http.HandlerFunc(s.requestAppLogRefresh)))
 	s.mux.Handle("POST /api/apps/{appID}/stop", s.authenticate(http.HandlerFunc(s.stopApp)))
 	s.mux.Handle("POST /api/apps/{appID}/start", s.authenticate(http.HandlerFunc(s.startApp)))
 	s.mux.Handle("GET /api/apps/{appID}/backups", s.authenticate(http.HandlerFunc(s.listAppBackups)))
@@ -307,6 +309,9 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/admin/settings/turnstile", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.getTurnstileSettings))))
 	s.mux.Handle("GET /api/admin/settings/quota", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.getQuotaSettings))))
 	s.mux.Handle("PUT /api/admin/settings/quota", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.updateQuotaSettings))))
+	s.mux.Handle("GET /api/admin/settings/logs", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.getLogRetentionSettings))))
+	s.mux.Handle("PUT /api/admin/settings/logs", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.updateLogRetentionSettings))))
+	s.mux.Handle("POST /api/admin/logs/clear", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.clearRuntimeLogs))))
 	s.mux.Handle("PUT /api/admin/settings/turnstile", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.updateTurnstileSettings))))
 	s.mux.Handle("GET /api/admin/settings/oauth", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.getOAuthSettings))))
 	s.mux.Handle("PUT /api/admin/settings/oauth/{provider}", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.updateOAuthSettings))))
@@ -496,9 +501,9 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	var enabled, initialized, verificationRequired, blockAliases bool
+	var enabled, initialized, verificationRequired, blockAliases, passwordRegistrationEnabled bool
 	var whitelist []string
-	if err = tx.QueryRow(r.Context(), "SELECT registration_enabled, initialized_at IS NOT NULL, email_verification_required, email_domain_whitelist, block_email_aliases FROM system_state WHERE singleton FOR UPDATE").Scan(&enabled, &initialized, &verificationRequired, &whitelist, &blockAliases); err != nil {
+	if err = tx.QueryRow(r.Context(), "SELECT registration_enabled, initialized_at IS NOT NULL, email_verification_required, email_domain_whitelist, block_email_aliases, password_registration_enabled FROM system_state WHERE singleton FOR UPDATE").Scan(&enabled, &initialized, &verificationRequired, &whitelist, &blockAliases, &passwordRegistrationEnabled); err != nil {
 		s.internalError(w, err)
 		return
 	}
@@ -508,6 +513,10 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 	}
 	if !enabled {
 		writeError(w, http.StatusForbidden, "registration_disabled", "registration is disabled by the administrator")
+		return
+	}
+	if !passwordRegistrationEnabled {
+		writeError(w, http.StatusForbidden, "password_registration_disabled", "password registration has been disabled by the administrator")
 		return
 	}
 	if normalized, policyError := validatePolicyEmail(req.Email, whitelist, blockAliases); policyError != "" {
@@ -600,6 +609,15 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	err := s.db.QueryRow(r.Context(), `SELECT id,email,display_name,password_hash,status FROM users WHERE lower(email)=lower($1)`, strings.TrimSpace(req.Email)).Scan(&id, &email, &displayName, &passwordHash, &status)
 	if err != nil || status != "active" || bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(req.Password)) != nil {
 		writeError(w, http.StatusUnauthorized, "invalid_credentials", "email or password is incorrect")
+		return
+	}
+	var passwordLoginEnabled bool
+	if err = s.db.QueryRow(r.Context(), "SELECT password_login_enabled FROM system_state WHERE singleton").Scan(&passwordLoginEnabled); err != nil {
+		s.internalError(w, err)
+		return
+	}
+	if !passwordLoginEnabled {
+		writeError(w, http.StatusForbidden, "password_login_disabled", "password login has been disabled by the administrator")
 		return
 	}
 	tokenBytes := make([]byte, 32)
@@ -708,22 +726,18 @@ type createVersionRequest struct {
 
 func (s *Server) listProducts(w http.ResponseWriter, r *http.Request) {
 	p, _ := r.Context().Value(principalKey).(principal)
-	rows, err := s.db.Query(r.Context(), `SELECT p.id,p.slug,p.name,p.icon_url,pv.id,pv.version,pv.image_digest,pv.runtime_spec,pv.route_spec,pv.health_spec,pv.update_spec,
-		true AS deployable
-		FROM app_products p JOIN app_product_versions pv ON pv.product_id=p.id
-		WHERE p.status='published' AND p.deleted_at IS NULL AND pv.published_at IS NOT NULL ORDER BY p.name,pv.version DESC`)
+	rows, err := s.db.Query(r.Context(), `SELECT p.id,p.slug,p.name,p.icon_url,pv.id,pv.version,coalesce(pv.version_label,''),pv.image_digest,pv.runtime_spec,pv.route_spec,pv.health_spec,pv.update_spec
+		FROM app_products p LEFT JOIN app_product_versions pv ON pv.product_id=p.id AND pv.published_at IS NOT NULL AND pv.deleted_at IS NULL
+		WHERE p.status='published' AND p.deleted_at IS NULL ORDER BY p.name,pv.version DESC`)
 	if err != nil {
 		s.internalError(w, err)
 		return
 	}
 	defer rows.Close()
-	type item struct {
-		ID                  string         `json:"id"`
-		Slug                string         `json:"slug"`
-		Name                string         `json:"name"`
-		IconURL             string         `json:"iconUrl"`
+	type versionItem struct {
 		VersionID           string         `json:"versionId"`
 		Version             int            `json:"version"`
+		VersionLabel        string         `json:"versionLabel"`
 		ImageDigest         string         `json:"imageDigest"`
 		RuntimeSpec         map[string]any `json:"runtimeSpec"`
 		RouteSpec           map[string]any `json:"routeSpec"`
@@ -732,25 +746,52 @@ func (s *Server) listProducts(w http.ResponseWriter, r *http.Request) {
 		Deployable          bool           `json:"deployable"`
 		MissingDependencies []string       `json:"missingDependencies"`
 	}
-	items := make([]item, 0)
+	type productItem struct {
+		ID       string         `json:"id"`
+		Slug     string         `json:"slug"`
+		Name     string         `json:"name"`
+		IconURL  string         `json:"iconUrl"`
+		Versions []versionItem  `json:"versions"`
+	}
+	order := make([]string, 0)
+	groups := make(map[string]*productItem)
 	for rows.Next() {
-		var v item
-		if err := rows.Scan(&v.ID, &v.Slug, &v.Name, &v.IconURL, &v.VersionID, &v.Version, &v.ImageDigest, &v.RuntimeSpec, &v.RouteSpec, &v.HealthSpec, &v.UpdateSpec, &v.Deployable); err != nil {
+		var id, slug, name, icon string
+		var versionID *string
+		var version int
+		var versionLabel string
+		var imageDigest string
+		var runtimeSpec, routeSpec, healthSpec, updateSpec map[string]any
+		if err := rows.Scan(&id, &slug, &name, &icon, &versionID, &version, &versionLabel, &imageDigest, &runtimeSpec, &routeSpec, &healthSpec, &updateSpec); err != nil {
 			s.internalError(w, err)
 			return
 		}
-		missing, dependencyErr := missingRuntimeDependencies(r.Context(), s.db, p.ID, "", v.RuntimeSpec)
+		product, ok := groups[id]
+		if !ok {
+			product = &productItem{ID: id, Slug: slug, Name: name, IconURL: icon, Versions: []versionItem{}}
+			groups[id] = product
+			order = append(order, id)
+		}
+		if versionID == nil {
+			continue
+		}
+		v := versionItem{VersionID: *versionID, Version: version, VersionLabel: versionLabel, ImageDigest: imageDigest, RuntimeSpec: runtimeSpec, RouteSpec: routeSpec, HealthSpec: healthSpec, UpdateSpec: updateSpec, Deployable: true}
+		missing, dependencyErr := missingRuntimeDependencies(r.Context(), s.db, p.ID, "", runtimeSpec)
 		if dependencyErr != nil {
 			s.internalError(w, dependencyErr)
 			return
 		}
 		v.MissingDependencies = dependencyLabels(missing)
-		v.Deployable = v.Deployable && len(missing) == 0
-		items = append(items, v)
+		v.Deployable = len(missing) == 0
+		product.Versions = append(product.Versions, v)
 	}
 	if err := rows.Err(); err != nil {
 		s.internalError(w, err)
 		return
+	}
+	items := make([]productItem, 0, len(order))
+	for _, id := range order {
+		items = append(items, *groups[id])
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"products": items})
 }
@@ -765,13 +806,14 @@ type createAppRequest struct {
 }
 
 type selectedResources struct {
-	CPUCores      *float64             `json:"cpuCores"`
-	MemoryMiB     *float64             `json:"memoryMiB"`
-	DataVolumeGiB *float64             `json:"dataVolumeGiB"`
-	VolumeSizes   map[string]float64   `json:"volumeSizes"`
-	Command       []string             `json:"command"`
-	Environment   map[string]string    `json:"environment"`
-	Dependencies  []selectedDependency `json:"dependencies"`
+	CPUCores          *float64             `json:"cpuCores"`
+	MemoryMiB         *float64             `json:"memoryMiB"`
+	DataVolumeGiB     *float64             `json:"dataVolumeGiB"`
+	VolumeSizes       map[string]float64   `json:"volumeSizes"`
+	Command           []string             `json:"command"`
+	Environment       map[string]string    `json:"environment"`
+	Dependencies      []selectedDependency `json:"dependencies"`
+	PortMappingEnabled *bool               `json:"portMappingEnabled"`
 }
 
 func editableRuntimeOption(spec map[string]any, key string, legacyDefault bool) bool {
@@ -826,15 +868,20 @@ func selectedRuntimeSpec(template map[string]any, selected selectedResources) (m
 	result["cpuCores"], result["memoryMiB"], result["systemDiskGiB"] = cpu, memory, runtimepolicy.DefaultSystemDiskGiB
 	minimumVolume, _ := runtimepolicy.RuntimeDataVolumeGiB(result, false)
 	chosenVolume := minimumVolume
+	// Editable-data-volume semantics must match the DB parentage guard, which
+	// only treats a volume as overridable when editableOptions.dataVolume is
+	// explicitly true. Without an explicit declaration the release snapshot
+	// must stay byte-for-byte equal to the immutable product version.
+	dataVolumeEditable := editableRuntimeOption(result, "dataVolume", false)
 	if selected.DataVolumeGiB != nil {
-		if !editableRuntimeOption(result, "dataVolume", true) {
+		if !dataVolumeEditable {
 			return nil, fmt.Errorf("data volume capacity is not editable for this product")
 		}
 		chosenVolume = *selected.DataVolumeGiB
 	}
 	// Accept the old per-volume request shape during rolling upgrades, but fold
 	// it into the one shared application volume capacity.
-	if len(selected.VolumeSizes) > 0 && !editableRuntimeOption(result, "dataVolume", true) {
+	if len(selected.VolumeSizes) > 0 && !dataVolumeEditable {
 		return nil, fmt.Errorf("data volume capacity is not editable for this product")
 	}
 	for _, chosen := range selected.VolumeSizes {
@@ -845,21 +892,22 @@ func selectedRuntimeSpec(template map[string]any, selected selectedResources) (m
 	if chosenVolume < minimumVolume {
 		return nil, fmt.Errorf("data volume capacity must be at least %.0f GiB", minimumVolume)
 	}
-	if volumes, ok := result["volumes"].([]any); ok && len(volumes) > 0 {
-		for _, raw := range volumes {
-			volume, ok := raw.(map[string]any)
-			if !ok {
-				continue
+	if dataVolumeEditable {
+		if volumes, ok := result["volumes"].([]any); ok && len(volumes) > 0 {
+			for _, raw := range volumes {
+				volume, ok := raw.(map[string]any)
+				if !ok {
+					continue
+				}
+				volume["sizeGiB"] = chosenVolume
 			}
-			volume["sizeGiB"] = chosenVolume
+			result["dataVolumeGiB"] = chosenVolume
+		} else {
+			// A zero-capacity data volume is not a real resource and must not
+			// be added to the snapshot, otherwise the parentage guard rejects
+			// deployment.
+			delete(result, "dataVolumeGiB")
 		}
-		result["dataVolumeGiB"] = chosenVolume
-	} else {
-		// Keep the selected runtime snapshot byte-for-byte compatible with the
-		// immutable product version when the product has no persistent mounts.
-		// A zero-capacity data volume is not a real resource and must not be
-		// added to the snapshot, otherwise the parentage guard rejects deployment.
-		delete(result, "dataVolumeGiB")
 	}
 	if selected.Command != nil {
 		if !editableRuntimeOption(result, "command", false) {
@@ -868,6 +916,9 @@ func selectedRuntimeSpec(template map[string]any, selected selectedResources) (m
 		result["command"] = selected.Command
 	}
 	if selected.Environment != nil {
+		if !editableRuntimeOption(result, "environment", false) {
+			return nil, fmt.Errorf("environment variables are not editable for this product")
+		}
 		environment, _ := result["env"].(map[string]any)
 		if environment == nil {
 			environment = map[string]any{}
@@ -1008,7 +1059,7 @@ func (s *Server) estimatedMonthlyAppCents(ctx context.Context, userID, appID str
 func (s *Server) listApps(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	p, _ := r.Context().Value(principalKey).(principal)
-	rows, err := s.db.Query(r.Context(), "SELECT a.id,a.instance_id,a.slug,a.service_slug,a.status,coalesce(a.suspension_reason,''),p.slug,coalesce(a.last_successful_release_id::text,''),coalesce(prev.id::text,''),coalesce(j.id::text,''),coalesce(j.state::text,''),coalesce(j.last_error,''),coalesce(j.updated_at,a.created_at),coalesce(ar.public_path,''),coalesce(current_release.immutable_snapshot->'runtime_spec','{}'::jsonb) FROM user_apps a JOIN app_products p ON p.id=a.product_id LEFT JOIN app_releases current_release ON current_release.id=a.last_successful_release_id LEFT JOIN app_routes ar ON ar.user_app_id=a.id AND ar.release_id=a.last_successful_release_id LEFT JOIN LATERAL (SELECT id FROM app_releases WHERE user_app_id=a.id AND state IN ('active','superseded') AND release_number < coalesce(current_release.release_number,2147483647) ORDER BY release_number DESC LIMIT 1) prev ON true LEFT JOIN LATERAL (SELECT id,state,last_error,updated_at FROM deployment_jobs WHERE user_app_id=a.id ORDER BY created_at DESC LIMIT 1) j ON true WHERE a.user_id=$1 AND a.deleted_at IS NULL ORDER BY a.created_at DESC", p.ID)
+	rows, err := s.db.Query(r.Context(), "SELECT a.id,a.instance_id,a.slug,a.service_slug,a.status,coalesce(a.suspension_reason,''),p.slug,coalesce(a.last_successful_release_id::text,''),coalesce(prev.id::text,''),coalesce(j.id::text,''),coalesce(j.state::text,''),coalesce(j.last_error,''),coalesce(j.updated_at,a.created_at),coalesce(ar.public_path,''),coalesce(ar.host_port,0),a.port_mapping_enabled,coalesce(current_release.immutable_snapshot->'runtime_spec','{}'::jsonb) FROM user_apps a JOIN app_products p ON p.id=a.product_id LEFT JOIN app_releases current_release ON current_release.id=a.last_successful_release_id LEFT JOIN app_routes ar ON ar.user_app_id=a.id AND ar.release_id=a.last_successful_release_id LEFT JOIN LATERAL (SELECT id FROM app_releases WHERE user_app_id=a.id AND state IN ('active','superseded') AND release_number < coalesce(current_release.release_number,2147483647) ORDER BY release_number DESC LIMIT 1) prev ON true LEFT JOIN LATERAL (SELECT id,state,last_error,updated_at FROM deployment_jobs WHERE user_app_id=a.id ORDER BY created_at DESC LIMIT 1) j ON true WHERE a.user_id=$1 AND a.deleted_at IS NULL ORDER BY a.created_at DESC", p.ID)
 	if err != nil {
 		s.internalError(w, err)
 		return
@@ -1029,6 +1080,8 @@ func (s *Server) listApps(w http.ResponseWriter, r *http.Request) {
 		JobLastError          string     `json:"jobLastError,omitempty"`
 		UpdatedAt             time.Time  `json:"updatedAt"`
 		PublicPath            string     `json:"publicPath,omitempty"`
+		HostPort              int        `json:"hostPort"`
+		PortMappingEnabled    bool       `json:"portMappingEnabled"`
 		CPUCores              float64    `json:"cpuCores"`
 		MemoryMiB             float64    `json:"memoryMiB"`
 		CPUUsageCores         float64    `json:"cpuUsageCores"`
@@ -1041,7 +1094,7 @@ func (s *Server) listApps(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var item appView
 		var runtimeSpec map[string]any
-		if err := rows.Scan(&item.ID, &item.InstanceID, &item.Slug, &item.ServiceSlug, &item.Status, &item.SuspensionReason, &item.ProductSlug, &item.LastReleaseID, &item.PreviousReleaseID, &item.JobID, &item.JobState, &item.JobLastError, &item.UpdatedAt, &item.PublicPath, &runtimeSpec); err != nil {
+		if err := rows.Scan(&item.ID, &item.InstanceID, &item.Slug, &item.ServiceSlug, &item.Status, &item.SuspensionReason, &item.ProductSlug, &item.LastReleaseID, &item.PreviousReleaseID, &item.JobID, &item.JobState, &item.JobLastError, &item.UpdatedAt, &item.PublicPath, &item.HostPort, &item.PortMappingEnabled, &runtimeSpec); err != nil {
 			s.internalError(w, err)
 			return
 		}
@@ -1059,6 +1112,40 @@ func (s *Server) listApps(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]any{"apps": items})
+}
+
+// nextAppSlugCandidate produces the candidate for a given attempt index. The
+// first attempt keeps the base slug; later attempts append a numeric suffix
+// while staying within the slug length limit and never ending on a dash.
+func nextAppSlugCandidate(base string, attempt int) string {
+	if attempt <= 0 {
+		return base
+	}
+	suffix := fmt.Sprintf("%d", attempt+1)
+	core := strings.TrimRight(base, "-")
+	maxCore := 63 - len(suffix) - 1
+	if len(core) > maxCore {
+		core = strings.TrimRight(core[:maxCore], "-")
+	}
+	return core + "-" + suffix
+}
+
+// allocateUserAppSlug returns a slug unique for the user across both the slug
+// and service_slug columns. When the requested base slug is already taken it
+// appends the next available numeric suffix, so the same user can deploy the
+// same product multiple times (e.g. sillytavern, sillytavern-2, sillytavern-3).
+func allocateUserAppSlug(ctx context.Context, tx pgx.Tx, userID, base string) (string, error) {
+	for attempt := 0; attempt < 512; attempt++ {
+		candidate := nextAppSlugCandidate(base, attempt)
+		var taken bool
+		if err := tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM user_apps WHERE user_id=$1 AND (slug=$2 OR service_slug=$2) AND deleted_at IS NULL)", userID, candidate).Scan(&taken); err != nil {
+			return "", err
+		}
+		if !taken {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("no available application slug for %q", base)
 }
 
 func (s *Server) createApp(w http.ResponseWriter, r *http.Request) {
@@ -1103,7 +1190,7 @@ func (s *Server) createApp(w http.ResponseWriter, r *http.Request) {
 	}
 	var productSlug, imageDigest string
 	var runtimeSpec, routeSpec, healthSpec, updateSpec map[string]any
-	err = tx.QueryRow(r.Context(), `SELECT p.slug,pv.image_digest,pv.runtime_spec,pv.route_spec,pv.health_spec,pv.update_spec FROM app_products p JOIN app_product_versions pv ON pv.product_id=p.id WHERE p.id=$1 AND pv.id=$2 AND p.status='published' AND pv.published_at IS NOT NULL AND pv.archived_at IS NULL`, req.ProductID, req.VersionID).Scan(&productSlug, &imageDigest, &runtimeSpec, &routeSpec, &healthSpec, &updateSpec)
+	err = tx.QueryRow(r.Context(), `SELECT p.slug,pv.image_digest,pv.runtime_spec,pv.route_spec,pv.health_spec,pv.update_spec FROM app_products p JOIN app_product_versions pv ON pv.product_id=p.id WHERE p.id=$1 AND pv.id=$2 AND p.status='published' AND pv.published_at IS NOT NULL AND pv.archived_at IS NULL AND pv.deleted_at IS NULL`, req.ProductID, req.VersionID).Scan(&productSlug, &imageDigest, &runtimeSpec, &routeSpec, &healthSpec, &updateSpec)
 	if err != nil {
 		writeError(w, 404, "template_unavailable", "published product version not found")
 		return
@@ -1141,12 +1228,24 @@ func (s *Server) createApp(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "validation_failed", err.Error())
 		return
 	}
-	serviceSlug := req.Slug
+	appSlug, slugErr := allocateUserAppSlug(r.Context(), tx, p.ID, req.Slug)
+	if slugErr != nil {
+		s.internalError(w, slugErr)
+		return
+	}
+	portMappingEnabled := false
+	if req.Resources.PortMappingEnabled != nil {
+		portMappingEnabled = *req.Resources.PortMappingEnabled
+	}
+	if portMappingEnabled && !routePortMappingAvailable(routeSpec) {
+		writeError(w, 400, "invalid_deployment_configuration", "port mapping is not available for this product version")
+		return
+	}
 	var appID string
-	err = tx.QueryRow(r.Context(), `INSERT INTO user_apps(user_id,product_id,slug,service_slug,status) VALUES($1,$2,$3,$4,'deploying') RETURNING id`, p.ID, req.ProductID, req.Slug, serviceSlug).Scan(&appID)
+	err = tx.QueryRow(r.Context(), `INSERT INTO user_apps(user_id,product_id,slug,service_slug,status,port_mapping_enabled) VALUES($1,$2,$3,$4,'deploying',$5) RETURNING id`, p.ID, req.ProductID, appSlug, appSlug, portMappingEnabled).Scan(&appID)
 	if err != nil {
-		if strings.Contains(err.Error(), "user_apps_user_id_slug_key") {
-			writeError(w, 409, "app_slug_exists", "app slug already exists")
+		if strings.Contains(err.Error(), "user_apps_user_id_slug_key") || strings.Contains(err.Error(), "user_apps_user_id_service_slug_key") {
+			writeError(w, 409, "slug_contention", "并发部署发生应用标识冲突，请重试")
 			return
 		}
 		s.internalError(w, err)
@@ -1194,7 +1293,7 @@ func (s *Server) createApp(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, err)
 		return
 	}
-	writeJSON(w, 201, map[string]any{"appId": appID, "releaseId": releaseID, "jobId": jobID, "status": "deploying"})
+	writeJSON(w, 201, map[string]any{"appId": appID, "releaseId": releaseID, "jobId": jobID, "status": "deploying", "slug": appSlug})
 }
 
 func (s *Server) billingSummary(w http.ResponseWriter, r *http.Request) {
@@ -1451,9 +1550,10 @@ func (s *Server) createProduct(w http.ResponseWriter, r *http.Request) {
 func (s *Server) adminListProducts(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.db.Query(r.Context(), `SELECT p.id,p.slug,p.name,p.icon_url,p.status,p.created_at,pv.id,pv.version,pv.version_label,pv.image_digest,
 		coalesce(pv.runtime_spec,'{}'::jsonb),coalesce(pv.route_spec,'{}'::jsonb),coalesce(pv.health_spec,'{}'::jsonb),coalesce(pv.update_spec,'{}'::jsonb),pv.published_at,
+		(SELECT count(*) FROM app_releases r WHERE r.product_version_id=pv.id),
 		t.id::text,t.state,t.attempts,t.last_error,t.created_at,t.updated_at,t.completed_at
 		FROM app_products p
-		LEFT JOIN app_product_versions pv ON pv.product_id=p.id AND pv.archived_at IS NULL
+		LEFT JOIN app_product_versions pv ON pv.product_id=p.id AND pv.archived_at IS NULL AND pv.deleted_at IS NULL
 		LEFT JOIN LATERAL (SELECT id,state,attempts,last_error,created_at,updated_at,completed_at FROM app_product_version_tests WHERE product_version_id=pv.id ORDER BY created_at DESC LIMIT 1) t ON true
 		WHERE p.deleted_at IS NULL ORDER BY p.created_at DESC,pv.version DESC`)
 	if err != nil {
@@ -1471,6 +1571,7 @@ func (s *Server) adminListProducts(w http.ResponseWriter, r *http.Request) {
 		HealthSpec   map[string]any `json:"healthSpec"`
 		UpdateSpec   map[string]any `json:"updateSpec"`
 		PublishedAt  *time.Time     `json:"publishedAt"`
+		ReleaseCount int            `json:"releaseCount"`
 		LatestTest   *struct {
 			ID          string     `json:"id"`
 			State       string     `json:"state"`
@@ -1499,10 +1600,11 @@ func (s *Server) adminListProducts(w http.ResponseWriter, r *http.Request) {
 		var number *int
 		var runtimeSpec, routeSpec, healthSpec, updateSpec map[string]any
 		var published *time.Time
+		var releaseCount *int
 		var testID, testState, testError *string
 		var testAttempts *int
 		var testCreated, testUpdated, testCompleted *time.Time
-		if err := rows.Scan(&id, &slug, &name, &iconURL, &status, &created, &versionID, &number, &versionLabel, &digest, &runtimeSpec, &routeSpec, &healthSpec, &updateSpec, &published, &testID, &testState, &testAttempts, &testError, &testCreated, &testUpdated, &testCompleted); err != nil {
+		if err := rows.Scan(&id, &slug, &name, &iconURL, &status, &created, &versionID, &number, &versionLabel, &digest, &runtimeSpec, &routeSpec, &healthSpec, &updateSpec, &published, &releaseCount, &testID, &testState, &testAttempts, &testError, &testCreated, &testUpdated, &testCompleted); err != nil {
 			s.internalError(w, err)
 			return
 		}
@@ -1513,7 +1615,11 @@ func (s *Server) adminListProducts(w http.ResponseWriter, r *http.Request) {
 			items = append(items, product{ID: id, Slug: slug, Name: name, IconURL: iconURL, Status: status, CreatedAt: created, Versions: []version{}})
 		}
 		if versionID != nil {
-			item := version{ID: *versionID, Version: *number, VersionLabel: *versionLabel, ImageDigest: *digest, RuntimeSpec: runtimeSpec, RouteSpec: routeSpec, HealthSpec: healthSpec, UpdateSpec: updateSpec, PublishedAt: published}
+			releaseReferences := 0
+			if releaseCount != nil {
+				releaseReferences = *releaseCount
+			}
+			item := version{ID: *versionID, Version: *number, VersionLabel: *versionLabel, ImageDigest: *digest, RuntimeSpec: runtimeSpec, RouteSpec: routeSpec, HealthSpec: healthSpec, UpdateSpec: updateSpec, PublishedAt: published, ReleaseCount: releaseReferences}
 			if testID != nil {
 				item.LatestTest = &struct {
 					ID          string     `json:"id"`

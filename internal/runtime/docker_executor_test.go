@@ -316,12 +316,15 @@ func TestCreatePassesStructuredCommandToDocker(t *testing.T) {
 		}
 		return &http.Response{StatusCode: http.StatusCreated, Body: io.NopCloser(strings.NewReader(`{"Id":"container"}`)), Header: make(http.Header)}, nil
 	})}}
-	err := executor.Create(context.Background(), "test", "example@sha256:"+strings.Repeat("a", 64), "user_net_test", nil, map[string]any{
+	containerID, err := executor.Create(context.Background(), "test", "example@sha256:"+strings.Repeat("a", 64), "user_net_test", nil, map[string]any{
 		"appId": "app-id", "cpuCores": 1.0, "memoryMiB": 512.0, "systemDiskGiB": 5.0,
 		"command": []any{"python", "-m", "app"},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if containerID != "container" {
+		t.Fatalf("container id=%q want container", containerID)
 	}
 }
 

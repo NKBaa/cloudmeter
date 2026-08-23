@@ -52,7 +52,7 @@ type RuntimeSpec = {
   dataVolumeGiB?: number;
   editableOptions?: EditableOptions;
 };
-type EditableOptions = { cpu: boolean; memory: boolean; dataVolume: boolean; command: boolean; dependencies: boolean };
+type EditableOptions = { cpu: boolean; memory: boolean; dataVolume: boolean; command: boolean; dependencies: boolean; environment: boolean };
 type RouteSpec = {
   containerPort?: number;
   basePath?: string;
@@ -60,6 +60,7 @@ type RouteSpec = {
   websocket?: boolean;
   sse?: boolean;
   cookiePath?: string;
+  portMapping?: { available?: boolean };
 };
 type HealthSpec = {
   path?: string;
@@ -78,6 +79,7 @@ type Version = {
   healthSpec: HealthSpec;
   updateSpec: UpdateSpec;
   publishedAt: string | null;
+  releaseCount?: number;
   latestTest?: {
     id: string;
     state: string;
@@ -112,6 +114,7 @@ type VersionForm = {
   websocket: boolean;
   sse: boolean;
   cookiePath: string;
+  portMappingAvailable: boolean;
   healthPath: string;
   intervalSeconds: number;
   timeoutSeconds: number;
@@ -122,6 +125,7 @@ type VersionForm = {
 };
 
 const products = ref<Product[]>([]);
+const productsLoading = ref(false);
 const error = ref(""),
   message = ref(""),
   busy = ref(""),
@@ -180,13 +184,14 @@ function defaultVersionForm(): VersionForm {
     websocket: true,
     sse: true,
     cookiePath: "/",
+    portMappingAvailable: false,
     healthPath: "/health",
     intervalSeconds: 10,
     timeoutSeconds: 5,
     acceptedStatusCodes: "",
     dataPolicy: "volume_compatible",
     dataVolumeGiB: 10,
-    editableOptions: { cpu: true, memory: true, dataVolume: true, command: false, dependencies: false },
+    editableOptions: { cpu: true, memory: true, dataVolume: true, command: false, dependencies: false, environment: false },
   };
 }
 function resetVersionForm() {
@@ -412,6 +417,7 @@ async function importTemplate(event: Event) {
         dataVolume: importedEditableOption(runtime, "dataVolume", true),
         command: importedEditableOption(runtime, "command", false),
         dependencies: importedEditableOption(runtime, "dependencies", false),
+        environment: importedEditableOption(runtime, "environment", false),
       },
       containerPort: numberValue(
         route.containerPort ?? runtime.containerPort,
@@ -421,6 +427,7 @@ async function importTemplate(event: Event) {
       stripPrefix: route.stripPrefix !== false,
       websocket: route.websocket !== false,
       sse: route.sse !== false,
+      portMappingAvailable: Boolean(route.portMapping?.available),
       cookiePath: String(route.cookiePath ?? "/"),
       healthPath: String(health.path ?? "/health"),
       intervalSeconds: numberValue(health.intervalSeconds, 10),
@@ -508,6 +515,7 @@ function failed(value: unknown) {
   message.value = "";
 }
 async function load(silent = false) {
+  if (!silent) productsLoading.value = true;
   try {
     products.value = (
       await api<{ products: Product[] }>("/admin/products")
@@ -516,6 +524,8 @@ async function load(silent = false) {
       await selectProduct(products.value[0].id);
   } catch (value) {
     if (!silent) failed(value);
+  } finally {
+    productsLoading.value = false;
   }
 }
 onMounted(load);
@@ -773,6 +783,9 @@ async function createVersion() {
           websocket: versionForm.websocket,
           sse: versionForm.sse,
           cookiePath: versionForm.cookiePath.trim(),
+          portMapping: versionForm.portMappingAvailable
+            ? { available: true }
+            : undefined,
         },
         healthSpec: {
           path: versionForm.healthPath.trim(),
@@ -843,6 +856,7 @@ function versionFormFromItem(item: Version): VersionForm {
       dataVolume: importedEditableOption(runtime, "dataVolume", true),
       command: importedEditableOption(runtime, "command", false),
       dependencies: importedEditableOption(runtime, "dependencies", false),
+      environment: importedEditableOption(runtime, "environment", false),
     },
     containerPort: numberValue(item.routeSpec?.containerPort, 8080),
     basePath: item.routeSpec?.basePath ?? "/",
@@ -850,6 +864,7 @@ function versionFormFromItem(item: Version): VersionForm {
     websocket: item.routeSpec?.websocket !== false,
     sse: item.routeSpec?.sse !== false,
     cookiePath: item.routeSpec?.cookiePath ?? "",
+    portMappingAvailable: Boolean(item.routeSpec?.portMapping?.available),
     healthPath: item.healthSpec?.path ?? "",
     intervalSeconds: numberValue(item.healthSpec?.intervalSeconds, 5),
     timeoutSeconds: numberValue(item.healthSpec?.timeoutSeconds, 5),
@@ -897,7 +912,7 @@ async function toggleVersion(item: Version) {
 }
 async function deleteSelectedProduct() {
   const item = selectedProduct.value;
-  if (!item || !window.confirm(`永久移除模板“${item.name}”？发布和审计历史会保留；已有用户应用时系统会拒绝删除。`)) return;
+  if (!item || !window.confirm(`完全删除模板“${item.name}”？此操作仅删除模板相关内容（版本与产品定义），不会删除任何用户已部署实例、容器、数据卷或实例记录。发布和审计历史会保留，且不可恢复。`)) return;
   try {
     busy.value = "delete-product";
     await api(`/admin/products/${item.id}`, { method: "DELETE" });
@@ -908,11 +923,16 @@ async function deleteSelectedProduct() {
 }
 async function archiveVersion(item: Version) {
   const productID = selected.value;
-  if (!productID || !window.confirm(`归档版本“${item.versionLabel || `v${item.version}`}”？已部署应用的固化配置不会受到影响。`)) return;
+  if (!productID) return;
+  const hasReleases = item.releaseCount ? Number(item.releaseCount) > 0 : false;
+  const scope = hasReleases
+    ? "该版本仍被已部署实例引用，删除模板不会影响正在运行的实例；实例将无法再通过此模板更新。此操作不可恢复。"
+    : "删除该版本将同时清理其测试记录，且不可恢复。已部署实例不受影响。";
+  if (!window.confirm(`删除版本“${item.versionLabel || `v${item.version}`}”？${scope}`)) return;
   try {
     busy.value = `archive-${item.id}`;
-    await api(`/admin/products/${productID}/versions/${item.id}`, { method: 'DELETE' });
-    done('版本已归档');
+    const result = await api<{ hardDeleted?: boolean }>(`/admin/products/${productID}/versions/${item.id}`, { method: 'DELETE' });
+    done(result.hardDeleted ? '版本已彻底删除' : '版本已删除，实例仍可继续管理');
     await load();
   } catch (value) { failed(value); } finally { busy.value = ''; }
 }
@@ -1038,6 +1058,7 @@ function dataPolicyLabel(value?: string) {
           </div>
           <span>{{ products.length }}</span>
         </div>
+        <div v-if="productsLoading&&!products.length" class="product-select-skeleton" aria-busy="true"><div v-for="index in 4" :key="index" class="skeleton-row"><span class="skeleton" style="width:38px;height:38px;border-radius:11px"></span><div style="flex:1;display:grid;gap:7px"><span class="skeleton skeleton-title" style="width:70%"></span><span class="skeleton skeleton-text" style="width:50%"></span></div></div></div>
         <button
           v-for="item in products"
           :key="item.id"
@@ -1055,7 +1076,7 @@ function dataPolicyLabel(value?: string) {
             ></span
           >
         </button>
-        <p v-if="!products.length" class="quiet empty-copy">还没有产品</p>
+        <p v-if="!products.length&&!productsLoading" class="quiet empty-copy">还没有产品</p>
       </section>
       <div :class="['product-admin-main', switchingProduct && 'is-switching']">
         <section
@@ -1100,9 +1121,10 @@ function dataPolicyLabel(value?: string) {
                 /><Archive v-else :size="16" />
               </button>
               <button
+                v-if="selectedProduct.status === 'retired'"
                 class="icon-action stop-action"
                 type="button"
-                title="删除应用模板"
+                title="完全删除模板（不影响用户已部署实例）"
                 :disabled="busy === 'delete-product'"
                 @click="deleteSelectedProduct"
               >
@@ -1168,7 +1190,7 @@ function dataPolicyLabel(value?: string) {
                     max="64"
                     step="0.1"
                     required
-                /><span class="field-editable-toggle"><input v-model="versionForm.editableOptions.cpu" type="checkbox" />允许用户提高配置</span></label>
+                /><span class="field-editable-toggle"><label class="switch"><input v-model="versionForm.editableOptions.cpu" type="checkbox" /><span/></label><em>允许用户提高配置</em></span></label>
                 <label
                   >最低内存 MiB<input
                     v-model.number="versionForm.memoryMiB"
@@ -1180,7 +1202,7 @@ function dataPolicyLabel(value?: string) {
                     max="262144"
                     step="64"
                     required
-                /><span class="field-editable-toggle"><input v-model="versionForm.editableOptions.memory" type="checkbox" />允许用户提高配置</span></label>
+                /><span class="field-editable-toggle"><label class="switch"><input v-model="versionForm.editableOptions.memory" type="checkbox" /><span/></label><em>允许用户提高配置</em></span></label>
               </div>
             </section>
             <section class="config-section">
@@ -1198,7 +1220,7 @@ function dataPolicyLabel(value?: string) {
                   <Plus :size="15" />参数
                 </button>
               </div>
-              <label class="toggle option-permission"><input v-model="versionForm.editableOptions.command" type="checkbox" />允许用户修改启动命令</label>
+              <div class="option-permission"><label class="switch"><input v-model="versionForm.editableOptions.command" type="checkbox" /><span/></label><em>允许用户修改启动命令</em></div>
               <div class="repeat-list">
                 <div
                   v-for="(argument, index) in versionForm.command"
@@ -1247,6 +1269,7 @@ function dataPolicyLabel(value?: string) {
                   <Plus :size="15" />变量
                 </button>
               </div>
+              <div class="switch-setting env-global-toggle"><div><strong>允许用户修改环境变量</strong><small>总开关：开启后，下方标记"用户可改"的变量才对用户开放编辑</small></div><label class="switch"><input v-model="versionForm.editableOptions.environment" type="checkbox"/><span/></label></div>
               <div class="repeat-list">
                 <div
                   v-for="(entry, index) in versionForm.environment"
@@ -1256,12 +1279,7 @@ function dataPolicyLabel(value?: string) {
                   <input v-model="entry.key" :data-field="`environment-${index}-key`" :class="{ 'field-invalid': fieldError(`environment-${index}-key`) }" @input="clearFieldError(`environment-${index}-key`)" placeholder="APP_MODE" /><input
                     v-model="entry.value"
                     placeholder="production"
-                  /><label class="toggle"
-                    ><input
-                      v-model="entry.editable"
-                      type="checkbox"
-                    />用户可改</label
-                  ><input v-model="entry.description" class="env-description" placeholder="注释：帮助用户理解该变量"
+                  /><span class="compact-switch-cell"><label class="switch"><input v-model="entry.editable" type="checkbox" :disabled="!versionForm.editableOptions.environment"/><span/></label><em>用户可改</em></span><input v-model="entry.description" class="env-description" placeholder="注释：帮助用户理解该变量"
                   ><button
                     type="button"
                     class="icon-action"
@@ -1311,9 +1329,7 @@ function dataPolicyLabel(value?: string) {
                     v-model="entry.description"
                     class="env-description"
                     placeholder="注释：帮助用户理解该 Secret"
-                  /><label class="toggle"
-                    ><input v-model="entry.editable" type="checkbox" />用户可修改</label
-                  ><span v-if="!entry.editable" class="locked-hint">仅管理员</span
+                  /><span class="compact-switch-cell"><label class="switch"><input v-model="entry.editable" type="checkbox"/><span/></label><em>用户可修改</em></span><span v-if="!entry.editable" class="locked-hint">仅管理员</span
                   ><button
                     type="button"
                     class="icon-action"
@@ -1347,7 +1363,7 @@ function dataPolicyLabel(value?: string) {
                   <Plus :size="15" />依赖
                 </button>
               </div>
-              <label class="toggle option-permission"><input v-model="versionForm.editableOptions.dependencies" type="checkbox" />允许用户调整依赖绑定</label>
+              <div class="option-permission"><label class="switch"><input v-model="versionForm.editableOptions.dependencies" type="checkbox" /><span/></label><em>允许用户调整依赖绑定</em></div>
               <div class="repeat-list">
                 <div
                   v-for="(dependency, index) in versionForm.dependencies"
@@ -1382,12 +1398,7 @@ function dataPolicyLabel(value?: string) {
                       required
                       pattern="[a-z0-9][a-z0-9-]{0,62}"
                       placeholder="ollama" /></label
-                  ><label class="toggle dependency-required"
-                    ><input
-                      v-model="dependency.required"
-                      type="checkbox"
-                    />部署前必须运行</label
-                  ><button
+                  ><span class="compact-switch-cell"><label class="switch"><input v-model="dependency.required" type="checkbox"/><span/></label><em>部署前必须运行</em></span><button
                     type="button"
                     class="icon-action"
                     title="删除依赖"
@@ -1435,7 +1446,7 @@ function dataPolicyLabel(value?: string) {
               >
               <div v-if="versionForm.volumes.length" class="shared-volume-setting">
                 <label>最低共享卷容量 GiB<input v-model.number="versionForm.dataVolumeGiB" data-field="dataVolumeGiB" :class="{ 'field-invalid': fieldError('dataVolumeGiB') }" @input="clearFieldError('dataVolumeGiB')" type="number" min="1" max="16384" step="1" required /><small>所有持久化挂载共享这一个容量额度，只计费一次</small></label>
-                <label class="toggle option-permission"><input v-model="versionForm.editableOptions.dataVolume" type="checkbox" />允许用户提高共享卷容量</label>
+                <div class="option-permission"><label class="switch"><input v-model="versionForm.editableOptions.dataVolume" type="checkbox" /><span/></label><em>允许用户提高共享卷容量</em></div>
               </div>
               <div class="repeat-list volume-list">
                 <div
@@ -1511,23 +1522,16 @@ function dataPolicyLabel(value?: string) {
               </div>
               <p class="network-notice">
                 公网访问路径固定为
-                /apps/{user_slug}/{app_slug}/*；平台不会为应用创建 ports
-                映射，也不会注入 PORT 环境变量。
+                /apps/{user_slug}/{app_slug}/*，由平台网关统一转发。开启端口映射后，
+                同时会在宿主机直接发布容器内网端口，两种访问方式并存。
               </p>
               <div class="toggle-grid">
-                <label class="toggle"
-                  ><input
-                    v-model="versionForm.stripPrefix"
-                    type="checkbox"
-                    @change="applyPrefixMode"
-                  />移除平台应用前缀</label
-                ><label class="toggle"
-                  ><input v-model="versionForm.websocket" type="checkbox" />允许
-                  WebSocket</label
-                ><label class="toggle"
-                  ><input v-model="versionForm.sse" type="checkbox" />允许 SSE
-                  流式响应</label
-                >
+                <div class="switch-setting"><div><strong>移除平台应用前缀</strong></div><label class="switch"><input v-model="versionForm.stripPrefix" type="checkbox" @change="applyPrefixMode"/><span/></label></div>
+                <div class="switch-setting"><div><strong>允许 WebSocket</strong></div><label class="switch"><input v-model="versionForm.websocket" type="checkbox"/><span/></label></div>
+                <div class="switch-setting"><div><strong>允许 SSE 流式响应</strong></div><label class="switch"><input v-model="versionForm.sse" type="checkbox"/><span/></label></div>
+              </div>
+              <div class="port-mapping-row">
+                <div class="switch-setting"><div><strong>允许用户开启端口映射</strong><small>开启后用户可在部署时为实例选择直连访问，端口每次部署由系统自动分配</small></div><label class="switch"><input v-model="versionForm.portMappingAvailable" type="checkbox"/><span/></label></div>
               </div>
             </section>
             <section class="config-section">
@@ -1677,9 +1681,9 @@ function dataPolicyLabel(value?: string) {
                 class="icon-action stop-action"
                 type="button"
                 :disabled="busy === 'archive-' + item.id"
-                title="归档版本"
+                :title="item.releaseCount ? '删除版本（实例仍可管理）' : '彻底删除版本'"
                 @click="archiveVersion(item)"
-              ><Archive :size="16" /></button>
+              ><Trash2 :size="16" /></button>
               <Archive
                 v-else-if="selectedProduct.status === 'retired'"
                 class="quiet"

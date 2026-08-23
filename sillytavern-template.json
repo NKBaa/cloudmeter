@@ -1,0 +1,61 @@
+{
+  "product": {
+    "name": "SillyTavern 酒馆",
+    "slug": "sillytavern",
+    "iconUrl": "https://sillytavern.app/favicon.png"
+  },
+  "version": {
+    "versionLabel": "v1.0 基础版",
+    "imageDigest": "ghcr.io/sillytavern/sillytavern:latest",
+    "runtimeSpec": {
+      "cpuCores": 0.5,
+      "memoryMiB": 512,
+      "dataVolumeGiB": 2,
+      "editableOptions": {
+        "cpu": true,
+        "memory": true,
+        "dataVolume": true,
+        "command": false,
+        "dependencies": false
+      },
+      "env": {
+        "SILLYTAVERN_WHITELISTMODE": "false",
+        "SILLYTAVERN_SECURITYOVERRIDE": "true"
+      },
+      "envDescriptions": {
+        "SILLYTAVERN_WHITELISTMODE": "关闭访问白名单，允许平台网关反向代理与健康检查访问",
+        "SILLYTAVERN_SECURITYOVERRIDE": "跳过非本机监听的内部安全拦截，由平台网关提供认证边界"
+      },
+      "editableEnvKeys": [],
+      "secretKeys": [],
+      "secretDescriptions": {},
+      "editableSecretKeys": [],
+      "command": [],
+      "volumes": [
+        {
+          "name": "data",
+          "mountPath": "/home/node/app/data",
+          "sizeGiB": 2
+        }
+      ],
+      "dependencies": []
+    },
+    "routeSpec": {
+      "containerPort": 8000,
+      "basePath": "/",
+      "stripPrefix": true,
+      "websocket": true,
+      "sse": true,
+      "cookiePath": "/"
+    },
+    "healthSpec": {
+      "path": "/",
+      "intervalSeconds": 5,
+      "timeoutSeconds": 3,
+      "acceptedStatusCodes": [200]
+    },
+    "updateSpec": {
+      "dataPolicy": "volume_compatible"
+    }
+  }
+}

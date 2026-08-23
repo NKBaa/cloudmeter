@@ -70,7 +70,7 @@ func (s *Server) appVersions(w http.ResponseWriter, r *http.Request) {
 		FROM user_apps app
 		JOIN app_product_versions version ON version.product_id=app.product_id
 		WHERE app.id=$1 AND app.user_id=$2 AND app.deleted_at IS NULL
-		  AND version.published_at IS NOT NULL AND version.archived_at IS NULL
+		  AND version.published_at IS NOT NULL AND version.archived_at IS NULL AND version.deleted_at IS NULL
 		ORDER BY version.version DESC`, appID, p.ID)
 	if err != nil {
 		s.internalError(w, err)
@@ -121,7 +121,7 @@ func (s *Server) appConfiguration(w http.ResponseWriter, r *http.Request) {
 		JOIN app_releases current_release ON current_release.id=app.last_successful_release_id
 		JOIN app_product_versions current_version ON current_version.id=current_release.product_version_id
 		LEFT JOIN LATERAL (SELECT id,version,runtime_spec,route_spec FROM app_product_versions
-			WHERE product_id=product.id AND published_at IS NOT NULL AND archived_at IS NULL ORDER BY version DESC LIMIT 1) target ON true
+			WHERE product_id=product.id AND published_at IS NOT NULL AND archived_at IS NULL AND deleted_at IS NULL ORDER BY version DESC LIMIT 1) target ON true
 		WHERE app.id=$1 AND app.user_id=$2 AND app.deleted_at IS NULL`, appID, p.ID).Scan(
 		&appSlug, &appStatus, &productID, &productSlug, &productName, &iconURL,
 		&currentVersionID, &currentRuntime, &currentRoute, &targetVersionID, &targetVersion, &targetRuntime, &targetRoute,
@@ -168,8 +168,9 @@ func (s *Server) appRoute(w http.ResponseWriter, r *http.Request) {
 	p, _ := r.Context().Value(principalKey).(principal)
 	var path, host string
 	var port int
+	var hostPort *int
 	var releaseID string
-	err := s.db.QueryRow(r.Context(), `SELECT ar.public_path,ar.upstream_host,ar.upstream_port,ar.release_id::text FROM app_routes ar JOIN user_apps a ON a.id=ar.user_app_id WHERE ar.user_app_id=$1 AND a.user_id=$2`, r.PathValue("appID"), p.ID).Scan(&path, &host, &port, &releaseID)
+	err := s.db.QueryRow(r.Context(), `SELECT ar.public_path,ar.upstream_host,ar.upstream_port,ar.host_port,ar.release_id::text FROM app_routes ar JOIN user_apps a ON a.id=ar.user_app_id WHERE ar.user_app_id=$1 AND a.user_id=$2`, r.PathValue("appID"), p.ID).Scan(&path, &host, &port, &hostPort, &releaseID)
 	if err == pgx.ErrNoRows {
 		writeError(w, 404, "route_not_found", "application route is not active")
 		return
@@ -178,7 +179,7 @@ func (s *Server) appRoute(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"publicPath": path, "upstreamHost": host, "upstreamPort": port, "releaseId": releaseID})
+	writeJSON(w, 200, map[string]any{"publicPath": path, "upstreamHost": host, "upstreamPort": port, "hostPort": hostPort, "releaseId": releaseID})
 }
 
 type appReleaseRequest struct {
@@ -304,7 +305,7 @@ func (s *Server) createReleaseJob(w http.ResponseWriter, r *http.Request, actorI
 	} else {
 		var productSlug, imageDigest string
 		var runtimeSpec, routeSpec, healthSpec, updateSpec map[string]any
-		if err = tx.QueryRow(r.Context(), `SELECT p.slug,pv.image_digest,pv.runtime_spec,pv.route_spec,pv.health_spec,pv.update_spec FROM user_apps a JOIN app_products p ON p.id=a.product_id JOIN app_product_versions pv ON pv.product_id=p.id WHERE a.id=$1 AND a.user_id=$2 AND pv.id=$3 AND pv.published_at IS NOT NULL AND pv.archived_at IS NULL`, appID, userID, versionID).Scan(&productSlug, &imageDigest, &runtimeSpec, &routeSpec, &healthSpec, &updateSpec); err != nil {
+		if err = tx.QueryRow(r.Context(), `SELECT p.slug,pv.image_digest,pv.runtime_spec,pv.route_spec,pv.health_spec,pv.update_spec FROM user_apps a JOIN app_products p ON p.id=a.product_id JOIN app_product_versions pv ON pv.product_id=p.id WHERE a.id=$1 AND a.user_id=$2 AND pv.id=$3 AND pv.published_at IS NOT NULL AND pv.archived_at IS NULL AND pv.deleted_at IS NULL`, appID, userID, versionID).Scan(&productSlug, &imageDigest, &runtimeSpec, &routeSpec, &healthSpec, &updateSpec); err != nil {
 			if err == pgx.ErrNoRows {
 				writeError(w, 404, "version_not_found", "published version not found")
 				return
@@ -324,6 +325,16 @@ func (s *Server) createReleaseJob(w http.ResponseWriter, r *http.Request, actorI
 				} else {
 					s.internalError(w, err)
 				}
+				return
+			}
+		}
+		if selected != nil && selected.PortMappingEnabled != nil {
+			if *selected.PortMappingEnabled && !routePortMappingAvailable(routeSpec) {
+				writeError(w, http.StatusBadRequest, "invalid_deployment_configuration", "port mapping is not available for this product version")
+				return
+			}
+			if _, err = tx.Exec(r.Context(), "UPDATE user_apps SET port_mapping_enabled=$2 WHERE id=$1 AND user_id=$3", appID, *selected.PortMappingEnabled, userID); err != nil {
+				s.internalError(w, err)
 				return
 			}
 		}
@@ -470,7 +481,7 @@ func runtimeSpecForUpdate(template, current map[string]any, requested *selectedR
 			}
 		}
 	}
-	if len(editableEnv) > 0 {
+	if len(editableEnv) > 0 && editableRuntimeOption(template, "environment", false) {
 		mergedEnvironment := map[string]string{}
 		currentEnvironment, _ := current["env"].(map[string]any)
 		templateEnvironment, _ := template["env"].(map[string]any)

@@ -36,7 +36,7 @@ paths:
       security: [{bearerAuth: []}]
       parameters:
         - {name: faqID, in: path, required: true, schema: {type: string, format: uuid}}
-      responses: {'200': {description: FAQ content, order, or enabled state updated}}
+      responses: {'200': {description: "FAQ content, order, or enabled state updated"}}
     delete:
       operationId: deleteFAQ
       security: [{bearerAuth: []}]
@@ -530,7 +530,7 @@ paths:
       parameters:
         - {name: appID, in: path, required: true, schema: {type: string, format: uuid}}
       responses:
-        '200': {description: Selectable versions, runtime summaries, and current version identity}
+        '200': {description: "Selectable versions, runtime summaries, and current version identity"}
         '404': {description: Application not found or not owned by the caller}
   /apps/{appID}/access:
     post:
@@ -543,6 +543,28 @@ paths:
       responses:
         '200': {description: Access cookie established and public path returned}
         '404': {description: Active route not found or not owned by the caller}
+  /apps/{appID}/logs:
+    get:
+      operationId: getAppLogs
+      summary: Read the most recently fetched runtime logs for an owned instance
+      description: Returns the latest stored container diagnostics (state plus recent stdout/stderr) and the state of the most recent log fetch job. The caller must own the application.
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: appID, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200': {description: Latest logs and fetch job state}
+        '404': {description: Application not found or not owned by the caller}
+  /apps/{appID}/logs/refresh:
+    post:
+      operationId: requestAppLogRefresh
+      summary: Queue a fresh log fetch for an owned instance
+      description: Throttled request that queues a worker job to read the container diagnostics. Reuses pending jobs and caches recent successful fetches.
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: appID, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '202': {description: "Log fetch queued, pending, or served from cache"}
+        '404': {description: Application not found or not owned by the caller}
   /admin/plans:
     get:
       operationId: adminPlans
@@ -792,18 +814,35 @@ paths:
       security: [{bearerAuth: []}]
       responses:
         '200': {description: Updated quota settings}
+  /admin/settings/logs:
+    get:
+      operationId: getLogRetentionSettings
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: "Runtime log retention hours and per-entry byte budget"}
+    put:
+      operationId: updateLogRetentionSettings
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: "Updated runtime log retention policy"}
+  /admin/logs/clear:
+    post:
+      operationId: clearRuntimeLogs
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: "Cleared all cached runtime logs"}
   /admin/docker/images:
     get:
       operationId: listDockerImages
       security: [{bearerAuth: []}]
       responses:
-        '200': {description: Docker image inventory, live container reference counts, and recent deletion jobs}
+        '200': {description: "Docker image inventory, live container reference counts, and recent deletion jobs"}
   /admin/host-metrics:
     get:
       operationId: hostMetrics
       security: [{bearerAuth: []}]
       responses:
-        '200': {description: Host CPU, memory, Docker-data disk and network metrics with per-section errors}
+        '200': {description: "Host CPU, memory, Docker-data disk and network metrics with per-section errors"}
   /admin/docker/images/{imageID}:
     delete:
       operationId: deleteDockerImage

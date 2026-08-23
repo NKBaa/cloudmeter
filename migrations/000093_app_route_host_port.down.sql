@@ -1,0 +1,4 @@
+BEGIN;
+ALTER TABLE app_releases DROP COLUMN IF EXISTS host_port;
+ALTER TABLE app_routes DROP COLUMN IF EXISTS host_port;
+COMMIT;

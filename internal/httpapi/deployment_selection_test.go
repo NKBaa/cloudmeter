@@ -61,7 +61,7 @@ func TestSelectedRuntimeSpecRejectsLegacyVolumeOverrideWhenDisabled(t *testing.T
 func TestRuntimeSpecForUpdateKeepsOmittedEditableValues(t *testing.T) {
 	template := map[string]any{
 		"cpuCores": 1.0, "memoryMiB": 512.0, "systemDiskGiB": 5.0, "dataVolumeGiB": 10.0,
-		"editableOptions": map[string]any{"cpu": true, "memory": true, "dataVolume": true, "command": true},
+		"editableOptions": map[string]any{"cpu": true, "memory": true, "dataVolume": true, "command": true, "environment": true},
 		"command":         []any{"new-default"},
 		"env":             map[string]any{"EDITABLE": "new-default", "FIXED": "new-fixed"},
 		"editableEnvKeys": []any{"EDITABLE"},

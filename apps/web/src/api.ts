@@ -54,6 +54,9 @@ const errorMessages: Record<string, string> = {
   restart_in_progress: '已有系统重启任务正在执行，请等待完成',
   turnstile_verification_failed: '人机验证失败或已过期，请重新验证',
   turnstile_incomplete: '请先完整填写 Turnstile Site Key 和 Secret Key',
+  password_login_disabled: '密码登录已由管理员关闭，请使用其它登录方式',
+  password_registration_disabled: '密码注册已由管理员关闭，暂不能创建账户',
+  slug_contention: '同时提交了相同的应用标识，请重试或更换标识',
 }
 
 export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {

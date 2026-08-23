@@ -25,8 +25,12 @@ import FAQView from './views/FAQView.vue'
 import HostMetricsView from './views/HostMetricsView.vue'
 import BalanceAlertView from './views/BalanceAlertView.vue'
 import QuotaSettingsView from './views/QuotaSettingsView.vue'
+import LogSettingsView from './views/LogSettingsView.vue'
 import DocsView from './views/DocsView.vue'
+import { initTheme } from './theme'
 import './styles.css'
+
+initTheme()
 
 const router = createRouter({
   history: createWebHistory(),
@@ -79,6 +83,7 @@ const router = createRouter({
         { path: 'admin/payment-settings', component: PaymentSettingsView, meta: { superAdmin: true } },
         { path: 'admin/checkin-settings', component: CheckinSettingsView, meta: { superAdmin: true } },
         { path: 'admin/quota-settings', component: QuotaSettingsView, meta: { superAdmin: true } },
+        { path: 'admin/log-settings', component: LogSettingsView, meta: { superAdmin: true } },
         { path: 'admin/audit', component: AuditAdminView, meta: { superAdmin: true } },
         { path: 'admin/homepage', component: HomeSettingsView, meta: { superAdmin: true } },
         { path: 'admin/tickets', component: TicketsView, props: { admin: true }, meta: { admin: true } },

@@ -88,6 +88,13 @@ func routeHandler(db *pgxpool.Pool, logger *slog.Logger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cookie, cookieErr := r.Cookie(appAccessCookie)
 		if cookieErr != nil || strings.TrimSpace(cookie.Value) == "" {
+			if acceptsHTML(r) {
+				// No application sign-in cookie yet: land the browser on the
+				// console app list instead of a blank 401 page so direct URLs
+				// still load. Non-navigation requests keep the 401 response.
+				http.Redirect(w, r, "/console/apps", http.StatusFound)
+				return
+			}
 			http.Error(w, "application sign-in required", http.StatusUnauthorized)
 			return
 		}
@@ -97,6 +104,10 @@ func routeHandler(db *pgxpool.Pool, logger *slog.Logger) http.Handler {
 			JOIN users ON users.id=session.user_id AND users.status='active'
 			WHERE session.token_hash=$1 AND session.revoked_at IS NULL AND session.expires_at>now()`, tokenHash[:]).Scan(&sessionUserID); err != nil {
 			if err == pgx.ErrNoRows {
+				if acceptsHTML(r) {
+					http.Redirect(w, r, "/console/apps", http.StatusFound)
+					return
+				}
 				http.Error(w, "application session is invalid or expired", http.StatusUnauthorized)
 				return
 			}
@@ -120,6 +131,23 @@ func routeHandler(db *pgxpool.Pool, logger *slog.Logger) http.Handler {
 		  AND ($1='/apps/'||u.slug||'/'||a.slug OR $1 LIKE '/apps/'||u.slug||'/'||a.slug||'/%')
 		ORDER BY length('/apps/'||u.slug||'/'||a.slug) DESC LIMIT 1`, r.URL.Path, sessionUserID).Scan(&prefix, &host, &port, &routeSpec)
 		if err == pgx.ErrNoRows {
+			// The application is not actively routable (stopped, failed, or the
+			// route is stale). Resolve the instance and send the user to the
+			// console detail page instead of a blank 404. Non-navigation
+			// requests keep the plain 404 so assets fail predictably.
+			if acceptsHTML(r) {
+				var instanceID string
+				if lookupErr := db.QueryRow(r.Context(), `SELECT a.instance_id::text
+					FROM app_routes ar
+					JOIN user_apps a ON a.id=ar.user_app_id AND a.instance_id=ar.instance_id
+					JOIN users u ON u.id=a.user_id
+					WHERE a.user_id=$2 AND a.deleted_at IS NULL AND u.status='active'
+					  AND ($1='/apps/'||u.slug||'/'||a.slug OR $1 LIKE '/apps/'||u.slug||'/'||a.slug||'/%')
+					ORDER BY length('/apps/'||u.slug||'/'||a.slug) DESC LIMIT 1`, r.URL.Path, sessionUserID).Scan(&instanceID); lookupErr == nil && instanceID != "" {
+					http.Redirect(w, r, "/console/apps/"+instanceID, http.StatusFound)
+					return
+				}
+			}
 			http.NotFound(w, r)
 			return
 		}
@@ -262,7 +290,10 @@ func rewriteRootHTMLBase(response *http.Response, publicPath string) error {
 }
 
 func redirectAppRoot(w http.ResponseWriter, r *http.Request, prefix string) bool {
-	if r.URL.Path != prefix || isWebSocketRequest(r) {
+	// Only browser navigation benefits from the trailing-slash redirect so
+	// relative URLs resolve against the public base. API clients and health
+	// probes (curl sends Accept: */*) proxy straight through.
+	if r.URL.Path != prefix || isWebSocketRequest(r) || !acceptsHTML(r) {
 		return false
 	}
 	location := prefix + "/"
@@ -307,6 +338,10 @@ func joinURLPath(base, suffix string) string {
 
 func isWebSocketRequest(r *http.Request) bool {
 	return strings.EqualFold(strings.TrimSpace(r.Header.Get("Upgrade")), "websocket") && strings.Contains(strings.ToLower(r.Header.Get("Connection")), "upgrade")
+}
+
+func acceptsHTML(r *http.Request) bool {
+	return strings.Contains(strings.ToLower(r.Header.Get("Accept")), "text/html")
 }
 
 func rewriteCookiePath(header, upstreamPath, publicPath string) string {

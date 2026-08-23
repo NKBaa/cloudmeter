@@ -169,6 +169,7 @@ onBeforeUnmount(() => { if (timer) window.clearInterval(timer) })
     <p v-if="error" class="message sticky-message">{{ error }}</p>
     <p v-if="message" class="status-ok sticky-message">{{ message }}</p>
 
+    <section v-if="loading&&!apps.length" class="skeleton-list" aria-busy="true"><article v-for="index in 3" :key="index" class="skeleton-row"><span class="skeleton" style="width:38px;height:38px;border-radius:11px"></span><div style="flex:1;display:grid;gap:8px"><span class="skeleton skeleton-title" style="width:34%"></span><span class="skeleton skeleton-text" style="width:50%"></span></div><span class="skeleton skeleton-text" style="width:140px"></span></article></section>
     <section v-if="apps.length" class="backup-application-list">
       <div class="backup-page-summary"><span>{{ apps.length }} 个应用</span><span>{{ totalBackups }} 条可见备份</span><small>卷数据 + 成功备份共同占用用户选择的共享数据卷容量</small></div>
       <article v-for="app in apps" :key="app.id" :class="['backup-application-item', { expanded: expandedAppID === app.id }]">

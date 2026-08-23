@@ -23,12 +23,16 @@ import {
   CircleHelp,
   BellRing,
   Gift,
+  RefreshCw,
+  Moon,
+  Sun,
 } from "@lucide/vue";
 import { logout } from "../api";
+import { toggleTheme, theme } from "../theme";
 import BrandMark from "./BrandMark.vue";
 
 const route = useRoute();
-const showShellTopbar = computed(() => !route.path.startsWith('/console') && !route.path.startsWith('/admin'));
+const showShellTopbar = computed(() => route.path === '/console/home' || route.path === '/console/docs');
 const roles = ref<string[]>([]);
 const user = ref<{ Email?: string; DisplayName?: string } | null>(null);
 const balanceCents = ref(0);
@@ -98,6 +102,7 @@ function isAnchorActive(path: string, hash: string): boolean {
         <RouterLink v-if="shown('overview')" to="/console" exact-active-class="active"
           ><Gauge :size="18" />概览</RouterLink
         >
+        <RouterLink v-if="shown('faq')" to="/console/faq" active-class="active"><CircleHelp :size="18" />常见问答</RouterLink>
         <RouterLink v-if="shown('deploy')" to="/console/deploy" active-class="active"
           ><Package :size="18" />部署应用</RouterLink
         >
@@ -125,7 +130,6 @@ function isAnchorActive(path: string, hash: string): boolean {
         <RouterLink v-if="shown('tickets')" to="/console/tickets" active-class="active"
           ><MessageSquareText :size="18" />工单支持</RouterLink
         >
-        <RouterLink v-if="shown('faq')" to="/console/faq" active-class="active"><CircleHelp :size="18" />常见问答</RouterLink>
         <RouterLink to="/console/balance-alert" active-class="active"><BellRing :size="18" />余额提醒</RouterLink>
         <template v-if="isAdmin">
           <div class="nav-group">管理控制台</div>
@@ -168,6 +172,7 @@ function isAnchorActive(path: string, hash: string): boolean {
             ><CalendarCheck :size="18" />签到设置</RouterLink
           >
           <RouterLink v-if="isSuperAdmin" to="/admin/quota-settings" active-class="active"><Gift :size="18" />额度设置</RouterLink>
+          <RouterLink v-if="isSuperAdmin" to="/admin/log-settings" active-class="active"><RefreshCw :size="18" />日志设置</RouterLink>
           <div class="nav-group">平台设置</div>
           <RouterLink to="/admin/announcements" active-class="active"
             ><Settings2 :size="18" />公告管理</RouterLink
@@ -218,8 +223,8 @@ function isAnchorActive(path: string, hash: string): boolean {
     </aside>
     <main class="app-main">
       <header class="console-header">
-        <div class="console-header-brand"><BrandMark /><div><strong>CloudMeter</strong><span>{{ pageTitle }}</span></div></div>
-        <div class="console-header-actions"><span class="header-balance">{{ balanceText }}</span><span v-if="user" class="header-avatar" :title="user.Email">{{ userInitial }}</span></div>
+        <div class="console-header-title">{{ pageTitle }}</div>
+        <div class="console-header-actions"><button class="icon-action theme-toggle" :title="theme === 'dark' ? '切换浅色主题' : '切换深色主题'" @click="toggleTheme"><Sun v-if="theme === 'dark'" :size="16" /><Moon v-else :size="16" /></button><span class="header-balance"><BadgeDollarSign :size="14" />{{ balanceText }}</span><span v-if="user" class="header-avatar" :title="user.Email">{{ userInitial }}</span></div>
       </header>
       <header v-if="showShellTopbar" class="shell-topbar"><nav><RouterLink to="/console/home" active-class="active">主页</RouterLink><RouterLink to="/console/docs" active-class="active">文档</RouterLink><RouterLink to="/console" exact-active-class="active">控制台</RouterLink></nav></header>
       <RouterView v-slot="{ Component, route }">

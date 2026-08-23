@@ -182,7 +182,7 @@ try {
     $plan = Invoke-RestMethod -Method Post -Uri "$Api/admin/plans" -Headers $adminHeaders -ContentType 'application/json' -Body (@{ code = "verify-dependency-$marker"; name = "Dependency verification $marker" } | ConvertTo-Json -Compress)
     $planID = $plan.id
     $planBody = @{
-        cyclePriceCents = 0; apps = 4; cpuCores = 2; memoryGiB = 2; systemDiskGiB = 10; dataDiskGiB = 0
+        cyclePriceCents = 0; apps = 4; cpuCores = 2; memoryGiB = 2; dataDiskGiB = 0
         backupStorageGiB = 0; backupOperationsPerMonth = 0; concurrentDeployments = 2
         publicIngresses = 4; ingressOverageEnabled = $false; egressGiB = 1; egressOverageEnabled = $false
         creditGrantCents = 0; allowedProductIds = @($baseProductID, $dependentProductID); effectiveAt = (Get-Date).ToUniversalTime().ToString('o')

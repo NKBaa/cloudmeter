@@ -98,7 +98,7 @@ func ValidateRuntimeSpec(spec map[string]any) error {
 		if !ok {
 			return fmt.Errorf("editableOptions must be an object")
 		}
-		allowed := map[string]bool{"cpu": true, "memory": true, "dataVolume": true, "command": true, "dependencies": true}
+		allowed := map[string]bool{"cpu": true, "memory": true, "dataVolume": true, "command": true, "dependencies": true, "environment": true}
 		for key, rawValue := range options {
 			if !allowed[key] {
 				return fmt.Errorf("editableOptions contains unsupported option %q", key)

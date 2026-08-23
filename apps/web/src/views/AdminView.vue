@@ -24,7 +24,7 @@ const testRecipient=ref('')
 const account=reactive({displayName:'',email:'',password:'',role:'user'})
 const smtp=reactive({enabled:false,host:'',port:587,username:'',password:'',passwordConfigured:false,fromEmail:'',fromName:'CloudMeter',tlsMode:'starttls'})
 const smtpReady=ref(false)
-const auth=reactive({registrationEnabled:false,emailVerificationRequired:false,blockEmailAliases:true,emailDomainWhitelist:[] as string[]})
+const auth=reactive({registrationEnabled:false,passwordLoginEnabled:true,passwordRegistrationEnabled:true,emailVerificationRequired:false,blockEmailAliases:true,emailDomainWhitelist:[] as string[]})
 const turnstile=reactive({enabled:false,siteKey:'',secretKey:'',secretConfigured:false,loginProtection:false,registrationProtection:false})
 const sidebar=reactive<Record<string,boolean>>({overview:true,deploy:true,apps:true,releases:true,backups:true,billing:true,recharge:true,checkin:true,usage:true,tickets:true,faq:true})
 const sidebarLabels:Record<string,string>={overview:'概览',deploy:'部署应用',apps:'我的应用',releases:'版本历史',backups:'备份与恢复',billing:'余额与账单',recharge:'账户充值',checkin:'每日签到',usage:'用量明细',tickets:'工单支持',faq:'常见问答'}
@@ -279,12 +279,13 @@ async function grantCredit(){
         <section v-if="page==='registration'" class="form-panel">
           <h2><Globe2 :size="19"/>注册策略</h2>
           <form @submit.prevent="saveAuth">
-            <label class="toggle"><input v-model="auth.registrationEnabled" type="checkbox"/>允许用户自行注册</label>
-            <label :class="['toggle',{disabled:!smtpReady&&!auth.emailVerificationRequired}]"><input v-model="auth.emailVerificationRequired" type="checkbox" :disabled="!smtpReady&&!auth.emailVerificationRequired"/>注册时要求邮箱验证码</label>
-            <p v-if="!smtpReady" class="configuration-hint"><CircleAlert :size="16"/>需先在右侧启用并保存有效 SMTP 配置</p>
-            <label class="toggle"><input v-model="auth.blockEmailAliases" type="checkbox"/>阻止邮箱别名</label>
-            <p v-if="auth.blockEmailAliases" class="configuration-hint neutral">开启后拒绝邮箱用户名部分包含 + 或 . 的地址</p>
-            <label>邮箱域白名单<input :value="auth.emailDomainWhitelist.join(', ')" @input="auth.emailDomainWhitelist=($event.target as HTMLInputElement).value.split(',').map(item=>item.trim()).filter(Boolean)" placeholder="example.com, company.cn"/><small>留空允许全部域名；填写域名时也允许其子域名</small></label>
+            <div class="switch-setting"><div><strong>注册已启用</strong><small>关闭后公开注册暂停，但下列配置会被保留</small></div><label class="switch"><input v-model="auth.registrationEnabled" type="checkbox"/><span/></label></div>
+            <div class="switch-setting"><div><strong>允许密码登录</strong><small>关闭后密码方式登录将被后端拒绝</small></div><label class="switch"><input v-model="auth.passwordLoginEnabled" type="checkbox" :disabled="!auth.registrationEnabled"/><span/></label></div>
+            <div class="switch-setting"><div><strong>允许密码注册</strong><small>可单独控制是否允许密码方式注册</small></div><label class="switch"><input v-model="auth.passwordRegistrationEnabled" type="checkbox" :disabled="!auth.registrationEnabled"/><span/></label></div>
+            <div class="switch-setting"><div><strong>注册时要求邮箱验证码</strong><small>需先启用并保存有效的 SMTP 配置</small></div><label class="switch"><input v-model="auth.emailVerificationRequired" type="checkbox" :disabled="!auth.registrationEnabled"/><span/></label></div>
+            <p v-if="!smtpReady&&auth.emailVerificationRequired" class="configuration-hint"><CircleAlert :size="16"/>需先在右侧启用并保存有效 SMTP 配置</p>
+            <div class="switch-setting"><div><strong>阻止邮箱别名</strong><small>拒绝邮箱用户名部分包含 + 或 . 的地址</small></div><label class="switch"><input v-model="auth.blockEmailAliases" type="checkbox" :disabled="!auth.registrationEnabled"/><span/></label></div>
+            <label :class="['field-disabled',{disabled:!auth.registrationEnabled}]">邮箱域白名单<textarea :disabled="!auth.registrationEnabled" :value="auth.emailDomainWhitelist.join('\n')" @input="auth.emailDomainWhitelist=($event.target as HTMLTextAreaElement).value.split(/\r?\n/).map(item=>item.trim()).filter(Boolean)" rows="5" placeholder="163.com&#10;qq.com&#10;icloud.com"/><small>留空允许全部域名；每行一个域名，仅精确匹配该域名</small></label>
             <button class="primary compact" :disabled="busy==='auth'"><Save :size="16"/>保存策略</button>
           </form>
         </section>
@@ -293,11 +294,11 @@ async function grantCredit(){
           <h2><ShieldPlus :size="19"/>Cloudflare Turnstile</h2>
           <p class="configuration-hint neutral">Token 会由服务端向 Cloudflare 校验，Secret Key 仅加密保存且不会通过读取接口返回。</p>
           <form @submit.prevent="saveTurnstile">
-            <label class="toggle"><input v-model="turnstile.enabled" type="checkbox"/>启用 Turnstile</label>
+            <div class="switch-setting"><div><strong>启用 Turnstile</strong><small>Token 由服务端向 Cloudflare 校验</small></div><label class="switch"><input v-model="turnstile.enabled" type="checkbox"/><span/></label></div>
             <label>Site Key<input v-model="turnstile.siteKey" maxlength="256" :required="turnstile.enabled" placeholder="0x4AAAAA..."/></label>
             <label>Secret Key<input v-model="turnstile.secretKey" type="password" maxlength="512" autocomplete="new-password" :required="turnstile.enabled&&!turnstile.secretConfigured" :placeholder="turnstile.secretConfigured?'已加密保存，留空保持不变':'启用时必填'"/><small>{{turnstile.secretConfigured?'Secret 已配置，接口不会显示原文':'尚未配置 Secret'}}</small></label>
-            <label :class="['toggle',{disabled:!turnstile.enabled}]"><input v-model="turnstile.loginProtection" type="checkbox" :disabled="!turnstile.enabled"/>保护密码登录</label>
-            <label :class="['toggle',{disabled:!turnstile.enabled}]"><input v-model="turnstile.registrationProtection" type="checkbox" :disabled="!turnstile.enabled"/>保护用户注册</label>
+            <div class="switch-setting"><div><strong>保护密码登录</strong><small>登录时要求通过人机验证</small></div><label class="switch"><input v-model="turnstile.loginProtection" type="checkbox" :disabled="!turnstile.enabled"/><span/></label></div>
+            <div class="switch-setting"><div><strong>保护用户注册</strong><small>注册时要求通过人机验证</small></div><label class="switch"><input v-model="turnstile.registrationProtection" type="checkbox" :disabled="!turnstile.enabled"/><span/></label></div>
             <button class="primary compact" :disabled="busy==='turnstile'"><Save :size="16"/>保存机器人保护</button>
           </form>
         </section>
@@ -305,14 +306,14 @@ async function grantCredit(){
         <section v-if="page==='registration'" class="form-panel">
           <h2><Settings2 :size="19"/>普通用户侧栏</h2>
           <p class="configuration-hint neutral">这里仅控制菜单是否显示，不等于取消用户权限；业务 API 仍按各自规则校验。</p>
-          <form @submit.prevent="saveSidebar"><label v-for="(label,key) in sidebarLabels" :key="key" class="toggle"><input v-model="sidebar[key]" type="checkbox"/>显示“{{label}}”</label><button class="primary compact" :disabled="busy==='sidebar'"><Save :size="16"/>保存侧栏设置</button></form>
+          <form @submit.prevent="saveSidebar"><div v-for="(label,key) in sidebarLabels" :key="key" class="switch-setting"><div><strong>显示“{{label}}”</strong></div><label class="switch"><input v-model="sidebar[key]" type="checkbox"/><span/></label></div><button class="primary compact" :disabled="busy==='sidebar'"><Save :size="16"/>保存侧栏设置</button></form>
         </section>
 
         <section v-if="page==='mail'" class="form-panel">
           <h2><MailCheck :size="19"/>SMTP 邮箱</h2>
           <p :class="['configuration-status',smtpReady?'ready':'blocked']"><CheckCircle2 v-if="smtpReady" :size="16"/><CircleAlert v-else :size="16"/>{{smtpReady?'已保存，可用于注册邮箱验证':'尚未就绪，邮箱验证码暂不可用'}}</p>
           <form @submit.prevent="saveMail">
-            <label class="toggle"><input v-model="smtp.enabled" type="checkbox"/>启用 SMTP</label>
+            <div class="switch-setting"><div><strong>启用 SMTP</strong><small>开启后可用于邮箱验证与系统通知</small></div><label class="switch"><input v-model="smtp.enabled" type="checkbox"/><span/></label></div>
             <div class="field-row"><label>主机<input v-model="smtp.host" :required="smtp.enabled" placeholder="smtp.example.com"/></label><label>端口<input v-model.number="smtp.port" type="number" min="1" max="65535" required/></label></div>
             <label>连接安全<select v-model="smtp.tlsMode"><option value="starttls">STARTTLS</option><option value="tls">TLS / SMTPS</option><option value="none">无加密</option></select></label>
             <label>用户名<input v-model="smtp.username" autocomplete="username"/></label>
@@ -327,7 +328,7 @@ async function grantCredit(){
           <h2><KeyRound :size="19"/>GitHub OAuth</h2>
           <p v-if="!github.publicBaseUrlConfigured" class="configuration-status blocked"><CircleAlert :size="16"/>需先在部署环境配置 PUBLIC_BASE_URL</p>
           <form @submit.prevent="saveOAuth('github',github)">
-            <label :class="['toggle',{disabled:!github.publicBaseUrlConfigured&&!github.enabled}]"><input v-model="github.enabled" type="checkbox" :disabled="!github.publicBaseUrlConfigured&&!github.enabled"/>启用 GitHub</label>
+            <div class="switch-setting"><div><strong>启用 GitHub</strong><small>需先配置有效的 PUBLIC_BASE_URL</small></div><label class="switch"><input v-model="github.enabled" type="checkbox" :disabled="!github.publicBaseUrlConfigured&&!github.enabled"/><span/></label></div>
             <label>Client ID<input v-model="github.clientId"/></label>
             <label>Client Secret<input v-model="github.clientSecret" type="password" placeholder="留空保持不变" :required="github.enabled&&!github.secretConfigured"/></label>
             <p class="quiet">{{github.secretConfigured?'密钥已加密保存，接口不会显示原文':'尚未配置密钥'}}</p>
@@ -341,7 +342,7 @@ async function grantCredit(){
           <h2><KeyRound :size="19"/>LinuxDo OAuth</h2>
           <p v-if="!linuxdo.publicBaseUrlConfigured" class="configuration-status blocked"><CircleAlert :size="16"/>需先在部署环境配置 PUBLIC_BASE_URL</p>
           <form @submit.prevent="saveOAuth('linuxdo',linuxdo)">
-            <label :class="['toggle',{disabled:!linuxdo.publicBaseUrlConfigured&&!linuxdo.enabled}]"><input v-model="linuxdo.enabled" type="checkbox" :disabled="!linuxdo.publicBaseUrlConfigured&&!linuxdo.enabled"/>启用 LinuxDo</label>
+            <div class="switch-setting"><div><strong>启用 LinuxDo</strong><small>需先配置有效的 PUBLIC_BASE_URL</small></div><label class="switch"><input v-model="linuxdo.enabled" type="checkbox" :disabled="!linuxdo.publicBaseUrlConfigured&&!linuxdo.enabled"/><span/></label></div>
             <label>Client ID<input v-model="linuxdo.clientId"/></label>
             <label>Client Secret<input v-model="linuxdo.clientSecret" type="password" placeholder="留空保持不变" :required="linuxdo.enabled&&!linuxdo.secretConfigured"/></label>
             <p class="quiet">{{linuxdo.secretConfigured?'密钥已加密保存，接口不会显示原文':'尚未配置密钥'}}</p>
@@ -361,7 +362,7 @@ async function grantCredit(){
             <label>标题<input v-model="notice.title" required/></label>
             <label>内容<textarea v-model="notice.content" rows="5" required/></label>
             <label>级别<select v-model="notice.severity"><option value="info">信息</option><option value="warning">提醒</option><option value="critical">重要</option></select></label>
-            <label class="toggle"><input v-model="notice.published" type="checkbox"/>立即发布</label>
+            <div class="switch-setting"><div><strong>立即发布</strong></div><label class="switch"><input v-model="notice.published" type="checkbox"/><span/></label></div>
             <button class="primary compact" :disabled="busy==='publish-announcement'"><Megaphone :size="16"/>创建公告</button>
           </form>
           <div class="data-list">

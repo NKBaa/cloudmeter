@@ -253,7 +253,7 @@ function subscriptionLabel(user: User) {
                 <strong>用户自助购买</strong>
                 <small>{{ activePlan.purchaseEnabled ? "已开放" : "未开放" }}</small>
               </span>
-              <label class="toggle">
+              <label class="switch">
                 <input
                   :checked="activePlan.purchaseEnabled"
                   type="checkbox"
@@ -265,7 +265,7 @@ function subscriptionLabel(user: User) {
                     )
                   "
                 />
-                {{ activePlan.purchaseEnabled ? "开放" : "关闭" }}
+                <span/>
               </label>
             </div>
             <h2><Save :size="19" />发布套餐版本</h2>
@@ -359,7 +359,7 @@ function subscriptionLabel(user: User) {
                 <legend>公网入口</legend>
                 <div class="field-row">
                   <label>入口数量<input v-model.number="versionForm.publicIngresses" type="number" min="0" max="1000" step="1" required /></label>
-                  <label class="toggle"><input v-model="versionForm.ingressOverageEnabled" type="checkbox" />允许超额并按价格计费</label>
+                  <div class="switch-setting"><div><strong>允许超额并按价格计费</strong></div><label class="switch"><input v-model="versionForm.ingressOverageEnabled" type="checkbox"/><span/></label></div>
                 </div>
               </fieldset>
               <fieldset class="product-entitlements">
@@ -386,12 +386,7 @@ function subscriptionLabel(user: User) {
                         min="0"
                         step="0.1"
                         required /></label
-                    ><label class="toggle"
-                      ><input
-                        v-model="versionForm.egressOverageEnabled"
-                        type="checkbox"
-                      />允许超额并按价格计费</label
-                    >
+                    ><div class="switch-setting"><div><strong>允许超额并按价格计费</strong></div><label class="switch"><input v-model="versionForm.egressOverageEnabled" type="checkbox"/><span/></label></div>
                   </div>
                 </fieldset>
                 <p v-if="!products.length" class="quiet">

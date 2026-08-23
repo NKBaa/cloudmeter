@@ -69,6 +69,7 @@ func TestUpstreamCannotOverwriteReservedAccessCookie(t *testing.T) {
 
 func TestRedirectAppRoot(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/apps/user/demo?tab=chat", nil)
+	request.Header.Set("Accept", "text/html,application/xhtml+xml")
 	response := httptest.NewRecorder()
 	if !redirectAppRoot(response, request, "/apps/user/demo") {
 		t.Fatal("application root was not redirected")
@@ -80,7 +81,14 @@ func TestRedirectAppRoot(t *testing.T) {
 		t.Fatalf("location=%s", location)
 	}
 
+	apiClient := httptest.NewRequest(http.MethodGet, "/apps/user/demo", nil)
+	apiClient.Header.Set("Accept", "*/*")
+	if redirectAppRoot(httptest.NewRecorder(), apiClient, "/apps/user/demo") {
+		t.Fatal("non-browser root request must be proxied, not redirected")
+	}
+
 	websocket := httptest.NewRequest(http.MethodGet, "/apps/user/demo", nil)
+	websocket.Header.Set("Accept", "text/html")
 	websocket.Header.Set("Connection", "Upgrade")
 	websocket.Header.Set("Upgrade", "websocket")
 	if redirectAppRoot(httptest.NewRecorder(), websocket, "/apps/user/demo") {

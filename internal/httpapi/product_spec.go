@@ -61,6 +61,19 @@ func normalizeRouteSpec(spec map[string]any) error {
 		return err
 	}
 	spec["cookiePath"] = cookiePath
+	// Optional direct host-port mapping capability. When available, users can
+	// opt in per instance; the Worker then auto-assigns a free host port on
+	// every deployment so direct access works alongside the platform gateway.
+	mapping, ok := spec["portMapping"].(map[string]any)
+	if ok {
+		available, err := normalizedBoolean(mapping, "available", false)
+		if err != nil {
+			return err
+		}
+		spec["portMapping"] = map[string]any{"available": available}
+	} else {
+		delete(spec, "portMapping")
+	}
 	return nil
 }
 
@@ -200,4 +213,15 @@ func snapshotDataPolicy(snapshot map[string]any) string {
 		}
 	}
 	return defaultDataPolicy
+}
+
+// routePortMappingAvailable reports whether the product version lets users opt
+// in to direct host-port publishing.
+func routePortMappingAvailable(routeSpec map[string]any) bool {
+	mapping, ok := routeSpec["portMapping"].(map[string]any)
+	if !ok {
+		return false
+	}
+	available, _ := mapping["available"].(bool)
+	return available
 }

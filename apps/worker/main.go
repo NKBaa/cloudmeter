@@ -81,6 +81,7 @@ func main() {
 	lastDockerSettingsSync := time.Now()
 	lastDockerImageSync := time.Time{}
 	lastHostMetricSync := time.Time{}
+	lastLogPrune := time.Time{}
 	for {
 		select {
 		case <-ctx.Done():
@@ -105,6 +106,11 @@ func main() {
 			reconcileRouterNetworks(ctx, db, logger)
 			reconcileEgressNetworks(ctx, db, logger)
 			processStopOne(ctx, db, logger)
+			processLogFetchOne(ctx, db, logger)
+			if time.Since(lastLogPrune) >= 60*time.Second {
+				pruneRuntimeLogs(ctx, db, logger)
+				lastLogPrune = time.Now()
+			}
 			reconcileRuntimeContainers(ctx, db, logger)
 			reconcileProductTestContainers(ctx, db, logger)
 			processBackupDeletionOne(ctx, db, logger)
@@ -1581,13 +1587,15 @@ func processOne(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
 	}
 	if state == domain.DeploymentStarting && executor != nil {
 		var userID, serviceSlug, image string
-		if err = tx.QueryRow(ctx, `SELECT user_id::text,service_slug,instance_id::text FROM user_apps WHERE id=$1`, appID).Scan(&userID, &serviceSlug, &instanceID); err != nil {
+		var portMappingEnabled bool
+		if err = tx.QueryRow(ctx, `SELECT user_id::text,service_slug,instance_id::text,port_mapping_enabled FROM user_apps WHERE id=$1`, appID).Scan(&userID, &serviceSlug, &instanceID, &portMappingEnabled); err != nil {
 			logger.Error("user lookup failed", "error", err)
 			return
 		}
 		var snap struct {
 			Image          string         `json:"image_digest"`
 			Runtime        map[string]any `json:"runtime_spec"`
+			Route          map[string]any `json:"route_spec"`
 			SecretVersions map[string]any `json:"secret_versions"`
 		}
 		if decodeErr := json.Unmarshal(snapshot, &snap); decodeErr != nil {
@@ -1652,15 +1660,37 @@ func processOne(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
 		}
 		snap.Runtime["appId"] = appID
 		name := containerName(instanceID, releaseID)
-		if err = executor.Create(ctx, name, image, runtimepolicy.UserNetworkName(runtimeOwner, userID), []string{serviceSlug, releaseAlias(releaseID)}, snap.Runtime); err != nil {
+		routePort := routePort(snap.Route)
+		mapping := routePortMapping(snap.Route, routePort, portMappingEnabled)
+		if mapping != nil {
+			logger.Info("port mapping enabled for deployment", "app", appID, "internal", mapping.InternalPort)
+		}
+		containerID, err := executor.Create(ctx, name, image, runtimepolicy.UserNetworkName(runtimeOwner, userID), []string{serviceSlug, releaseAlias(releaseID)}, snap.Runtime, mapping)
+		if err != nil {
 			tx.Rollback(ctx)
 			markJobError(ctx, db, id, err, logger)
 			return
+		}
+		if containerID != "" {
+			if _, err = tx.Exec(ctx, `UPDATE app_releases SET container_id=$2 WHERE id=$1 AND user_app_id=$3`, releaseID, containerID, appID); err != nil {
+				logger.Error("container id persistence failed", "error", err)
+			}
 		}
 		if err = executor.Start(ctx, name); err != nil {
 			tx.Rollback(ctx)
 			markJobError(ctx, db, id, err, logger)
 			return
+		}
+		if mapping != nil && mapping.Enabled {
+			publishedPort, publishedErr := executor.PublishedPort(ctx, containerID, mapping.InternalPort)
+			if publishedErr != nil {
+				tx.Rollback(ctx)
+				markJobError(ctx, db, id, fmt.Errorf("resolve published host port: %w", publishedErr), logger)
+				return
+			}
+			if _, err = tx.Exec(ctx, `UPDATE app_releases SET host_port=$2 WHERE id=$1 AND user_app_id=$3`, releaseID, publishedPort, appID); err != nil {
+				logger.Error("host port persistence failed", "error", err)
+			}
 		}
 	}
 	healthFailure := ""
@@ -1708,6 +1738,40 @@ func processOne(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
 		if healthy && !snapshotHealthOK(snapshot) {
 			healthy = false
 			healthFailure = "release health specification rejected the deployment"
+		}
+		// Separate check of the public (host-published) port when this instance
+		// opted in to direct port mapping: the internal health probe above
+		// verifies the container on the user network, this one verifies the
+		// host port path through the default bridge.
+		if healthy && executor != nil && state == domain.DeploymentChecking {
+			var routeSpec struct {
+				Route map[string]any `json:"route_spec"`
+				Health map[string]any `json:"health_spec"`
+			}
+			if json.Unmarshal(snapshot, &routeSpec) == nil && routePortMappingAvailableWorker(routeSpec.Route) {
+				var portMappingOn bool
+				_ = tx.QueryRow(ctx, `SELECT port_mapping_enabled FROM user_apps WHERE id=$1`, appID).Scan(&portMappingOn)
+				var hostPort int
+				_ = tx.QueryRow(ctx, `SELECT coalesce(host_port,0) FROM app_releases WHERE id=$1 AND user_app_id=$2`, releaseID, appID).Scan(&hostPort)
+				if portMappingOn && hostPort >= 1 && hostPort <= 65535 {
+					gateway, gwErr := executor.NetworkGateway(ctx, "bridge")
+					if gwErr != nil || gateway == "" {
+						healthy = false
+						healthFailure = "public port check failed: could not resolve host gateway"
+					} else {
+						publicTarget := fmt.Sprintf("http://%s:%d%s", gateway, hostPort, healthPathOrRoot(routeSpec.Health))
+						probeName := healthProbeName(id) + "-pub"
+						probeCtx, cancel := context.WithTimeout(ctx, time.Duration(healthTimeout(routeSpec.Health)+5)*time.Second)
+						probeErr := executor.ProbeHTTP(probeCtx, probeName, backupHelperImage, "bridge", publicTarget, healthTimeout(routeSpec.Health), healthAcceptedStatusCodes(routeSpec.Health))
+						cancel()
+						if probeErr != nil {
+							healthy = false
+							healthFailure = "public port check failed: " + probeErr.Error()
+							logger.Warn("release public port probe failed", "job", id, "target", publicTarget, "error", probeErr)
+						}
+					}
+				}
+			}
 		}
 	}
 	healthAttempt := deploymentHealthAttempt(attempts)
@@ -1779,10 +1843,17 @@ func processOne(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
 			logger.Error("public ingress usage insert failed", "error", err)
 			return
 		}
-		var slug, serviceSlug, userSlug string
-		if err = tx.QueryRow(ctx, `SELECT u.slug,a.slug,a.service_slug FROM user_apps a JOIN users u ON u.id=a.user_id WHERE a.id=$1`, appID).Scan(&userSlug, &slug, &serviceSlug); err != nil {
+		var slug, serviceSlug, userSlug, userID, releaseContainerID string
+		if err = tx.QueryRow(ctx, `SELECT u.slug,a.slug,a.service_slug,a.user_id::text FROM user_apps a JOIN users u ON u.id=a.user_id WHERE a.id=$1`, appID).Scan(&userSlug, &slug, &serviceSlug, &userID); err != nil {
 			logger.Error("route slug lookup failed", "error", err)
 			return
+		}
+		_ = tx.QueryRow(ctx, `SELECT container_id FROM app_releases WHERE id=$1 AND user_app_id=$2`, releaseID, appID).Scan(&releaseContainerID)
+		var stagedHostPort *int
+		_ = tx.QueryRow(ctx, `SELECT host_port FROM app_releases WHERE id=$1 AND user_app_id=$2`, releaseID, appID).Scan(&stagedHostPort)
+		routeHostPort := 0
+		if stagedHostPort != nil {
+			routeHostPort = *stagedHostPort
 		}
 		var routeSnapshot struct {
 			Route map[string]any `json:"route_spec"`
@@ -1794,7 +1865,17 @@ func processOne(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
 			logger.Error("route instance identity lookup failed", "error", err)
 			return
 		}
-		if _, err = tx.Exec(ctx, `INSERT INTO app_routes(user_app_id,instance_id,release_id,public_path,upstream_host,upstream_port,upstream_container) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(user_app_id) DO UPDATE SET instance_id=EXCLUDED.instance_id,release_id=EXCLUDED.release_id,public_path=EXCLUDED.public_path,upstream_host=EXCLUDED.upstream_host,upstream_port=EXCLUDED.upstream_port,upstream_container=EXCLUDED.upstream_container,updated_at=now()`, appID, instanceID, releaseID, `/apps/`+userSlug+`/`+slug, releaseAlias(releaseID), port, containerName(instanceID, releaseID)); err != nil {
+		networkName := ""
+		if userID != "" {
+			networkName = runtimepolicy.UserNetworkName(runtimeOwner, userID)
+		}
+		hostPortColumn := "NULL"
+		routeArgs := []any{appID, instanceID, releaseID, `/apps/` + userSlug + `/` + slug, releaseAlias(releaseID), port, containerName(instanceID, releaseID), networkName, releaseContainerID}
+		if routeHostPort >= 1 && routeHostPort <= 65535 {
+			hostPortColumn = "$10"
+			routeArgs = append(routeArgs, routeHostPort)
+		}
+		if _, err = tx.Exec(ctx, `INSERT INTO app_routes(user_app_id,instance_id,release_id,public_path,upstream_host,upstream_port,upstream_container,network_name,container_id,host_port) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,`+hostPortColumn+`) ON CONFLICT(user_app_id) DO UPDATE SET instance_id=EXCLUDED.instance_id,release_id=EXCLUDED.release_id,public_path=EXCLUDED.public_path,upstream_host=EXCLUDED.upstream_host,upstream_port=EXCLUDED.upstream_port,upstream_container=EXCLUDED.upstream_container,network_name=EXCLUDED.network_name,container_id=EXCLUDED.container_id,host_port=EXCLUDED.host_port,updated_at=now()`, routeArgs...); err != nil {
 			logger.Error("route update failed", "error", err)
 			return
 		}
@@ -2024,6 +2105,37 @@ func routePort(spec map[string]any) int {
 		return int(value)
 	}
 	return 8080
+}
+
+func routePortMappingAvailableWorker(routeSpec map[string]any) bool {
+	mapping, ok := routeSpec["portMapping"].(map[string]any)
+	if !ok {
+		return false
+	}
+	available, _ := mapping["available"].(bool)
+	return available
+}
+
+func healthPathOrRoot(health map[string]any) string {
+	if path, ok := health["path"].(string); ok && path != "" {
+		return path
+	}
+	return "/"
+}
+
+// routePortMapping builds the direct host-port publish when the product
+// version makes it available and the user opted in for this instance. The host
+// port is always 0 so Docker scans for a free port and avoids conflicts.
+func routePortMapping(routeSpec map[string]any, internalPort int, userEnabled bool) *runtimepolicy.PortMapping {
+	raw, ok := routeSpec["portMapping"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	available, _ := raw["available"].(bool)
+	if !available || !userEnabled {
+		return nil
+	}
+	return &runtimepolicy.PortMapping{Enabled: true, InternalPort: internalPort, HostPort: 0}
 }
 
 func unavailableRuntimeDependencies(ctx context.Context, tx pgx.Tx, userID, appID string, runtimeSpec map[string]any) ([]string, error) {

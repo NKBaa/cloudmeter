@@ -69,7 +69,7 @@ user_auth=(-H "Authorization: Bearer $user_token" -H 'Content-Type: application/
 
 plan_id="$(curl -fsS "${admin_auth[@]}" -d "{\"code\":\"verify-cycle-$marker\",\"name\":\"Cycle verification $marker\"}" "$API/admin/plans" | jq -r .id)"
 lower_plan_id="$(curl -fsS "${admin_auth[@]}" -d "{\"code\":\"verify-lower-$marker\",\"name\":\"Downgrade verification $marker\"}" "$API/admin/plans" | jq -r .id)"
-version_body="$(jq -cn --arg effectiveAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{cyclePriceCents:1000,apps:2,cpuCores:2,memoryGiB:2,systemDiskGiB:10,dataDiskGiB:10,backupStorageGiB:0,backupOperationsPerMonth:0,concurrentDeployments:1,publicIngresses:1,ingressOverageEnabled:false,egressGiB:1,egressOverageEnabled:false,creditGrantCents:100,allowedProductIds:[],effectiveAt:$effectiveAt}')"
+version_body="$(jq -cn --arg effectiveAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{cyclePriceCents:1000,apps:2,cpuCores:2,memoryGiB:2,dataDiskGiB:10,backupStorageGiB:0,backupOperationsPerMonth:0,concurrentDeployments:1,publicIngresses:1,ingressOverageEnabled:false,egressGiB:1,egressOverageEnabled:false,creditGrantCents:100,allowedProductIds:[],effectiveAt:$effectiveAt}')"
 v1="$(curl -fsS "${admin_auth[@]}" -d "$version_body" "$API/admin/plans/$plan_id/versions" | jq -r .id)"
 lower_body="$(jq -c '.cyclePriceCents=500 | .creditGrantCents=0' <<<"$version_body")"
 lower="$(curl -fsS "${admin_auth[@]}" -d "$lower_body" "$API/admin/plans/$lower_plan_id/versions" | jq -r .id)"

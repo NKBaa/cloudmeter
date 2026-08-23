@@ -102,22 +102,25 @@ func smtpConfigurationReady(enabled bool, host string, port int, username string
 
 func (s *Server) registrationPolicy(w http.ResponseWriter, r *http.Request) {
 	var e, v, block, turnstileEnabled, loginProtection, registrationProtection bool
+	var passwordLogin, passwordRegistration bool
 	var siteKey string
 	var domains []string
-	if err := s.db.QueryRow(r.Context(), "SELECT registration_enabled,email_verification_required,block_email_aliases,email_domain_whitelist,turnstile_enabled,turnstile_site_key,turnstile_login_protection,turnstile_registration_protection FROM system_state WHERE singleton").Scan(&e, &v, &block, &domains, &turnstileEnabled, &siteKey, &loginProtection, &registrationProtection); err != nil {
+	if err := s.db.QueryRow(r.Context(), "SELECT registration_enabled,email_verification_required,block_email_aliases,email_domain_whitelist,turnstile_enabled,turnstile_site_key,turnstile_login_protection,turnstile_registration_protection,password_login_enabled,password_registration_enabled FROM system_state WHERE singleton").Scan(&e, &v, &block, &domains, &turnstileEnabled, &siteKey, &loginProtection, &registrationProtection, &passwordLogin, &passwordRegistration); err != nil {
 		s.internalError(w, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"registrationEnabled": e, "emailVerificationRequired": v, "blockEmailAliases": block, "emailDomainWhitelist": domains, "turnstileEnabled": turnstileEnabled, "turnstileSiteKey": siteKey, "turnstileLoginProtection": turnstileEnabled && loginProtection, "turnstileRegistrationProtection": turnstileEnabled && registrationProtection})
+	writeJSON(w, 200, map[string]any{"registrationEnabled": e, "emailVerificationRequired": v, "blockEmailAliases": block, "emailDomainWhitelist": domains, "turnstileEnabled": turnstileEnabled, "turnstileSiteKey": siteKey, "turnstileLoginProtection": turnstileEnabled && loginProtection, "turnstileRegistrationProtection": turnstileEnabled && registrationProtection, "passwordLoginEnabled": passwordLogin, "passwordRegistrationEnabled": passwordRegistration})
 }
 func (s *Server) getAuthPolicy(w http.ResponseWriter, r *http.Request) { s.registrationPolicy(w, r) }
 func (s *Server) updateAuthPolicy(w http.ResponseWriter, r *http.Request) {
 	p, _ := r.Context().Value(principalKey).(principal)
 	var q struct {
-		RegistrationEnabled       bool     `json:"registrationEnabled"`
-		EmailVerificationRequired bool     `json:"emailVerificationRequired"`
-		BlockEmailAliases         bool     `json:"blockEmailAliases"`
-		EmailDomainWhitelist      []string `json:"emailDomainWhitelist"`
+		RegistrationEnabled         bool     `json:"registrationEnabled"`
+		EmailVerificationRequired   bool     `json:"emailVerificationRequired"`
+		BlockEmailAliases           bool     `json:"blockEmailAliases"`
+		EmailDomainWhitelist        []string `json:"emailDomainWhitelist"`
+		PasswordLoginEnabled        *bool    `json:"passwordLoginEnabled"`
+		PasswordRegistrationEnabled *bool    `json:"passwordRegistrationEnabled"`
 	}
 	if err := decodeJSON(r, &q); err != nil {
 		writeError(w, 400, "invalid_request", err.Error())
@@ -138,11 +141,19 @@ func (s *Server) updateAuthPolicy(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, err)
 		return
 	}
-	var currentRegistration, currentVerification, currentBlockAliases bool
+	var currentRegistration, currentVerification, currentBlockAliases, currentPasswordLogin, currentPasswordRegistration bool
 	var currentWhitelist []string
-	if err = tx.QueryRow(r.Context(), "SELECT registration_enabled,email_verification_required,block_email_aliases,email_domain_whitelist FROM system_state WHERE singleton FOR UPDATE").Scan(&currentRegistration, &currentVerification, &currentBlockAliases, &currentWhitelist); err != nil {
+	if err = tx.QueryRow(r.Context(), "SELECT registration_enabled,email_verification_required,block_email_aliases,email_domain_whitelist,password_login_enabled,password_registration_enabled FROM system_state WHERE singleton FOR UPDATE").Scan(&currentRegistration, &currentVerification, &currentBlockAliases, &currentWhitelist, &currentPasswordLogin, &currentPasswordRegistration); err != nil {
 		s.internalError(w, err)
 		return
+	}
+	newPasswordLogin := currentPasswordLogin
+	if q.PasswordLoginEnabled != nil {
+		newPasswordLogin = *q.PasswordLoginEnabled
+	}
+	newPasswordRegistration := currentPasswordRegistration
+	if q.PasswordRegistrationEnabled != nil {
+		newPasswordRegistration = *q.PasswordRegistrationEnabled
 	}
 	var smtpEnabled, smtpPasswordConfigured bool
 	var smtpHost, smtpUsername, smtpFromEmail, smtpTLSMode string
@@ -155,11 +166,11 @@ func (s *Server) updateAuthPolicy(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "smtp_required_for_email_verification", "SMTP must be enabled and configured before email verification can be required")
 		return
 	}
-	if _, err = tx.Exec(r.Context(), "UPDATE system_state SET registration_enabled=$1,email_verification_required=$2,block_email_aliases=$3,email_domain_whitelist=$4 WHERE singleton", q.RegistrationEnabled, q.EmailVerificationRequired, q.BlockEmailAliases, cleaned); err != nil {
+	if _, err = tx.Exec(r.Context(), "UPDATE system_state SET registration_enabled=$1,email_verification_required=$2,block_email_aliases=$3,email_domain_whitelist=$4,password_login_enabled=$5,password_registration_enabled=$6 WHERE singleton", q.RegistrationEnabled, q.EmailVerificationRequired, q.BlockEmailAliases, cleaned, newPasswordLogin, newPasswordRegistration); err != nil {
 		s.internalError(w, err)
 		return
 	}
-	if _, err = tx.Exec(r.Context(), `INSERT INTO audit_logs(actor_user_id,action,resource_type,resource_id,request_id,metadata) VALUES($1::uuid,'auth.policy.update','system_state','singleton',$2,jsonb_build_object('registration_enabled',$3::boolean,'email_verification_required',$4::boolean,'block_email_aliases',$5::boolean,'email_domain_whitelist',$6::text[],'previous_registration_enabled',$7::boolean,'previous_email_verification_required',$8::boolean,'previous_block_email_aliases',$9::boolean,'previous_email_domain_whitelist',$10::text[]))`, p.ID, requestID(r.Context()), q.RegistrationEnabled, q.EmailVerificationRequired, q.BlockEmailAliases, cleaned, currentRegistration, currentVerification, currentBlockAliases, currentWhitelist); err != nil {
+	if _, err = tx.Exec(r.Context(), `INSERT INTO audit_logs(actor_user_id,action,resource_type,resource_id,request_id,metadata) VALUES($1::uuid,'auth.policy.update','system_state','singleton',$2,jsonb_build_object('registration_enabled',$3::boolean,'email_verification_required',$4::boolean,'block_email_aliases',$5::boolean,'email_domain_whitelist',$6::text[],'password_login_enabled',$7::boolean,'password_registration_enabled',$8::boolean,'previous_registration_enabled',$9::boolean,'previous_email_verification_required',$10::boolean,'previous_block_email_aliases',$11::boolean,'previous_email_domain_whitelist',$12::text[],'previous_password_login_enabled',$13::boolean,'previous_password_registration_enabled',$14::boolean))`, p.ID, requestID(r.Context()), q.RegistrationEnabled, q.EmailVerificationRequired, q.BlockEmailAliases, cleaned, newPasswordLogin, newPasswordRegistration, currentRegistration, currentVerification, currentBlockAliases, currentWhitelist, currentPasswordLogin, currentPasswordRegistration); err != nil {
 		s.internalError(w, err)
 		return
 	}
@@ -180,14 +191,18 @@ func (s *Server) sendVerificationCode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "validation_failed", "email is invalid")
 		return
 	}
-	var enabled, required, smtpEnabled, blockAliases bool
+	var enabled, required, smtpEnabled, blockAliases, passwordRegistrationEnabled bool
 	var whitelist []string
-	if err := s.db.QueryRow(r.Context(), "SELECT registration_enabled,email_verification_required,block_email_aliases,email_domain_whitelist FROM system_state WHERE singleton").Scan(&enabled, &required, &blockAliases, &whitelist); err != nil {
+	if err := s.db.QueryRow(r.Context(), "SELECT registration_enabled,email_verification_required,block_email_aliases,email_domain_whitelist,password_registration_enabled FROM system_state WHERE singleton").Scan(&enabled, &required, &blockAliases, &whitelist, &passwordRegistrationEnabled); err != nil {
 		s.internalError(w, err)
 		return
 	}
 	if !enabled {
 		writeError(w, 403, "registration_disabled", "registration is disabled")
+		return
+	}
+	if !passwordRegistrationEnabled {
+		writeError(w, 403, "password_registration_disabled", "password registration is disabled")
 		return
 	}
 	if !required {

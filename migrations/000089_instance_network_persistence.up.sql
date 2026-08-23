@@ -1,0 +1,5 @@
+BEGIN;
+ALTER TABLE app_routes ADD COLUMN IF NOT EXISTS network_name text NOT NULL DEFAULT '';
+ALTER TABLE app_routes ADD COLUMN IF NOT EXISTS container_id text NOT NULL DEFAULT '';
+ALTER TABLE app_releases ADD COLUMN IF NOT EXISTS container_id text NOT NULL DEFAULT '';
+COMMIT;

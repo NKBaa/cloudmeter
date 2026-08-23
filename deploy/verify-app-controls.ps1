@@ -256,7 +256,7 @@ try {
     if ($plan.StatusCode -ne 201) { throw 'plan creation failed' }
     $planID = $plan.Body.id
     $planVersionBody = @{
-        cyclePriceCents = 0; apps = 2; cpuCores = 2; memoryGiB = 2; systemDiskGiB = 10; dataDiskGiB = 2
+        cyclePriceCents = 0; apps = 2; cpuCores = 2; memoryGiB = 2; dataDiskGiB = 2
         backupStorageGiB = 1; backupOperationsPerMonth = 2; concurrentDeployments = 2
         publicIngresses = 2; ingressOverageEnabled = $false; egressGiB = 1; egressOverageEnabled = $false
         creditGrantCents = 0; allowedProductIds = @($productID); effectiveAt = (Get-Date).ToUniversalTime().ToString('o')
@@ -312,7 +312,7 @@ try {
     Assert-DbRejected "UPDATE app_routes SET public_path='/apps/hijacked/path' WHERE user_app_id='$appID'" 'application route public path does not match application identity'
     Assert-DbRejected "UPDATE app_routes SET upstream_host='release-000000000000' WHERE user_app_id='$appID'" 'application route upstream host does not match release identity'
     Assert-DbRejected "UPDATE app_routes SET upstream_port=upstream_port+1 WHERE user_app_id='$appID'" 'application route upstream port does not match release snapshot'
-    Assert-DbRejected "UPDATE app_routes SET upstream_container='cm-00000000000-$appID-$sourceRelease' WHERE user_app_id='$appID'" 'application route container does not match application and release identity'
+    Assert-DbRejected "UPDATE app_routes SET upstream_container='cm-00000000000-$appID-$sourceRelease' WHERE user_app_id='$appID'" 'application route container does not match instance and release identity'
     & $Compose[0] $Compose[1..($Compose.Length - 1)] up -d --no-build --force-recreate --no-deps app-router | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'failed to recreate the application router' }
     Wait-HttpStatus "$BaseUrl$publicPath" 200
