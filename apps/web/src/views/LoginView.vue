@@ -1,9 +1,35 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from "vue";
-import { ArrowRight, Check, Code2, Eye, EyeOff, LoaderCircle } from "@lucide/vue";
+import { onMounted, reactive, ref , computed} from "vue";
+import { ArrowRight, X, Check, Code2, Eye, EyeOff, LoaderCircle } from "@lucide/vue";
 import { api } from "../api";
+import { marked } from "marked";
+import { sanitizeHTML } from "../sanitize-html";
+import { useSiteConfig } from "../site-config";
 import BrandMark from "../components/BrandMark.vue";
 import TurnstileWidget from "../components/TurnstileWidget.vue";
+
+const { fullSettings } = useSiteConfig();
+const legalModalOpen = ref(false);
+const legalModalType = ref<'terms' | 'privacy'>('terms');
+const legalModalContent = ref("");
+
+const renderedLegalContent = computed(() => {
+  if (!legalModalContent.value) return "";
+  return sanitizeHTML(marked.parse(legalModalContent.value) as string);
+});
+
+function openLegal(type: 'terms' | 'privacy') {
+  const c = type === 'terms' ? fullSettings.value?.termsOfService : fullSettings.value?.privacyPolicy;
+  if (!c) return;
+  const trimmed = c.trim();
+  if (/^https?:\/\//i.test(trimmed) && !trimmed.includes("\n")) {
+    window.open(trimmed, '_blank');
+  } else {
+    legalModalType.value = type;
+    legalModalContent.value = trimmed;
+    legalModalOpen.value = true;
+  }
+}
 
 const form = reactive({ email: "", password: "", turnstileToken: "" });
 const showPassword = ref(false);
@@ -235,6 +261,13 @@ async function oauth(provider: string) {
             </button>
           </form>
 
+          <p v-if="fullSettings?.termsOfService || fullSettings?.privacyPolicy" class="legal-notice" style="text-align: center; font-size: 12px; color: var(--text-muted); margin-top: 16px;">
+            登录即代表您同意我们的
+            <a v-if="fullSettings?.termsOfService" href="#" @click.prevent="openLegal('terms')" style="color: var(--accent); text-decoration: none;">用户协议</a>
+            <span v-if="fullSettings?.termsOfService && fullSettings?.privacyPolicy">和</span>
+            <a v-if="fullSettings?.privacyPolicy" href="#" @click.prevent="openLegal('privacy')" style="color: var(--accent); text-decoration: none;">隐私政策</a>
+          </p>
+
           <!-- 注册引导 -->
           <p v-if="registrationEnabled" class="form-footer-link">
             还没有账户？
@@ -243,10 +276,23 @@ async function oauth(provider: string) {
         </div>
       </main>
 
+    <Transition name="modal-pop">
+      <div v-if="legalModalOpen" class="modal-backdrop" @click.self="legalModalOpen = false">
+        <section class="secret-dialog" style="max-width: 640px; width: 100%; max-height: 85vh; display: flex; flex-direction: column; background: var(--canvas);">
+          <header style="margin-bottom: 10px;">
+            <h2>{{ legalModalType === 'terms' ? '用户协议' : '隐私政策' }}</h2>
+            <button type="button" class="icon-button" @click="legalModalOpen = false"><X :size="20" /></button>
+          </header>
+          <div class="modal-body" style="overflow-y: auto; line-height: 1.6; font-size: 14px; color: var(--text-soft);" v-html="renderedLegalContent"></div>
+        </section>
+      </div>
+    </Transition>
+
+
       <!-- 页脚 -->
       <footer class="auth-simple-footer">
         <p class="mono-data text-xs text-muted">
-          © {{ new Date().getFullYear() }} CloudMeter. 现代应用云平台.
+          {{ fullSettings?.footerText || `© ${new Date().getFullYear()} ${fullSettings?.systemName || 'CloudMeter'}. 现代应用云平台.` }}
         </p>
       </footer>
     </div>
@@ -520,4 +566,3 @@ async function oauth(provider: string) {
   }
 }
 </style>
-

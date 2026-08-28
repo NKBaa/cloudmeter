@@ -1,11 +1,22 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { onMounted, ref } from "vue";
-import { SlidersHorizontal, Save, CheckCircle2, ShieldCheck, RefreshCw } from "@lucide/vue";
+import { Save, CheckCircle2, RotateCcw } from "@lucide/vue";
 import { api } from "../api";
 import { useSiteConfig, type SystemSettings } from "../site-config";
 
-const { systemName, setSystemName } = useSiteConfig();
-const inputName = ref("");
+const { setSystemName } = useSiteConfig();
+const form = ref<SystemSettings>({
+  systemName: "",
+  serverUrl: "",
+  appBaseDomain: "",
+  logoUrl: "",
+  footerText: "",
+  aboutContent: "",
+  homepageContent: "",
+  termsOfService: "",
+  privacyPolicy: "",
+});
+
 const loading = ref(false);
 const saving = ref(false);
 const message = ref("");
@@ -17,8 +28,8 @@ async function load() {
   error.value = "";
   try {
     const res = await api<SystemSettings>("/admin/settings/system");
-    if (res && res.systemName) {
-      inputName.value = res.systemName;
+    if (res) {
+      Object.assign(form.value, res);
       setSystemName(res.systemName);
       if (res.updatedAt) updatedAt.value = new Date(res.updatedAt).toLocaleString();
     }
@@ -30,31 +41,38 @@ async function load() {
 }
 
 async function save() {
-  const trimmed = inputName.value.trim();
-  if (!trimmed) {
+  const trimmedName = form.value.systemName.trim();
+  if (!trimmedName) {
     error.value = "系统名称不能为空";
     return;
   }
+  form.value.systemName = trimmedName;
+
   saving.value = true;
   error.value = "";
   message.value = "";
   try {
+    const payload = { ...form.value };
+    delete payload.updatedAt;
     const res = await api<SystemSettings>("/admin/settings/system", {
       method: "PUT",
-      body: JSON.stringify({ systemName: trimmed }),
+      body: JSON.stringify(payload),
     });
     if (res && res.systemName) {
       setSystemName(res.systemName);
-      inputName.value = res.systemName;
       updatedAt.value = new Date().toLocaleString();
-      message.value = "系统名称已成功保存并实时生效！";
-      setTimeout(() => { message.value = ""; }, 4000);
+      message.value = "保存成功";
+      setTimeout(() => { message.value = ""; }, 3000);
     }
   } catch (err: any) {
     error.value = err.message || "保存失败";
   } finally {
     saving.value = false;
   }
+}
+
+function reset() {
+  load();
 }
 
 onMounted(() => {
@@ -68,7 +86,15 @@ onMounted(() => {
       <div>
         <p class="eyebrow">平台设置</p>
         <h1>系统设置</h1>
-        <p class="quiet">自定义平台对外名称与全局品牌标识，保存后全站顶栏、登录页及文档即刻同步更新。</p>
+        <p class="quiet">自定义平台对外名称、品牌标识、页面展示内容及法务声明。</p>
+      </div>
+      <div class="actions flex gap-2">
+        <button class="secondary compact" @click="reset" :disabled="loading || saving">
+          <RotateCcw :size="16" />重置
+        </button>
+        <button class="primary compact" @click="save" :disabled="loading || saving">
+          <Save :size="16" />{{ saving ? "保存中..." : "保存更改" }}
+        </button>
       </div>
     </header>
 
@@ -77,170 +103,185 @@ onMounted(() => {
       <CheckCircle2 :size="16" /> {{ message }}
     </p>
 
-    <div class="system-settings-grid">
-      <!-- 主配置卡片 -->
-      <section class="nextdev-card p-6">
-        <div class="card-title-group">
-          <span class="eyebrow">BRANDING · 品牌名称</span>
-          <h3>平台名称与展示设置</h3>
+    <div v-if="!loading" class="flex flex-col gap-6 mt-4">
+      <!-- 基础信息 -->
+      <section class="nextdev-card p-0">
+        <div class="card-header-bar">
+          <div class="card-title-group">
+            <span class="eyebrow">BASIC · 基础信息</span>
+            <h3>系统基本信息</h3>
+          </div>
         </div>
-
-        <form class="system-form mt-4" @submit.prevent="save">
-          <div class="form-group">
-            <label for="system-name-input">系统名称 (System Name)</label>
-            <div class="input-wrapper">
-              <input
-                id="system-name-input"
-                v-model="inputName"
-                type="text"
-                maxlength="64"
-                placeholder="例如：CloudMeter / 极简应用云"
-                required
-                :disabled="saving || loading"
-              />
+        <div class="card-divider"></div>
+        <div class="p-6 flex flex-col">
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div class="log-field">
+              <label>系统名称</label>
+              <input v-model="form.systemName" placeholder="请输入系统名称" maxlength="64" />
+              <em>在整个应用程序中显示的名称</em>
             </div>
-            <small class="form-hint">
-              用于全站 Logo 文字、控制台面包屑、邮件通知落款及页面 Title 标题。
-            </small>
-          </div>
-
-          <div class="brand-preview-box mt-4">
-            <span class="eyebrow">LIVE PREVIEW · 实时预览</span>
-            <div class="preview-brand-item mt-2">
-              <span class="brand-mark">
-                <svg
-                  class="brand-icon"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2.4"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                >
-                  <path d="M3 17 L9 7 L13 14 L21 4" />
-                  <circle cx="9" cy="7" r="1.5" fill="currentColor" stroke="none" />
-                  <circle cx="21" cy="4" r="1.5" fill="currentColor" stroke="none" />
-                </svg>
-              </span>
-              <strong class="preview-name">{{ inputName || "CloudMeter" }}</strong>
+            <div class="log-field">
+              <label>服务器地址</label>
+              <input v-model="form.serverUrl" placeholder="例如：https://cloud.example.com" />
+              <em>主系统的公开访问地址，用于应用子域名安全返回控制台；不参与应用计费</em>
             </div>
           </div>
-
-          <div class="form-actions mt-5 flex items-center justify-between">
-            <small v-if="updatedAt" class="quiet mono-data">最后更新：{{ updatedAt }}</small>
-            <span v-else></span>
-            <button class="primary compact" type="submit" :disabled="saving || loading">
-              <Save :size="16" />
-              <span>{{ saving ? "正在保存..." : "保存设置" }}</span>
-            </button>
+          <div class="log-field mt-5">
+            <label>徽标 URL</label>
+            <input v-model="form.logoUrl" placeholder="您的徽标图片 URL（可选）" />
+            <em>自定义您的平台展示 Logo</em>
           </div>
-        </form>
+        </div>
       </section>
 
-      <!-- 侧边说明卡片 -->
-      <aside class="nextdev-card p-6">
-        <div class="card-title-group">
-          <span class="eyebrow">INFO · 说明</span>
-          <h3>品牌定制提示</h3>
+      <!-- 路由与代理设置 -->
+      <section class="nextdev-card p-0">
+        <div class="card-header-bar">
+          <div class="card-title-group">
+            <span class="eyebrow">NETWORK · 路由与网络</span>
+            <h3>反向代理服务设置</h3>
+          </div>
         </div>
-        <ul class="system-tips-list mt-3">
-          <li>
-            <ShieldCheck :size="16" class="tip-icon" />
-            <div>
-              <strong>全站即时生效</strong>
-              <p>管理员提交修改后，客户端将通过响应式状态自动渲染新名称，无需重新编译前端代码。</p>
-            </div>
-          </li>
-          <li>
-            <RefreshCw :size="16" class="tip-icon" />
-            <div>
-              <strong>多端一致性</strong>
-              <p>系统名称将自动注入并同步至营销落地页、用户控制台、工单邮件及管理总览。</p>
-            </div>
-          </li>
-        </ul>
-      </aside>
+        <div class="card-divider"></div>
+        <div class="p-6 flex flex-col">
+          <div class="log-field">
+            <label>应用泛子域名 (App Base Domain)</label>
+            <input v-model="form.appBaseDomain" placeholder="例如：apps.example.com" />
+            <em>独立于服务器地址，为每个应用分配专属子域名（例如 app-user.apps.example.com）。必须将 *.apps.example.com 泛解析到当前服务器；不参与应用计费。</em>
+          </div>
+        </div>
+      </section>
+
+      <!-- 定制内容 -->
+      <section class="nextdev-card p-0">
+        <div class="card-header-bar">
+          <div class="card-title-group">
+            <span class="eyebrow">CONTENT · 页面定制</span>
+            <h3>首页与页面内容</h3>
+          </div>
+        </div>
+        <div class="card-divider"></div>
+        <div class="p-6 flex flex-col gap-6">
+          <div class="log-field">
+            <label>前台首页内容</label>
+            <textarea v-model="form.homepageContent" rows="6" placeholder="输入自定义的前台首页 HTML 富文本内容..."></textarea>
+            <em>自定义前台首页 HTML 富文本展示内容，用户访问未登录主页时可见。</em>
+          </div>
+
+          <div class="log-field">
+            <label>关于我们</label>
+            <textarea v-model="form.aboutContent" rows="3" placeholder="输入安全 HTML 内容或完整 URL"></textarea>
+            <em>用于主系统首页的品牌介绍；填写完整 URL 时展示为外部“了解我们”链接。</em>
+          </div>
+
+          <div class="log-field">
+            <label>全局页脚</label>
+            <textarea v-model="form.footerText" rows="2" placeholder="例如：© 2025 某某科技有限公司 保留所有权利。"></textarea>
+            <em>显示在各个公开页面底部的页脚文本</em>
+          </div>
+        </div>
+      </section>
+
+      <!-- 法务声明 -->
+      <section class="nextdev-card p-0">
+        <div class="card-header-bar">
+          <div class="card-title-group">
+            <span class="eyebrow">LEGAL · 法务声明</span>
+            <h3>协议与政策</h3>
+          </div>
+        </div>
+        <div class="card-divider"></div>
+        <div class="p-6 flex flex-col gap-6">
+          <div class="log-field">
+            <label>用户协议 (Terms of Service)</label>
+            <textarea v-model="form.termsOfService" rows="8" placeholder="输入 Markdown 或 HTML 格式的用户协议内容..."></textarea>
+            <em>留空以禁用协议要求。支持 Markdown、HTML 或重定向用户的完整 URL。</em>
+          </div>
+
+          <div class="log-field">
+            <label>隐私政策 (Privacy Policy)</label>
+            <textarea v-model="form.privacyPolicy" rows="8" placeholder="# 隐私政策..."></textarea>
+            <em>支持 Markdown、HTML 或用于重定向用户的完整 URL。</em>
+          </div>
+        </div>
+      </section>
     </div>
   </main>
 </template>
 
 <style scoped>
-.system-settings-grid {
-  display: grid;
-  grid-template-columns: 1fr 340px;
+.page-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+.actions {
+  margin-top: 10px;
+}
+.log-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.log-field label {
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--text);
+}
+.log-field input, .log-field textarea {
+  width: 100%;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-family: inherit;
+  color: var(--text);
+  font-size: 14px;
+  transition: border-color 0.2s;
+}
+.log-field input:focus, .log-field textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.log-field em {
+  font-style: normal;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.flex {
+  display: flex;
+}
+.flex-col {
+  flex-direction: column;
+}
+.items-center {
+  align-items: center;
+}
+.justify-between {
+  justify-content: space-between;
+}
+.gap-2 {
+  gap: 8px;
+}
+.gap-6 {
   gap: 24px;
-  align-items: start;
+}
+.mt-4 {
   margin-top: 16px;
 }
-.system-form {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
+.mt-5 {
+  margin-top: 20px;
 }
-.brand-preview-box {
-  padding: 16px;
-  border-radius: 10px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-}
-.preview-brand-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.preview-name {
-  font-size: 16px;
-  font-weight: 800;
-  color: var(--text);
-}
-.brand-mark {
-  width: 32px;
-  height: 32px;
+.grid {
   display: grid;
-  place-items: center;
-  background: var(--accent);
-  color: var(--primary-foreground);
-  border-radius: 8px;
-  box-shadow: 0 2px 8px var(--accent-glow);
 }
-.brand-icon {
-  width: 18px;
-  height: 18px;
+.grid-cols-1 {
+  grid-template-columns: minmax(0, 1fr);
 }
-.system-tips-list {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-.system-tips-list li {
-  display: flex;
-  gap: 12px;
-  align-items: flex-start;
-}
-.tip-icon {
-  color: var(--accent);
-  flex: 0 0 16px;
-  margin-top: 2px;
-}
-.system-tips-list strong {
-  display: block;
-  font-size: 13.5px;
-  font-weight: 600;
-  color: var(--text);
-  margin-bottom: 2px;
-}
-.system-tips-list p {
-  margin: 0;
-  font-size: 12.5px;
-  color: var(--text-muted);
-  line-height: 1.5;
-}
-@media (max-width: 900px) {
-  .system-settings-grid {
-    grid-template-columns: 1fr;
+@media (min-width: 768px) {
+  .md\:grid-cols-2 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 </style>

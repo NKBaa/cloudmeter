@@ -34,6 +34,7 @@ type Ticket = {
   category: string;
   priority: string;
   status: string;
+  escalatedToHuman: boolean;
   messageCount: number;
   lastMessage: string;
   lastAuthorName: string;
@@ -47,6 +48,7 @@ type TicketMessage = {
   authorId: string;
   authorName: string;
   staffReply: boolean;
+  aiReply: boolean;
   body: string;
   createdAt: string;
 };
@@ -166,7 +168,8 @@ function formatFullTime(value: string) {
     minute: "2-digit",
   });
 }
-function initials(value: string) {
+function initials(value: string, isAI?: boolean) {
+  if (isAI) return "AI";
   return value.trim().slice(0, 1).toLocaleUpperCase("zh-CN") || "?";
 }
 function done(value: string) {
@@ -191,9 +194,11 @@ function needsAttention(item: Ticket) {
   return props.admin ? !item.lastReplyStaff : item.lastReplyStaff;
 }
 function isOwnMessage(item: TicketMessage) {
+  if (item.aiReply) return false;
   return props.admin ? item.staffReply : !item.staffReply;
 }
 function messageRole(item: TicketMessage) {
+  if (item.aiReply) return "AI 智能客服";
   return item.staffReply ? "平台支持" : "用户";
 }
 
@@ -331,6 +336,20 @@ async function closeTicket() {
     await refreshListOnly();
   } catch (value) {
     failed(value);
+  } finally {
+    busy.value = "";
+  }
+}
+
+async function escalateTicket() {
+  if (busy.value || !detail.value) return;
+  busy.value = "escalate";
+  try {
+    await api(`/tickets/${detail.value.id}/escalate`, { method: "POST", body: "{}" });
+    done("已转交人工客服");
+    detail.value.escalatedToHuman = true;
+  } catch (e) {
+    failed(e);
   } finally {
     busy.value = "";
   }
@@ -555,10 +574,11 @@ onBeforeUnmount(() => {
                 'ticket-message',
                 item.staffReply && 'staff',
                 isOwnMessage(item) && 'mine',
+                item.aiReply && 'ai',
               ]"
             >
               <span class="ticket-message-avatar">{{
-                initials(item.authorName)
+                initials(item.authorName, item.aiReply)
               }}</span>
               <div class="ticket-message-content">
                 <div>

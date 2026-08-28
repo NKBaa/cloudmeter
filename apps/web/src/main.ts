@@ -17,8 +17,8 @@ import BackupsView from './views/BackupsView.vue'
 import AuditAdminView from './views/AuditAdminView.vue'
 import CheckinSettingsView from './views/CheckinSettingsView.vue'
 import HomeView from './views/HomeView.vue'
-import HomeSettingsView from './views/HomeSettingsView.vue'
 import SystemSettingsView from './views/SystemSettingsView.vue'
+import AISupportSettingsView from './views/AISupportSettingsView.vue'
 import DockerSettingsView from './views/DockerSettingsView.vue'
 import TicketsView from './views/TicketsView.vue'
 import AppDetailView from './views/AppDetailView.vue'
@@ -65,7 +65,6 @@ const router = createRouter({
         { path: 'console/apps/:instanceId', component: AppDetailView, meta: { appDetail: true } },
         { path: 'console/billing', component: ConsoleView, props: { page: 'billing' } },
         { path: 'console/recharge', component: ConsoleView, props: { page: 'recharge' } },
-        { path: 'console/checkin', component: ConsoleView, props: { page: 'checkin' } },
         { path: 'console/usage', component: ConsoleView, props: { page: 'usage' } },
         { path: 'console/releases', component: ReleasesView },
         { path: 'console/backups', component: BackupsView },
@@ -87,7 +86,7 @@ const router = createRouter({
         { path: 'admin/log-settings', component: LogSettingsView, meta: { superAdmin: true } },
         { path: 'admin/audit', component: AuditAdminView, meta: { superAdmin: true } },
         { path: 'admin/system', component: SystemSettingsView, meta: { superAdmin: true } },
-        { path: 'admin/homepage', component: HomeSettingsView, meta: { superAdmin: true } },
+        { path: 'admin/ai-support', component: AISupportSettingsView, meta: { superAdmin: true } },
         { path: 'admin/tickets', component: TicketsView, props: { admin: true }, meta: { admin: true } },
         { path: 'admin/docker', component: DockerSettingsView, meta: { admin: true } },
         { path: 'admin/metrics', component: HostMetricsView, meta: { admin: true } },

@@ -173,13 +173,43 @@ type DeploymentJob = {
   events: DeploymentEvent[];
 };
 type Usage = {
+  appId?: string | null;
+  appSlug?: string | null;
   usageCode: string;
   unit: string;
   windowStart: string;
+  windowEnd: string;
   quantity: string;
   amountCents?: number | null;
+  unitPriceMicros?: number | null;
+  pricingVersionId?: string | null;
   sealedAt?: string;
   billingDisposition?: "pending" | "charged" | "unpriced" | "waived_legacy";
+};
+type UsageAppGroup = {
+  key: string;
+  appId?: string;
+  appSlug: string;
+  productName: string;
+  iconUrl?: string;
+  items: Usage[];
+  categoryCount: number;
+  totalAmountCents: number;
+  latestAt: string;
+  hasUnpriced: boolean;
+};
+type UsageCategorySummary = {
+  key: string;
+  usageCode: string;
+  unit: string;
+  quantity: number;
+  amountCents: number;
+  amountAvailable: boolean;
+  unitPrices: number[];
+  records: Usage[];
+  latestAt: string;
+  hasUnpriced: boolean;
+  allSettled: boolean;
 };
 type Order = {
   id: string;
@@ -345,7 +375,7 @@ const pageDescription = computed(
       apps: "管理您正在运行的容器应用、运行状态与日志配置。",
       billing: "查看账本变动流水、月度结算账单与赠送额度明细。",
       recharge: "支持多种支付渠道充值，余额即时到账。",
-      usage: "按时间周期查询 CPU、内存、存储与网络流量等用量详情。",
+      usage: "按应用汇总资源用量，进入应用后查看各计费分类的单价与合计。",
       checkin: "每日签到即可领取随机金额余额奖励。",
     })[page.value],
 );
@@ -421,6 +451,17 @@ const deployPortMappingAvailable = computed(
 );
 const deployEnvironment = ref<{ key: string; value: string }[]>([]);
 const deployDependencies = ref<Dependency[]>([]);
+const deployPricePrediction = computed(() => {
+  const cpuPriceMicros = pricing.value["cpu.core_hours"] || 0;
+  const memoryPriceMicros = pricing.value["memory.gib_hours"] || 0;
+  const diskPriceMicros = pricing.value["storage.data.gib_days"] || 0;
+
+  const cpuRmbPerMonth = (deployCPU.value * 720 * cpuPriceMicros) / 100000000;
+  const memoryRmbPerMonth = ((deployMemory.value / 1024) * 720 * memoryPriceMicros) / 100000000;
+  const diskRmbPerMonth = (deployDataVolumeGiB.value * 30 * diskPriceMicros) / 100000000;
+
+  return (cpuRmbPerMonth + memoryRmbPerMonth + diskRmbPerMonth).toFixed(2);
+});
 const missingDeploySecretKeys = computed(() =>
   (deployProduct.value?.runtimeSpec?.secretKeys || []).filter(
     (key) =>
@@ -440,6 +481,7 @@ const deploySecretOptions = computed<SecretOption[]>(() => {
     editable: editable ? editable.includes(key) : true,
   }));
 });
+const pricing = ref<Record<string, number>>({});
 const checkin = ref<CheckinSummary | null>(null),
   checkinMonth = ref(
     new Date()
@@ -506,6 +548,142 @@ const totalSpend = computed(() =>
     .filter((item) => item.amountCents < 0)
     .reduce((sum, item) => sum - item.amountCents, 0),
 );
+const selectedUsageAppKey = ref("");
+const usageAppGroups = computed<UsageAppGroup[]>(() => {
+  const groups = new Map<string, Omit<UsageAppGroup, "categoryCount">>();
+
+  for (const app of apps.value) {
+    const product = productCatalog.value.find(
+      (entry) => entry.slug === app.productSlug,
+    );
+    groups.set(app.id, {
+      key: app.id,
+      appId: app.id,
+      appSlug: app.slug,
+      productName: product?.name || app.productSlug,
+      iconUrl: product?.iconUrl,
+      items: [],
+      totalAmountCents: 0,
+      latestAt: "",
+      hasUnpriced: false,
+    });
+  }
+
+  for (const item of usage.value) {
+    const key = item.appId || "account";
+    const app = item.appId
+      ? apps.value.find((entry) => entry.id === item.appId)
+      : undefined;
+    const product = app
+      ? productCatalog.value.find((entry) => entry.slug === app.productSlug)
+      : undefined;
+    const current = groups.get(key) || {
+      key,
+      appId: item.appId || undefined,
+      appSlug: item.appSlug || app?.slug || "账户级用量",
+      productName: product?.name || app?.productSlug || "平台公共费用",
+      iconUrl: product?.iconUrl,
+      items: [],
+      totalAmountCents: 0,
+      latestAt: item.windowStart,
+      hasUnpriced: false,
+    };
+
+    current.items.push(item);
+    current.totalAmountCents += item.amountCents || 0;
+    current.hasUnpriced ||= item.billingDisposition === "unpriced";
+    if (
+      !current.latestAt ||
+      new Date(item.windowStart) > new Date(current.latestAt)
+    ) {
+      current.latestAt = item.windowStart;
+    }
+    groups.set(key, current);
+  }
+
+  return Array.from(groups.values())
+    .map((group) => ({
+      ...group,
+      categoryCount: new Set(group.items.map((item) => item.usageCode)).size,
+    }))
+    .sort(
+      (left, right) =>
+        (Date.parse(right.latestAt) || 0) - (Date.parse(left.latestAt) || 0),
+    );
+});
+const selectedUsageGroup = computed(() =>
+  usageAppGroups.value.find((group) => group.key === selectedUsageAppKey.value),
+);
+const selectedUsageCategories = computed<UsageCategorySummary[]>(() => {
+  if (!selectedUsageGroup.value) return [];
+  const categories = new Map<string, UsageCategorySummary>();
+
+  for (const item of selectedUsageGroup.value.items) {
+    const key = `${item.usageCode}:${item.unit}`;
+    const current = categories.get(key) || {
+      key,
+      usageCode: item.usageCode,
+      unit: item.unit,
+      quantity: 0,
+      amountCents: 0,
+      amountAvailable: false,
+      unitPrices: [],
+      records: [],
+      latestAt: item.windowStart,
+      hasUnpriced: false,
+      allSettled: true,
+    };
+    const quantity = Number(item.quantity);
+    if (Number.isFinite(quantity)) current.quantity += quantity;
+    if (item.amountCents != null) {
+      current.amountCents += item.amountCents;
+      current.amountAvailable = true;
+    }
+    if (
+      item.unitPriceMicros != null &&
+      !current.unitPrices.includes(item.unitPriceMicros)
+    ) {
+      current.unitPrices.push(item.unitPriceMicros);
+    }
+    current.records.push(item);
+    current.hasUnpriced ||= item.billingDisposition === "unpriced";
+    current.allSettled &&= Boolean(item.sealedAt);
+    if (new Date(item.windowStart) > new Date(current.latestAt)) {
+      current.latestAt = item.windowStart;
+    }
+    categories.set(key, current);
+  }
+
+  return Array.from(categories.values()).sort(
+    (left, right) =>
+      new Date(right.latestAt).getTime() - new Date(left.latestAt).getTime(),
+  );
+});
+
+function formatUsageQuantity(quantity: number) {
+  return new Intl.NumberFormat("zh-CN", {
+    maximumFractionDigits: 6,
+  }).format(quantity);
+}
+
+function formatUsageAmount(cents: number) {
+  return `¥ ${(cents / 100).toFixed(2)}`;
+}
+
+function formatUsageUnitPrice(prices: number[], unit: string) {
+  if (!prices.length) return "未配置价格";
+  const sorted = [...prices].sort((left, right) => left - right);
+  const format = (micros: number) =>
+    `¥${(micros / 100000000)
+      .toFixed(8)
+      .replace(/0+$/, "")
+      .replace(/\.$/, "")}`;
+  const value =
+    sorted[0] === sorted[sorted.length - 1]
+      ? format(sorted[0])
+      : `${format(sorted[0])} – ${format(sorted[sorted.length - 1])}`;
+  return `${value} / ${usageUnitLabel(unit)}`;
+}
 function addEnvironment() {
   const product = deployProduct.value;
   const key = (product?.runtimeSpec?.editableEnvKeys || []).find(
@@ -633,6 +811,7 @@ async function load() {
       providers,
       faqData,
       dailyBillsData,
+      pricingData,
     ] = await Promise.all([
       api<any>("/me"),
       api<any>("/products"),
@@ -654,6 +833,7 @@ async function load() {
         "/faqs",
       ),
       api<any>("/billing/daily-bills"),
+      api<Record<string, number>>("/pricing"),
     ]);
     name.value = m.DisplayName;
     impersonation.value = {
@@ -661,6 +841,7 @@ async function load() {
       readOnly: Boolean(m.ImpersonationReadOnly),
       actorName: m.ActorDisplayName || "管理员",
     };
+    pricing.value = pricingData || {};
     faqs.value = faqData.faqs || [];
     products.value = catalogToFlat(p.products);
     productCatalog.value = p.products;
@@ -1002,11 +1183,13 @@ async function deploy() {
           ? deployCommand.value.trim().split(/\s+/)
           : []
         : undefined,
-      environment: Object.fromEntries(
-        deployEnvironment.value
-          .filter((item) => item.key.trim())
-          .map((item) => [item.key.trim(), item.value]),
-      ),
+      environment: p.runtimeSpec?.editableOptions?.environment
+        ? Object.fromEntries(
+            deployEnvironment.value
+              .filter((item) => item.key.trim())
+              .map((item) => [item.key.trim(), item.value]),
+          )
+        : undefined,
       dependencies: p.runtimeSpec?.editableOptions?.dependencies
         ? deployDependencies.value
         : undefined,
@@ -1623,11 +1806,6 @@ async function exitImpersonation() {
               <span>资源用量统计</span>
               <ChevronRight :size="14" class="arrow" />
             </RouterLink>
-            <RouterLink class="quick-action-row" to="/console/checkin">
-              <Gift :size="16" />
-              <span>每日签到领额度</span>
-              <ChevronRight :size="14" class="arrow" />
-            </RouterLink>
           </div>
         </div>
 
@@ -2032,59 +2210,155 @@ async function exitImpersonation() {
         </article>
       </div>
     </section>
-    <section v-if="page === 'usage'" class="nextdev-card p-0">
-      <div class="card-header-bar flex items-center justify-between">
-        <div class="card-title-group">
-          <span class="eyebrow">USAGE · 用量与扣费</span>
-          <h3>最近用量</h3>
-        </div>
-        <span class="mono-data text-sm">{{ usage.length }} 个窗口</span>
-      </div>
-      <div class="card-divider"></div>
-      <div v-if="!usage.length" class="card-inner-body">
-        <div class="empty-state-nextdev">
-          <div class="empty-icon-circle">
-            <Gauge :size="24" />
+    <section v-if="page === 'usage'" class="nextdev-card usage-browser p-0">
+      <template v-if="!selectedUsageGroup">
+        <div class="card-header-bar flex items-center justify-between">
+          <div class="card-title-group">
+            <span class="eyebrow">USAGE · 按应用汇总</span>
+            <h3>应用用量</h3>
           </div>
-          <h4>暂无用量记录</h4>
-          <p>部署并运行应用后，系统将每秒采集 CPU、内存、存储与网络用量，数据将在此处展示。</p>
+          <span class="mono-data text-sm">{{ usageAppGroups.length }} 个应用</span>
         </div>
-      </div>
-      <div v-else class="product-list">
-        <article
-          v-for="item in usage.slice(0, 12)"
-          :key="item.usageCode + item.windowStart"
-          class="product-row"
-        >
-          <span class="product-icon"><CreditCard :size="20" /></span>
-          <div>
-            <strong>{{ usageCodeLabel(item.usageCode) }}</strong
-            ><small
-              >{{ item.quantity }} {{ usageUnitLabel(item.unit) }} ·
-              {{ new Date(item.windowStart).toLocaleString() }}</small
-            >
+        <div class="card-divider"></div>
+        <div v-if="!usageAppGroups.length" class="card-inner-body">
+          <div class="empty-state-nextdev">
+            <div class="empty-icon-circle">
+              <Gauge :size="24" />
+            </div>
+            <h4>暂无用量记录</h4>
+            <p>部署并运行应用后，系统将采集 CPU、内存、存储与网络用量，并在这里按应用归类。</p>
           </div>
-          <span
-            class="status-pill"
-            :class="
-              item.billingDisposition === 'unpriced'
-                ? 'pending'
-                : item.sealedAt
-                  ? 'active'
-                  : 'suspended'
-            "
-            >{{
-              item.billingDisposition === "unpriced"
-                ? "未配置价格"
-                : item.sealedAt
-                  ? "已结算"
-                  : "待结算"
-            }}<template v-if="item.amountCents != null">
-              · {{ item.amountCents }} 分</template
-            ></span
+        </div>
+        <div v-else class="usage-app-grid">
+          <button
+            v-for="group in usageAppGroups"
+            :key="group.key"
+            type="button"
+            class="usage-app-card"
+            @click="selectedUsageAppKey = group.key"
           >
-        </article>
-      </div>
+            <span class="usage-app-icon">
+              <AppWindow v-if="group.appId" :size="21" />
+              <CreditCard v-else :size="21" />
+              <img
+                v-if="group.iconUrl"
+                :src="group.iconUrl"
+                :alt="group.productName + ' 图标'"
+                @error="
+                  ($event.currentTarget as HTMLImageElement).style.display =
+                    'none'
+                "
+              />
+            </span>
+            <span class="usage-app-main">
+              <strong>{{ group.appSlug }}</strong>
+              <small>{{ group.productName }}</small>
+            </span>
+            <span class="usage-app-price">
+              <small>记录内费用</small>
+              <strong>{{ formatUsageAmount(group.totalAmountCents) }}</strong>
+            </span>
+            <span class="usage-app-meta">
+              {{ group.categoryCount }} 个计费分类 · {{ group.items.length }} 个用量窗口
+              <em v-if="group.hasUnpriced">含未定价项目</em>
+            </span>
+            <ChevronRight class="usage-app-arrow" :size="18" />
+          </button>
+        </div>
+      </template>
+
+      <template v-else>
+        <div class="usage-detail-header">
+          <button
+            type="button"
+            class="usage-back-button"
+            @click="selectedUsageAppKey = ''"
+          >
+            <ChevronLeft :size="17" />返回应用列表
+          </button>
+          <div class="usage-detail-title">
+            <span class="usage-app-icon">
+              <AppWindow v-if="selectedUsageGroup.appId" :size="21" />
+              <CreditCard v-else :size="21" />
+              <img
+                v-if="selectedUsageGroup.iconUrl"
+                :src="selectedUsageGroup.iconUrl"
+                :alt="selectedUsageGroup.productName + ' 图标'"
+                @error="
+                  ($event.currentTarget as HTMLImageElement).style.display =
+                    'none'
+                "
+              />
+            </span>
+            <div>
+              <span class="eyebrow">PRICE DETAIL · 分类价格</span>
+              <h3>{{ selectedUsageGroup.appSlug }}</h3>
+              <p>{{ selectedUsageGroup.productName }} · 最近 100 条账户用量中的应用明细</p>
+            </div>
+          </div>
+          <div class="usage-detail-total">
+            <small>记录内费用</small>
+            <strong>{{ formatUsageAmount(selectedUsageGroup.totalAmountCents) }}</strong>
+          </div>
+        </div>
+        <div class="card-divider"></div>
+        <div v-if="!selectedUsageCategories.length" class="card-inner-body">
+          <div class="empty-state-nextdev usage-detail-empty">
+            <div class="empty-icon-circle">
+              <Gauge :size="24" />
+            </div>
+            <h4>该应用暂无用量记录</h4>
+            <p>应用开始运行并产生资源用量后，各计费分类和价格会显示在这里。</p>
+          </div>
+        </div>
+        <div v-else class="usage-category-list">
+          <article
+            v-for="(category, categoryIndex) in selectedUsageCategories"
+            :key="category.key"
+            class="usage-category-row"
+          >
+            <span class="usage-category-index mono-data">
+              {{ String(categoryIndex + 1).padStart(2, "0") }}
+            </span>
+            <div class="usage-category-main">
+              <strong>{{ usageCodeLabel(category.usageCode) }}</strong>
+              <code>{{ category.usageCode }}</code>
+              <small>
+                {{ formatUsageQuantity(category.quantity) }}
+                {{ usageUnitLabel(category.unit) }} · {{ category.records.length }} 个窗口 ·
+                最近 {{ new Date(category.latestAt).toLocaleString() }}
+              </small>
+            </div>
+            <div class="usage-category-price">
+              <small>计费单价</small>
+              <strong>{{ formatUsageUnitPrice(category.unitPrices, category.unit) }}</strong>
+            </div>
+            <div class="usage-category-total">
+              <small>分类合计</small>
+              <strong v-if="category.amountAvailable">
+                {{ formatUsageAmount(category.amountCents) }}
+              </strong>
+              <strong v-else>—</strong>
+              <span
+                class="status-pill"
+                :class="
+                  category.hasUnpriced
+                    ? 'pending'
+                    : category.allSettled
+                      ? 'active'
+                      : 'suspended'
+                "
+              >{{
+                category.hasUnpriced
+                  ? "未配置价格"
+                  : category.allSettled
+                    ? "已结算"
+                    : "待结算"
+              }}</span>
+            </div>
+          </article>
+        </div>
+      </template>
     </section>
     <section v-if="page === 'deploy'" class="nextdev-card p-0">
       <div class="card-header-bar flex items-center justify-between">
@@ -2123,7 +2397,6 @@ async function exitImpersonation() {
         </article>
       </div>
       <div v-else class="product-list">
-        <template>
         <article
           v-for="group in productCatalog"
           :key="group.id"
@@ -2172,7 +2445,6 @@ async function exitImpersonation() {
             <p>管理员尚未发布任何产品模板，请联系管理员在产品管理中添加并发布产品。</p>
           </div>
         </div>
-        </template>
       </div>
     </section>
     <section v-if="page === 'recharge'" class="recharge-page">
@@ -2589,12 +2861,14 @@ async function exitImpersonation() {
               GiB，只计费一次</small
             ></label
           >
-          <label v-if="deployProduct.runtimeSpec?.editableOptions?.command"
-            >启动命令<input
+          <label v-if="deployProduct.runtimeSpec?.editableOptions?.command" class="wide-field"
+            ><span>启动命令</span
+            ><textarea
               v-model="deployCommand"
               placeholder="留空使用镜像默认命令"
               autocomplete="off"
-            /><small
+              rows="2"
+            ></textarea><small
               >按空格拆分参数；复杂参数建议由镜像入口脚本处理</small
             ></label
           >
@@ -2774,6 +3048,10 @@ async function exitImpersonation() {
             </div>
           </template>
           <p v-else class="quiet">此模板不需要额外 Secret。</p>
+          <div class="deploy-price-prediction" style="margin-bottom: 1.5rem; display: flex; justify-content: flex-end; align-items: baseline; gap: 8px;">
+            <span style="color: var(--color-foreground-muted); font-size: 0.85rem;">配置价格预测（按自然月计）：</span>
+            <strong style="color: var(--color-foreground); font-size: 1.1rem; font-weight: 600;">¥ {{ deployPricePrediction }}</strong>
+          </div>
           <div class="deploy-dialog-actions">
             <button
               type="button"

@@ -841,7 +841,7 @@ async function grantCredit() {
 
     <div
       v-if="isSuperAdmin && ['registration', 'mail', 'oauth'].includes(page)"
-      class="admin-grid route-admin-grid"
+      class="admin-grid"
     >
       <section v-if="page === 'registration'" class="form-panel">
         <h2><Globe2 :size="19" />注册策略</h2>

@@ -12,7 +12,6 @@ import {
   Gauge,
   KeyRound,
   LayoutDashboard,
-  PanelsTopLeft,
   LogOut,
   Package,
   Receipt,
@@ -27,6 +26,7 @@ import {
   RefreshCw,
   Moon,
   Sun,
+  Bot,
 } from "@lucide/vue";
 import { logout } from "../api";
 import { toggleTheme, theme } from "../theme";
@@ -80,30 +80,6 @@ const balanceText = computed(() => {
 const userInitial = computed(() =>
   user.value?.Email ? user.value.Email[0].toUpperCase() : "?",
 );
-const pageTitle = computed(() => {
-  const titles: Record<string, string> = {
-    "/console": "概览",
-    "/console/deploy": "部署应用",
-    "/console/apps": "我的应用",
-    "/console/releases": "版本历史",
-    "/console/backups": "备份与恢复",
-    "/console/billing": "余额与账单",
-    "/console/recharge": "账户充值",
-    "/console/checkin": "每日签到",
-    "/console/usage": "用量明细",
-    "/console/tickets": "工单支持",
-    "/console/faq": "常见问答",
-  };
-  if (route.path.startsWith("/admin/products")) return "产品管理";
-  if (route.path.startsWith("/admin/users")) return "用户管理";
-  if (route.path.startsWith("/admin/tickets")) return "工单管理";
-  if (route.path.startsWith("/admin")) return "管理控制台";
-  return titles[route.path] || "CloudMeter";
-});
-
-function isAnchorActive(path: string, hash: string): boolean {
-  return route.path === path && route.hash === hash;
-}
 </script>
 
 <template>
@@ -155,12 +131,6 @@ function isAnchorActive(path: string, hash: string): boolean {
           to="/console/recharge"
           active-class="active"
           ><BadgeDollarSign :size="17" />账户充值</RouterLink
-        >
-        <RouterLink
-          v-if="shown('checkin')"
-          to="/console/checkin"
-          active-class="active"
-          ><CalendarCheck :size="17" />每日签到</RouterLink
         >
         <RouterLink
           v-if="shown('usage')"
@@ -247,14 +217,14 @@ function isAnchorActive(path: string, hash: string): boolean {
             active-class="active"
             ><SlidersHorizontal :size="17" />系统设置</RouterLink
           >
-          <RouterLink to="/admin/announcements" active-class="active"
-            ><Settings2 :size="17" />公告管理</RouterLink
-          >
           <RouterLink
             v-if="isSuperAdmin"
-            to="/admin/homepage"
+            to="/admin/ai-support"
             active-class="active"
-            ><PanelsTopLeft :size="17" />首页设置</RouterLink
+            ><Bot :size="17" />AI 助手设置</RouterLink
+          >
+          <RouterLink to="/admin/announcements" active-class="active"
+            ><Settings2 :size="17" />公告管理</RouterLink
           >
           <RouterLink
             v-if="isSuperAdmin"
@@ -294,45 +264,41 @@ function isAnchorActive(path: string, hash: string): boolean {
         </template>
       </nav>
 
-      <!-- 底部用户信息卡片 (NextDevTpl Profile Popover) -->
-      <div v-if="user" class="sidebar-user-card">
-        <div class="sidebar-user-avatar">{{ userInitial }}</div>
-        <div class="sidebar-user-meta">
-          <span class="user-email-text">{{ user.Email }}</span>
-          <span class="user-role-badge">{{ isAdmin ? (isSuperAdmin ? '超级管理员' : '管理员') : '用户' }}</span>
+      <div class="sidebar-footer">
+        <div class="sidebar-utilities">
+          <RouterLink
+            class="sidebar-balance"
+            to="/console/billing"
+            title="查看余额与账单"
+          >
+            <span class="balance-dot"></span>
+            <span>{{ balanceText }}</span>
+          </RouterLink>
+          <button
+            class="sidebar-theme-button"
+            :title="theme === 'dark' ? '切换浅色主题' : '切换深色主题'"
+            @click="toggleTheme"
+          >
+            <Sun v-if="theme === 'dark'" :size="15" />
+            <Moon v-else :size="15" />
+            <span>{{ theme === "dark" ? "浅色" : "深色" }}</span>
+          </button>
         </div>
-        <button class="logout-mini-btn" title="退出登录" @click="logout">
-          <LogOut :size="15" />
-        </button>
+
+        <div v-if="user" class="sidebar-user-card">
+          <div class="sidebar-user-avatar">{{ userInitial }}</div>
+          <div class="sidebar-user-meta">
+            <span class="user-email-text">{{ user.Email }}</span>
+            <span class="user-role-badge">{{ isAdmin ? (isSuperAdmin ? '超级管理员' : '管理员') : '用户' }}</span>
+          </div>
+          <button class="logout-mini-btn" title="退出登录" @click="logout">
+            <LogOut :size="15" />
+          </button>
+        </div>
       </div>
     </aside>
 
     <main class="app-main">
-      <header class="console-header">
-        <div class="console-header-breadcrumbs">
-          <span class="crumb-parent">{{ route.path.startsWith('/admin') ? '管理后台' : '控制台' }}</span>
-          <span class="crumb-sep">/</span>
-          <span class="crumb-current">{{ pageTitle }}</span>
-        </div>
-        <div class="console-header-actions">
-          <button
-            class="theme-toggle"
-            :title="theme === 'dark' ? '切换浅色主题' : '切换深色主题'"
-            @click="toggleTheme"
-          >
-            <Sun v-if="theme === 'dark'" :size="16" />
-            <Moon v-else :size="16" />
-          </button>
-          <span class="header-balance mono-data">
-            <span class="balance-dot"></span>
-            {{ balanceText }}
-          </span>
-          <div v-if="user" class="header-avatar" :title="user.Email">
-            {{ userInitial }}
-          </div>
-        </div>
-      </header>
-
       <header v-if="showShellTopbar" class="shell-topbar">
         <nav>
           <RouterLink to="/console/home" active-class="active">主页</RouterLink>

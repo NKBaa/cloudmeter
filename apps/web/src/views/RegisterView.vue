@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from "vue";
-import { ArrowRight, Check, Eye, EyeOff, LoaderCircle } from "@lucide/vue";
+import { ArrowRight, X, Check, Eye, EyeOff, LoaderCircle } from "@lucide/vue";
 import { api } from "../api";
+import { marked } from "marked";
+import { sanitizeHTML } from "../sanitize-html";
+import { useSiteConfig } from "../site-config";
 import BrandMark from "../components/BrandMark.vue";
 import TurnstileWidget from "../components/TurnstileWidget.vue";
 
@@ -14,6 +17,29 @@ type RegistrationPolicy = {
   emailDomainWhitelist?: string[];
   blockEmailAliases?: boolean;
 };
+
+const { fullSettings } = useSiteConfig();
+const legalModalOpen = ref(false);
+const legalModalType = ref<'terms' | 'privacy'>('terms');
+const legalModalContent = ref("");
+
+const renderedLegalContent = computed(() => {
+  if (!legalModalContent.value) return "";
+  return sanitizeHTML(marked.parse(legalModalContent.value) as string);
+});
+
+function openLegal(type: 'terms' | 'privacy') {
+  const c = type === 'terms' ? fullSettings.value?.termsOfService : fullSettings.value?.privacyPolicy;
+  if (!c) return;
+  const trimmed = c.trim();
+  if (/^https?:\/\//i.test(trimmed) && !trimmed.includes("\n")) {
+    window.open(trimmed, '_blank');
+  } else {
+    legalModalType.value = type;
+    legalModalContent.value = trimmed;
+    legalModalOpen.value = true;
+  }
+}
 
 const form = reactive({
   displayName: "",
@@ -321,9 +347,22 @@ async function register() {
         </div>
       </main>
 
+    <Transition name="modal-pop">
+      <div v-if="legalModalOpen" class="modal-backdrop" @click.self="legalModalOpen = false">
+        <section class="secret-dialog" style="max-width: 640px; width: 100%; max-height: 85vh; display: flex; flex-direction: column; background: var(--canvas);">
+          <header style="margin-bottom: 10px;">
+            <h2>{{ legalModalType === 'terms' ? '用户协议' : '隐私政策' }}</h2>
+            <button type="button" class="icon-button" @click="legalModalOpen = false"><X :size="20" /></button>
+          </header>
+          <div class="modal-body" style="overflow-y: auto; line-height: 1.6; font-size: 14px; color: var(--text-soft);" v-html="renderedLegalContent"></div>
+        </section>
+      </div>
+    </Transition>
+
+
       <footer class="auth-simple-footer">
         <p class="mono-data text-xs text-muted">
-          © {{ new Date().getFullYear() }} CloudMeter. 现代应用云平台.
+          {{ fullSettings?.footerText || `© ${new Date().getFullYear()} ${fullSettings?.systemName || 'CloudMeter'}. 现代应用云平台.` }}
         </p>
       </footer>
     </div>
@@ -551,4 +590,3 @@ async function register() {
   }
 }
 </style>
-

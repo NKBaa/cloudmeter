@@ -13,6 +13,8 @@ import {
   Server,
   Trash2,
   X,
+  ChevronDown,
+  ChevronRight,
 } from "@lucide/vue";
 import { api, openApp } from "../api";
 
@@ -83,7 +85,8 @@ const windowHost = window.location.hostname;
 const loading = ref(true),
   updating = ref(false),
   error = ref(""),
-  message = ref("");
+  message = ref(""),
+  configExpanded = ref(false);
 const app = ref<App | null>(null),
   releases = ref<Release[]>([]),
   versions = ref<Version[]>([]),
@@ -497,15 +500,20 @@ onMounted(load);
         </article>
       </section>
       <section class="config-section">
-        <div class="config-section-head">
-          <div>
-            <p class="eyebrow">配置更新</p>
-            <h2>选择版本并重新部署</h2>
+        <div class="config-section-head" @click="configExpanded = !configExpanded" style="cursor: pointer; user-select: none;">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <ChevronDown v-if="configExpanded" :size="20" style="color: var(--text-tertiary);" />
+            <ChevronRight v-else :size="20" style="color: var(--text-tertiary);" />
+            <div>
+              <p class="eyebrow">配置更新</p>
+              <h2>选择版本并重新部署</h2>
+            </div>
           </div>
           <div class="current-version">
             当前 {{ currentVersion ? versionName(currentVersion) : "未知" }}
           </div>
         </div>
+        <div v-show="configExpanded" class="config-expanded-wrapper">
         <div v-if="versions.length" class="config-form">
           <div class="version-row">
             <label class="version-select"
@@ -596,8 +604,11 @@ onMounted(load);
           </p>
           <label v-if="commandEditable" class="wide-field"
             ><span>启动命令</span
-            ><input v-model="commandText" placeholder="留空使用模板默认命令"
-          /></label>
+            ><textarea
+              v-model="commandText"
+              placeholder="留空使用模板默认命令"
+              rows="2"
+            ></textarea></label>
           <div v-if="editableEnvCount" class="env-block">
             <div class="block-head">
               <strong>环境变量</strong><small>留空保持不变，仅提交非空值</small>
@@ -626,11 +637,12 @@ onMounted(load);
               class="dep-row"
             >
               <input v-model="dep.key" placeholder="依赖标识" /><input
+                v-model="dep.productId"
+                placeholder="依赖产品ID"
+              /><input
                 v-model="dep.serviceSlug"
                 placeholder="服务名"
-              /><label class="dep-required"
-                ><input v-model="dep.required" type="checkbox" />必需</label
-              ><button
+              /><button
                 type="button"
                 class="icon-action stop-action"
                 @click="removeDependency(index)"
@@ -663,7 +675,7 @@ onMounted(load);
             </p>
             <button
               class="primary"
-              :disabled="updating || app.status !== 'running'"
+              :disabled="updating || !['running', 'failed', 'stopped'].includes(app.status)"
               @click="updateApp"
             >
               <RefreshCw v-if="updating" class="spin" :size="16" />{{
@@ -674,6 +686,7 @@ onMounted(load);
         </div>
         <div v-else class="context-empty compact-empty">
           <p>当前没有可用于更新的已发布版本</p>
+        </div>
         </div>
       </section>
       <section class="history-section">

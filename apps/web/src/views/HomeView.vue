@@ -33,13 +33,22 @@ import { toggleTheme, theme } from "../theme";
 import { sanitizeHTML } from "../sanitize-html";
 import { useSiteConfig } from "../site-config";
 
-const { systemName } = useSiteConfig();
+const { systemName, fullSettings } = useSiteConfig();
 const route = useRoute();
 const router = useRouter();
 const inShell = computed(() => route.path.startsWith("/console"));
 const content = ref("");
 const isLoggedIn = ref(false);
 const safeContent = computed(() => sanitizeHTML(content.value));
+const aboutURL = computed(() => {
+  const value = fullSettings.value?.aboutContent?.trim() || "";
+  return /^https?:\/\//i.test(value) ? value : "";
+});
+const safeAboutContent = computed(() =>
+  aboutURL.value
+    ? ""
+    : sanitizeHTML(fullSettings.value?.aboutContent?.trim() || ""),
+);
 
 // FAQ Accordion State
 const openFaq = ref<number | null>(0);
@@ -106,7 +115,7 @@ const steps = [
     n: "03",
     title: "秒级上线与按量运行",
     desc: "自动化网关分配独立访问二级域名，实例进入监控健康池，按实际用量毫秒计费。",
-    code: "$ cloudmeter deploy --env prod\n→ https://demo.cloudmeter.local/apps/open-webui\n● Live in ~4.2s (Healthy)",
+    code: "$ cloudmeter deploy --env prod\n→ https://open-webui-demo.apps.cloudmeter.local\n● Live in ~4.2s (Healthy)",
   },
 ];
 
@@ -117,7 +126,7 @@ const faqs = [
   },
   {
     q: "应用容器需要暴露公网端口吗？",
-    a: "不需要。CloudMeter 内置统一反向代理网关，所有外部流量均通过安全的子路径或自定义域名进入，内部应用通过隔离虚拟网络互联，极大提升了安全性。",
+    a: "不需要。CloudMeter 内置统一反向代理网关，每个应用通过独立子域名进入，内部应用通过隔离虚拟网络互联，极大提升了安全性。",
   },
   {
     q: "容器重启或重新部署后，数据会丢失吗？",
@@ -510,7 +519,15 @@ onMounted(async () => {
       <div class="footer-container">
         <div class="footer-brand-col">
           <BrandMark />
-          <p class="footer-desc">
+          <a
+            v-if="aboutURL"
+            class="footer-desc footer-about-link"
+            :href="aboutURL"
+            target="_blank"
+            rel="noopener noreferrer"
+          >了解 {{ systemName }}</a>
+          <div v-else-if="safeAboutContent" class="footer-desc" v-html="safeAboutContent"></div>
+          <p v-else class="footer-desc">
             {{ systemName }} 是一套现代化的应用云平台，提供按量计量、自动化网关路由、持久数据卷保护与全方位运营控制台。
           </p>
         </div>
@@ -536,7 +553,10 @@ onMounted(async () => {
         </div>
       </div>
       <div class="footer-bottom">
-        <span class="mono-data text-xs">
+        <span v-if="fullSettings?.footerText" class="mono-data text-xs">
+          {{ fullSettings.footerText }}
+        </span>
+        <span v-else class="mono-data text-xs">
           © {{ new Date().getFullYear() }} {{ systemName }}. All rights reserved.
         </span>
         <div class="footer-bottom-links">
@@ -656,7 +676,6 @@ onMounted(async () => {
   position: relative;
   overflow: hidden;
   padding: 80px 24px 100px;
-  border-bottom: 1px solid var(--border);
 }
 .hero-grid-bg {
   position: absolute;
@@ -944,8 +963,6 @@ onMounted(async () => {
 .section-muted {
   max-width: 100%;
   background: var(--surface);
-  border-top: 1px solid var(--border);
-  border-bottom: 1px solid var(--border);
 }
 .section-muted > * {
   max-width: 1320px;
@@ -1306,6 +1323,13 @@ onMounted(async () => {
   color: var(--text-muted);
   margin: 14px 0 0;
 }
+.footer-about-link {
+  display: inline-block;
+  text-decoration: none;
+}
+.footer-about-link:hover {
+  color: var(--text);
+}
 .footer-links-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
@@ -1376,4 +1400,3 @@ onMounted(async () => {
   .footer-bottom { flex-direction: column; gap: 12px; }
 }
 </style>
-

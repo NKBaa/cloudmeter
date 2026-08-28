@@ -1,11 +1,24 @@
 <script setup lang="ts">
+import { computed, ref, watch } from "vue";
 import { useSiteConfig } from "../site-config";
-const { systemName } = useSiteConfig();
+const { systemName, fullSettings } = useSiteConfig();
+const logoFailed = ref(false);
+const logoUrl = computed(() => fullSettings.value?.logoUrl?.trim() || "");
+watch(logoUrl, () => {
+  logoFailed.value = false;
+});
 </script>
 <template>
   <RouterLink class="brand" to="/" :aria-label="'返回 ' + systemName + ' 首页'">
     <span class="brand-mark">
+      <img
+        v-if="logoUrl && !logoFailed"
+        :src="logoUrl"
+        :alt="systemName + ' Logo'"
+        @error="logoFailed = true"
+      />
       <svg
+        v-else
         class="brand-icon"
         viewBox="0 0 24 24"
         fill="none"
@@ -50,6 +63,12 @@ const { systemName } = useSiteConfig();
 .brand-icon {
   width: 18px;
   height: 18px;
+}
+.brand-mark img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  border-radius: inherit;
 }
 .brand-text {
   font-weight: 800;
