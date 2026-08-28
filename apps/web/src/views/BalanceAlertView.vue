@@ -1,10 +1,280 @@
 <script setup lang="ts">
-import {onMounted,reactive,ref} from 'vue';import {BellRing,Gift,Save,Sparkles} from '@lucide/vue';import {api} from '../api';
-const form=reactive({enabled:false,thresholdCents:100,cooldownHours:24}),busy=ref(false),message=ref(''),error=ref(''),inviteCode=ref(''),redeemCode=ref('');
-onMounted(async()=>{try{Object.assign(form,await api('/settings/balance-alert'))}catch(e){error.value=(e as Error).message}});
-async function save(){try{busy.value=true;await api('/settings/balance-alert',{method:'PUT',body:JSON.stringify(form)});message.value='余额提醒设置已保存';error.value=''}catch(e){error.value=(e as Error).message}finally{busy.value=false}}
-async function createInvite(){try{const data=await api<{code:string;rewardCents:number}>('/invites',{method:'POST'});inviteCode.value=data.code;message.value=`邀请码已创建，好友核销后你将获得 ¥${(data.rewardCents/100).toFixed(2)}`}catch(e){error.value=(e as Error).message}}
-async function redeemInvite(){try{const data=await api<{rewardCents:number}>('/invites/redeem',{method:'POST',body:JSON.stringify({code:redeemCode.value})});message.value=`核销成功，邀请者已获得 ¥${(data.rewardCents/100).toFixed(2)}`;redeemCode.value=''}catch(e){error.value=(e as Error).message}}
+import { onMounted, reactive, ref } from "vue";
+import { BellRing, Gift, Save, Sparkles } from "@lucide/vue";
+import { api } from "../api";
+const form = reactive({
+    enabled: false,
+    thresholdCents: 100,
+    cooldownHours: 24,
+  }),
+  busy = ref(false),
+  message = ref(""),
+  error = ref(""),
+  inviteCode = ref(""),
+  redeemCode = ref("");
+onMounted(async () => {
+  try {
+    Object.assign(form, await api("/settings/balance-alert"));
+  } catch (e) {
+    error.value = (e as Error).message;
+  }
+});
+async function save() {
+  try {
+    busy.value = true;
+    await api("/settings/balance-alert", {
+      method: "PUT",
+      body: JSON.stringify(form),
+    });
+    message.value = "余额提醒设置已保存";
+    error.value = "";
+  } catch (e) {
+    error.value = (e as Error).message;
+  } finally {
+    busy.value = false;
+  }
+}
+async function createInvite() {
+  try {
+    const data = await api<{ code: string; rewardCents: number }>("/invites", {
+      method: "POST",
+    });
+    inviteCode.value = data.code;
+    message.value = `邀请码已创建，好友核销后你将获得 ¥${(data.rewardCents / 100).toFixed(2)}`;
+  } catch (e) {
+    error.value = (e as Error).message;
+  }
+}
+async function redeemInvite() {
+  try {
+    const data = await api<{ rewardCents: number }>("/invites/redeem", {
+      method: "POST",
+      body: JSON.stringify({ code: redeemCode.value }),
+    });
+    message.value = `核销成功，邀请者已获得 ¥${(data.rewardCents / 100).toFixed(2)}`;
+    redeemCode.value = "";
+  } catch (e) {
+    error.value = (e as Error).message;
+  }
+}
 </script>
-<template><main class="workspace balance-page"><section class="balance-panel"><div class="panel-title"><div><p class="eyebrow">账户</p><h1>余额提醒</h1></div></div><p v-if="error" class="message">{{error}}</p><p v-if="message" class="status-ok">{{message}}</p><div class="panel-block"><div class="card-head"><span class="card-icon"><BellRing :size="18"/></span><h2>低余额通知</h2><label class="switch"><input v-model="form.enabled" type="checkbox"/><span/></label></div><form class="balance-form" @submit.prevent="save"><label>提醒阈值（元）<input :value="form.thresholdCents/100" type="number" min="0" step="0.01" :disabled="!form.enabled" @input="form.thresholdCents=Math.round(Number(($event.target as HTMLInputElement).value)*100)"/></label><label>重复提醒冷却（小时）<input v-model.number="form.cooldownHours" type="number" min="1" max="720" :disabled="!form.enabled"/></label><button class="primary" :disabled="busy||!form.enabled"><Save :size="18"/>保存设置</button></form><p v-if="!form.enabled" class="disabled-note">已关闭，开启后按以上阈值提醒</p></div><div class="panel-block"><div class="card-head"><span class="card-icon"><Gift :size="18"/></span><h2>邀请奖励</h2></div><div class="invite-row"><button class="primary" @click="createInvite"><Sparkles :size="17"/>生成邀请码</button><div v-if="inviteCode" class="invite-code"><span>邀请码</span><code>{{ inviteCode }}</code></div></div><form class="redeem-form" @submit.prevent="redeemInvite"><span>核销好友邀请码</span><div class="redeem-row"><input v-model="redeemCode" minlength="24" maxlength="24" required placeholder="输入好友的邀请码"/><button class="secondary" :disabled="redeemCode.trim().length<24">确认核销</button></div></form></div></section></main></template>
-<style scoped>.balance-page{font-size:15px;max-width:860px}.balance-panel{background:var(--paper);border:1px solid var(--line);border-radius:16px;padding:22px 24px}.panel-title h1{margin:2px 0 0;font-size:20px}.panel-block{padding-top:16px;margin-top:16px;border-top:1px solid var(--line)}.card-head{display:flex;align-items:center;gap:10px;margin-bottom:14px}.card-icon{width:34px;height:34px;display:grid;place-items:center;border-radius:10px;background:var(--accent-soft);color:var(--accent)}.card-head h2{margin:0;font-size:18px}.card-head .switch{margin-left:14px}.balance-form{display:grid;grid-template-columns:1fr 1fr auto;gap:14px;align-items:end;max-width:560px}.balance-form label{display:grid;gap:7px;font-size:15px;font-weight:650}.balance-form input{font-size:15px}.balance-form input:disabled{opacity:.5;cursor:not-allowed}.balance-form button{height:42px}.disabled-note{margin:12px 0 0;color:var(--text-muted);font-size:13px}.invite-row{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:18px}.invite-row .primary{height:42px}.invite-code{display:flex;align-items:center;gap:10px}.invite-code span{font-size:14px;font-weight:650}.invite-code code{font-size:14px;letter-spacing:.5px;padding:7px 12px;border:1px solid var(--line);border-radius:9px;background:rgba(255,255,255,.04)}.redeem-form{display:grid;gap:8px;padding-top:16px;border-top:1px solid var(--line)}.redeem-form>span{font-size:14px;font-weight:650}.redeem-row{display:flex;gap:12px;max-width:560px}.redeem-row input{flex:1;font-size:15px}.redeem-row .secondary{height:42px;flex:0 0 auto}.redeem-row .secondary:disabled{opacity:.5;cursor:not-allowed}@media(max-width:620px){.balance-form,.redeem-row{grid-template-columns:1fr;max-width:none}.balance-form button,.redeem-row .secondary{width:100%}.redeem-row{flex-direction:column}}</style>
+<template>
+  <main class="workspace balance-page">
+    <section class="balance-panel">
+      <div class="panel-title">
+        <div>
+          <p class="eyebrow">资金运营</p>
+          <h1>余额提醒</h1>
+          <p class="quiet">配置账户低余额邮件提醒阈值与好友邀请奖励。</p>
+        </div>
+      </div>
+      <p v-if="error" class="message">{{ error }}</p>
+      <p v-if="message" class="status-ok">{{ message }}</p>
+      <div class="panel-block">
+        <div class="card-head">
+          <span class="card-icon"><BellRing :size="18" /></span>
+          <h2>低余额通知</h2>
+          <label class="switch"
+            ><input v-model="form.enabled" type="checkbox" /><span
+          /></label>
+        </div>
+        <form class="balance-form" @submit.prevent="save">
+          <label
+            >提醒阈值（元）<input
+              :value="form.thresholdCents / 100"
+              type="number"
+              min="0"
+              step="0.01"
+              :disabled="!form.enabled"
+              @input="
+                form.thresholdCents = Math.round(
+                  Number(($event.target as HTMLInputElement).value) * 100,
+                )
+              " /></label
+          ><label
+            >重复提醒冷却（小时）<input
+              v-model.number="form.cooldownHours"
+              type="number"
+              min="1"
+              max="720"
+              :disabled="!form.enabled" /></label
+          ><button class="primary" :disabled="busy || !form.enabled">
+            <Save :size="18" />保存设置
+          </button>
+        </form>
+        <p v-if="!form.enabled" class="disabled-note">
+          已关闭，开启后按以上阈值提醒
+        </p>
+      </div>
+      <div class="panel-block">
+        <div class="card-head">
+          <span class="card-icon"><Gift :size="18" /></span>
+          <h2>邀请奖励</h2>
+        </div>
+        <div class="invite-row">
+          <button class="primary" @click="createInvite">
+            <Sparkles :size="17" />生成邀请码
+          </button>
+          <div v-if="inviteCode" class="invite-code">
+            <span>邀请码</span><code>{{ inviteCode }}</code>
+          </div>
+        </div>
+        <form class="redeem-form" @submit.prevent="redeemInvite">
+          <span>核销好友邀请码</span>
+          <div class="redeem-row">
+            <input
+              v-model="redeemCode"
+              minlength="24"
+              maxlength="24"
+              required
+              placeholder="输入好友的邀请码"
+            /><button
+              class="secondary"
+              :disabled="redeemCode.trim().length < 24"
+            >
+              确认核销
+            </button>
+          </div>
+        </form>
+      </div>
+    </section>
+  </main>
+</template>
+<style scoped>
+.balance-page {
+  font-size: 15px;
+}
+.balance-panel {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 22px 24px;
+}
+.panel-title h1 {
+  margin: 2px 0 0;
+  font-size: 20px;
+}
+.panel-block {
+  padding-top: 16px;
+  margin-top: 16px;
+  border-top: 1px solid var(--line);
+}
+.card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.card-icon {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.card-head h2 {
+  margin: 0;
+  font-size: 18px;
+}
+.card-head .switch {
+  margin-left: 14px;
+}
+.balance-form {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 14px;
+  align-items: end;
+  max-width: 560px;
+}
+.balance-form label {
+  display: grid;
+  gap: 7px;
+  font-size: 15px;
+  font-weight: 650;
+}
+.balance-form input {
+  font-size: 15px;
+}
+.balance-form input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.balance-form button {
+  height: 42px;
+}
+.disabled-note {
+  margin: 12px 0 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.invite-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+}
+.invite-row .primary {
+  height: 42px;
+}
+.invite-code {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.invite-code span {
+  font-size: 14px;
+  font-weight: 650;
+}
+.invite-code code {
+  font-size: 14px;
+  letter-spacing: 0.5px;
+  padding: 7px 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.04);
+}
+.redeem-form {
+  display: grid;
+  gap: 8px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+.redeem-form > span {
+  font-size: 14px;
+  font-weight: 650;
+}
+.redeem-row {
+  display: flex;
+  gap: 12px;
+  max-width: 560px;
+}
+.redeem-row input {
+  flex: 1;
+  font-size: 15px;
+}
+.redeem-row .secondary {
+  height: 42px;
+  flex: 0 0 auto;
+}
+.redeem-row .secondary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+@media (max-width: 620px) {
+  .balance-form,
+  .redeem-row {
+    grid-template-columns: 1fr;
+    max-width: none;
+  }
+  .balance-form button,
+  .redeem-row .secondary {
+    width: 100%;
+  }
+  .redeem-row {
+    flex-direction: column;
+  }
+}
+</style>

@@ -175,6 +175,7 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/healthz", s.health)
 	s.mux.HandleFunc("GET /api/setup/status", s.setupStatus)
+	s.mux.HandleFunc("GET /api/system/settings", s.getSystemSettingsPublic)
 	s.mux.HandleFunc("GET /api/homepage", s.getHomepage)
 	s.mux.HandleFunc("POST /api/setup/initialize", s.initialize)
 	s.mux.HandleFunc("POST /api/auth/login", s.login)
@@ -201,6 +202,7 @@ func (s *Server) routes() {
 	s.mux.Handle("POST /api/tickets", s.authenticate(http.HandlerFunc(s.createTicket)))
 	s.mux.Handle("GET /api/tickets/{ticketID}", s.authenticate(http.HandlerFunc(s.getTicket)))
 	s.mux.Handle("POST /api/tickets/{ticketID}/messages", s.authenticate(http.HandlerFunc(s.replyTicket)))
+	s.mux.Handle("POST /api/tickets/{ticketID}/escalate", s.authenticate(http.HandlerFunc(s.escalateTicket)))
 	s.mux.Handle("POST /api/tickets/{ticketID}/close", s.authenticate(http.HandlerFunc(s.closeTicket)))
 	s.mux.Handle("GET /api/admin/summary", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.adminSummary))))
 	s.mux.Handle("GET /api/admin/host-metrics", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.hostMetrics))))
@@ -228,6 +230,7 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/billing/ledger", s.authenticate(http.HandlerFunc(s.billingLedger)))
 	s.mux.Handle("GET /api/billing/usage", s.authenticate(http.HandlerFunc(s.billingUsage)))
 	s.mux.Handle("GET /api/billing/bills", s.authenticate(http.HandlerFunc(s.listBillingStatements)))
+	s.mux.Handle("GET /api/billing/daily-bills", s.authenticate(http.HandlerFunc(s.listDailyBills)))
 	s.mux.Handle("GET /api/billing/bills/{billID}", s.authenticate(http.HandlerFunc(s.billingStatementDetail)))
 	s.mux.Handle("GET /api/billing/bills/{billID}/export", s.authenticate(http.HandlerFunc(s.exportBillingStatement)))
 	s.mux.Handle("GET /api/billing/credits", s.authenticate(http.HandlerFunc(s.listCredits)))
@@ -257,8 +260,8 @@ func (s *Server) routes() {
 	s.mux.Handle("PUT /api/admin/settings/docker", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.updateDockerSettings))))
 	s.mux.Handle("GET /api/admin/docker/images", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.listDockerImages))))
 	s.mux.Handle("DELETE /api/admin/docker/images/{imageID}", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.deleteDockerImage))))
-	s.mux.Handle("GET /api/admin/system/restart", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.getPlatformRestart))))
-	s.mux.Handle("POST /api/admin/system/restart", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.createPlatformRestart))))
+	s.mux.Handle("GET /api/admin/settings/system", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.getSystemSettings))))
+	s.mux.Handle("PUT /api/admin/settings/system", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.updateSystemSettings))))
 	s.mux.Handle("PUT /api/admin/settings/homepage", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.updateHomepage))))
 	s.mux.Handle("PUT /api/admin/settings/checkin", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.updateCheckinSettings))))
 	s.mux.Handle("PUT /api/admin/settings/payments/{provider}", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.updatePaymentSettings))))
@@ -311,7 +314,10 @@ func (s *Server) routes() {
 	s.mux.Handle("PUT /api/admin/settings/quota", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.updateQuotaSettings))))
 	s.mux.Handle("GET /api/admin/settings/logs", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.getLogRetentionSettings))))
 	s.mux.Handle("PUT /api/admin/settings/logs", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.updateLogRetentionSettings))))
+	s.mux.Handle("GET /api/admin/settings/ai-support", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.getAISupportSettings))))
+	s.mux.Handle("PUT /api/admin/settings/ai-support", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.updateAISupportSettings))))
 	s.mux.Handle("POST /api/admin/logs/clear", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.clearRuntimeLogs))))
+	s.mux.Handle("POST /api/admin/audit-logs/clear", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.clearAuditLogs))))
 	s.mux.Handle("PUT /api/admin/settings/turnstile", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.updateTurnstileSettings))))
 	s.mux.Handle("GET /api/admin/settings/oauth", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.getOAuthSettings))))
 	s.mux.Handle("PUT /api/admin/settings/oauth/{provider}", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.updateOAuthSettings))))
@@ -352,6 +358,7 @@ type initializeRequest struct {
 	Email       string `json:"email"`
 	Password    string `json:"password"`
 	DisplayName string `json:"displayName"`
+	SystemName  string `json:"systemName"`
 }
 
 func (s *Server) initialize(w http.ResponseWriter, r *http.Request) {
@@ -362,9 +369,13 @@ func (s *Server) initialize(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Email = strings.ToLower(strings.TrimSpace(req.Email))
 	req.DisplayName = strings.TrimSpace(req.DisplayName)
-	if req.DisplayName == "" || len(req.Password) < 12 {
-		writeError(w, http.StatusBadRequest, "validation_failed", "display name and a 12+ character password are required")
+	req.SystemName = strings.TrimSpace(req.SystemName)
+	if req.DisplayName == "" || req.Password == "" {
+		writeError(w, http.StatusBadRequest, "validation_failed", "display name and password are required")
 		return
+	}
+	if req.SystemName == "" {
+		req.SystemName = "CloudMeter"
 	}
 	if _, err := mail.ParseAddress(req.Email); err != nil {
 		writeError(w, http.StatusBadRequest, "validation_failed", "email is invalid")
@@ -436,7 +447,12 @@ func (s *Server) initialize(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, err)
 		return
 	}
-	_, err = tx.Exec(r.Context(), `UPDATE system_state SET initialized_at=now(), initialized_by=$1, installation_id=gen_random_uuid(), platform_name='CloudMeter', registration_enabled=false, email_verification_required=false WHERE singleton`, userID)
+	_, err = tx.Exec(r.Context(), `UPDATE system_state SET initialized_at=now(), initialized_by=$1, installation_id=gen_random_uuid(), platform_name=$2, registration_enabled=false, email_verification_required=false WHERE singleton`, userID, req.SystemName)
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	_, err = tx.Exec(r.Context(), "INSERT INTO system_settings(singleton, system_name, updated_at, updated_by) VALUES (true, $1, now(), $2) ON CONFLICT (singleton) DO UPDATE SET system_name=$1, updated_at=now(), updated_by=$2", req.SystemName, userID)
 	if err != nil {
 		s.internalError(w, err)
 		return
@@ -491,8 +507,8 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Email = strings.ToLower(strings.TrimSpace(req.Email))
 	req.DisplayName = strings.TrimSpace(req.DisplayName)
-	if _, err := mail.ParseAddress(req.Email); err != nil || req.DisplayName == "" || len(req.Password) < 12 {
-		writeError(w, http.StatusBadRequest, "validation_failed", "valid email, display name and a 12+ character password are required")
+	if _, err := mail.ParseAddress(req.Email); err != nil || req.DisplayName == "" || req.Password == "" {
+		writeError(w, http.StatusBadRequest, "validation_failed", "valid email, display name and a password are required")
 		return
 	}
 	tx, err := s.db.BeginTx(r.Context(), pgx.TxOptions{IsoLevel: pgx.Serializable})

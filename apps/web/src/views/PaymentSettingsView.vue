@@ -1,20 +1,296 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
-import { CheckCircle2, Copy, CreditCard, ExternalLink, KeyRound, Plus, Save, ShieldCheck, Trash2 } from '@lucide/vue'
-import { api } from '../api'
-type Method = { name:string; type:string; minAmountCents:number; enabled:boolean }
-const model=reactive({enabled:false,merchantId:'',endpoint:'',secret:'',paymentType:'alipay',paymentMethods:[{name:'支付宝',type:'alipay',minAmountCents:100,enabled:true}] as Method[],amountOptions:[10,20,50,100,200,300,400,500] as number[]})
-const configured=ref(false),error=ref(''),message=ref(''),newAmount=ref<number|null>(null)
-const callbackURL=computed(()=>location.origin+'/api/payments/epay/callback'),returnURL=computed(()=>location.origin+'/console/recharge')
-async function load(){try{const r=await api<any>('/admin/settings/payments'),p=r.providers.find((v:any)=>v.provider==='epay');if(p){Object.assign(model,{enabled:p.enabled,merchantId:p.merchantId,endpoint:p.endpoint,paymentType:p.paymentType||'alipay',paymentMethods:p.paymentMethods?.length?p.paymentMethods:model.paymentMethods,amountOptions:p.amountOptions?.length?p.amountOptions:model.amountOptions});configured.value=p.secretConfigured}}catch(e){error.value=(e as Error).message}}
-function addMethod(){model.paymentMethods.push({name:'新付款方式',type:'custom'+(model.paymentMethods.length+1),minAmountCents:1000,enabled:true})}
-function addAmount(){const v=Number(newAmount.value);if(v>0&&!model.amountOptions.includes(v)){model.amountOptions.push(v);model.amountOptions.sort((a,b)=>a-b);newAmount.value=null}}
-async function save(){try{await api('/admin/settings/payments/epay',{method:'PUT',body:JSON.stringify(model)});message.value='支付配置已保存';error.value='';model.secret='';await load()}catch(e){error.value=(e as Error).message}}
-async function copy(v:string){await navigator.clipboard.writeText(v);message.value='地址已复制'}
-onMounted(load)
+import { computed, onMounted, reactive, ref } from "vue";
+import {
+  CheckCircle2,
+  Copy,
+  CreditCard,
+  ExternalLink,
+  KeyRound,
+  Plus,
+  Save,
+  ShieldCheck,
+  Trash2,
+} from "@lucide/vue";
+import { api } from "../api";
+type Method = {
+  name: string;
+  type: string;
+  minAmountCents: number;
+  enabled: boolean;
+};
+const model = reactive({
+  enabled: false,
+  merchantId: "",
+  endpoint: "",
+  secret: "",
+  paymentType: "alipay",
+  paymentMethods: [
+    { name: "支付宝", type: "alipay", minAmountCents: 100, enabled: true },
+  ] as Method[],
+  amountOptions: [10, 20, 50, 100, 200, 300, 400, 500] as number[],
+});
+const configured = ref(false),
+  error = ref(""),
+  message = ref(""),
+  newAmount = ref<number | null>(null);
+const callbackURL = computed(
+    () => location.origin + "/api/payments/epay/callback",
+  ),
+  returnURL = computed(() => location.origin + "/console/recharge");
+async function load() {
+  try {
+    const r = await api<any>("/admin/settings/payments"),
+      p = r.providers.find((v: any) => v.provider === "epay");
+    if (p) {
+      Object.assign(model, {
+        enabled: p.enabled,
+        merchantId: p.merchantId,
+        endpoint: p.endpoint,
+        paymentType: p.paymentType || "alipay",
+        paymentMethods: p.paymentMethods?.length
+          ? p.paymentMethods
+          : model.paymentMethods,
+        amountOptions: p.amountOptions?.length
+          ? p.amountOptions
+          : model.amountOptions,
+      });
+      configured.value = p.secretConfigured;
+    }
+  } catch (e) {
+    error.value = (e as Error).message;
+  }
+}
+function addMethod() {
+  model.paymentMethods.push({
+    name: "新付款方式",
+    type: "custom" + (model.paymentMethods.length + 1),
+    minAmountCents: 1000,
+    enabled: true,
+  });
+}
+function addAmount() {
+  const v = Number(newAmount.value);
+  if (v > 0 && !model.amountOptions.includes(v)) {
+    model.amountOptions.push(v);
+    model.amountOptions.sort((a, b) => a - b);
+    newAmount.value = null;
+  }
+}
+async function save() {
+  try {
+    await api("/admin/settings/payments/epay", {
+      method: "PUT",
+      body: JSON.stringify(model),
+    });
+    message.value = "支付配置已保存";
+    error.value = "";
+    model.secret = "";
+    await load();
+  } catch (e) {
+    error.value = (e as Error).message;
+  }
+}
+async function copy(v: string) {
+  await navigator.clipboard.writeText(v);
+  message.value = "地址已复制";
+}
+onMounted(load);
 </script>
-<template><main class="workspace admin-workspace"><header><div><p class="eyebrow">资金运营</p><h1>在线支付</h1><p>一套 EPay 商户凭据，可向用户开放多个自定义付款方式。</p></div><a class="secondary compact" href="https://app.kpay.cc/epay-docs" target="_blank" rel="noopener">服务商文档<ExternalLink :size="15"/></a></header><p v-if="error" class="message">{{error}}</p><p v-if="message" class="status-ok">{{message}}</p><section class="payment-safety"><ShieldCheck :size="20"/><div><strong>安全边界</strong><p>用户只能选择管理员启用的渠道代码；商户密钥加密保存且永不回显。</p></div></section>
-<form class="form-panel payment-settings" @submit.prevent="save"><div class="payment-heading"><div><span class="context-empty-icon"><KeyRound :size="22"/></span><div><h2>EPay 网关</h2><p>先配置商户连接，再维护用户可见的付款方式。</p></div></div><div class="switch-setting"><div><strong>启用在线充值</strong><small>关闭后用户充值入口不可用</small></div><label class="switch"><input v-model="model.enabled" type="checkbox"/><span/></label></div></div><div class="field-row"><label>网关地址<input v-model.trim="model.endpoint" type="url" :required="model.enabled" placeholder="https://pay.example.com"/></label><label>商户 ID（PID）<input v-model.trim="model.merchantId" :required="model.enabled"/></label></div><label>商户密钥（KEY）<input v-model="model.secret" type="password" :required="model.enabled&&!configured" :placeholder="configured?'已配置；留空保持不变':'输入商户密钥'"/></label>
-  <section class="payment-config-block"><div class="config-heading with-action"><CreditCard :size="18"/><div><strong>付款方式</strong><small>显示名称与 EPay type 分离，可设置独立最低金额</small></div><button type="button" class="secondary compact" @click="addMethod"><Plus :size="15"/>方式</button></div><div class="payment-method-editor"><div class="payment-method-header" aria-hidden="true"><span>显示名称</span><span>EPay 类型</span><span>最低金额（元）</span><span>状态</span><span>操作</span></div><div v-for="(method,index) in model.paymentMethods" :key="index" class="payment-method-edit-row"><label><span class="mobile-field-label">显示名称</span><input v-model.trim="method.name" required placeholder="支付宝"/></label><label><span class="mobile-field-label">EPay 类型</span><input v-model.trim="method.type" required pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,31}" placeholder="alipay"/></label><label><span class="mobile-field-label">最低金额（元）</span><input :value="method.minAmountCents/100" type="number" min="1" step="0.01" required @input="method.minAmountCents=Math.round(Number(($event.target as HTMLInputElement).value)*100)"/></label><div class="payment-method-state"><span class="mobile-field-label">状态</span><label class="switch"><input v-model="method.enabled" type="checkbox"/><span/></label></div><button type="button" class="icon-action payment-method-delete" title="删除付款方式" :disabled="model.paymentMethods.length===1" @click="model.paymentMethods.splice(index,1)"><Trash2 :size="15"/></button></div></div></section>
-<section class="payment-config-block"><div class="config-heading"><Plus :size="18"/><div><strong>充值金额档位</strong><small>第一档将作为用户端默认选中金额</small></div></div><div class="amount-editor"><button v-for="amount in model.amountOptions" :key="amount" type="button">¥{{amount}}<span @click.stop="model.amountOptions.splice(model.amountOptions.indexOf(amount),1)">×</span></button><input v-model.number="newAmount" type="number" min="1" step="1" placeholder="新增金额"/><button type="button" class="secondary compact" @click="addAmount">添加</button></div></section>
-<div class="callback-grid"><label>异步通知地址<div class="copy-field"><input :value="callbackURL" readonly/><button class="icon-action" type="button" @click="copy(callbackURL)"><Copy :size="16"/></button></div></label><label>支付返回地址<div class="copy-field"><input :value="returnURL" readonly/><button class="icon-action" type="button" @click="copy(returnURL)"><Copy :size="16"/></button></div></label></div><div class="payment-submit"><p><CheckCircle2 v-if="configured" class="ok" :size="16"/>{{configured?'签名密钥已配置':'启用前必须配置密钥'}}</p><button class="primary compact"><Save :size="16"/>保存配置</button></div></form></main></template>
+<template>
+  <main class="workspace admin-workspace">
+    <header>
+      <div>
+        <p class="eyebrow">资金运营</p>
+        <h1>在线支付</h1>
+        <p>一套 EPay 商户凭据，可向用户开放多个自定义付款方式。</p>
+      </div>
+      <a
+        class="secondary compact"
+        href="https://app.kpay.cc/epay-docs"
+        target="_blank"
+        rel="noopener"
+        >服务商文档<ExternalLink :size="15"
+      /></a>
+    </header>
+    <p v-if="error" class="message">{{ error }}</p>
+    <p v-if="message" class="status-ok">{{ message }}</p>
+    <section class="payment-safety">
+      <ShieldCheck :size="20" />
+      <div>
+        <strong>安全边界</strong>
+        <p>用户只能选择管理员启用的渠道代码；商户密钥加密保存且永不回显。</p>
+      </div>
+    </section>
+    <form class="form-panel payment-settings" @submit.prevent="save">
+      <div class="payment-heading">
+        <div>
+          <span class="context-empty-icon"><KeyRound :size="22" /></span>
+          <div>
+            <h2>EPay 网关</h2>
+            <p>先配置商户连接，再维护用户可见的付款方式。</p>
+          </div>
+        </div>
+        <div class="switch-setting">
+          <div>
+            <strong>启用在线充值</strong><small>关闭后用户充值入口不可用</small>
+          </div>
+          <label class="switch"
+            ><input v-model="model.enabled" type="checkbox" /><span
+          /></label>
+        </div>
+      </div>
+      <div class="field-row">
+        <label
+          >网关地址<input
+            v-model.trim="model.endpoint"
+            type="url"
+            :required="model.enabled"
+            placeholder="https://pay.example.com" /></label
+        ><label
+          >商户 ID（PID）<input
+            v-model.trim="model.merchantId"
+            :required="model.enabled"
+        /></label>
+      </div>
+      <label
+        >商户密钥（KEY）<input
+          v-model="model.secret"
+          type="password"
+          :required="model.enabled && !configured"
+          :placeholder="configured ? '已配置；留空保持不变' : '输入商户密钥'"
+      /></label>
+      <section class="payment-config-block">
+        <div class="config-heading with-action">
+          <CreditCard :size="18" />
+          <div>
+            <strong>付款方式</strong
+            ><small>显示名称与 EPay type 分离，可设置独立最低金额</small>
+          </div>
+          <button type="button" class="secondary compact" @click="addMethod">
+            <Plus :size="15" />方式
+          </button>
+        </div>
+        <div class="payment-method-editor">
+          <div class="payment-method-header" aria-hidden="true">
+            <span>显示名称</span><span>EPay 类型</span
+            ><span>最低金额（元）</span><span>状态</span><span>操作</span>
+          </div>
+          <div
+            v-for="(method, index) in model.paymentMethods"
+            :key="index"
+            class="payment-method-edit-row"
+          >
+            <label
+              ><span class="mobile-field-label">显示名称</span
+              ><input
+                v-model.trim="method.name"
+                required
+                placeholder="支付宝" /></label
+            ><label
+              ><span class="mobile-field-label">EPay 类型</span
+              ><input
+                v-model.trim="method.type"
+                required
+                pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,31}"
+                placeholder="alipay" /></label
+            ><label
+              ><span class="mobile-field-label">最低金额（元）</span
+              ><input
+                :value="method.minAmountCents / 100"
+                type="number"
+                min="1"
+                step="0.01"
+                required
+                @input="
+                  method.minAmountCents = Math.round(
+                    Number(($event.target as HTMLInputElement).value) * 100,
+                  )
+                "
+            /></label>
+            <div class="payment-method-state">
+              <span class="mobile-field-label">状态</span
+              ><label class="switch"
+                ><input v-model="method.enabled" type="checkbox" /><span
+              /></label>
+            </div>
+            <button
+              type="button"
+              class="icon-action payment-method-delete"
+              title="删除付款方式"
+              :disabled="model.paymentMethods.length === 1"
+              @click="model.paymentMethods.splice(index, 1)"
+            >
+              <Trash2 :size="15" />
+            </button>
+          </div>
+        </div>
+      </section>
+      <section class="payment-config-block">
+        <div class="config-heading">
+          <Plus :size="18" />
+          <div>
+            <strong>充值金额档位</strong
+            ><small>第一档将作为用户端默认选中金额</small>
+          </div>
+        </div>
+        <div class="amount-editor">
+          <button
+            v-for="amount in model.amountOptions"
+            :key="amount"
+            type="button"
+          >
+            ¥{{ amount
+            }}<span
+              @click.stop="
+                model.amountOptions.splice(
+                  model.amountOptions.indexOf(amount),
+                  1,
+                )
+              "
+              >×</span
+            ></button
+          ><input
+            v-model.number="newAmount"
+            type="number"
+            min="1"
+            step="1"
+            placeholder="新增金额"
+          /><button type="button" class="secondary compact" @click="addAmount">
+            添加
+          </button>
+        </div>
+      </section>
+      <div class="callback-grid">
+        <label
+          >异步通知地址
+          <div class="copy-field">
+            <input :value="callbackURL" readonly /><button
+              class="icon-action"
+              type="button"
+              @click="copy(callbackURL)"
+            >
+              <Copy :size="16" />
+            </button></div></label
+        ><label
+          >支付返回地址
+          <div class="copy-field">
+            <input :value="returnURL" readonly /><button
+              class="icon-action"
+              type="button"
+              @click="copy(returnURL)"
+            >
+              <Copy :size="16" />
+            </button></div
+        ></label>
+      </div>
+      <div class="payment-submit">
+        <p>
+          <CheckCircle2 v-if="configured" class="ok" :size="16" />{{
+            configured ? "签名密钥已配置" : "启用前必须配置密钥"
+          }}
+        </p>
+        <button class="primary compact"><Save :size="16" />保存配置</button>
+      </div>
+    </form>
+  </main>
+</template>

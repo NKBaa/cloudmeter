@@ -160,3 +160,38 @@ func (s *Server) exportBillingStatement(w http.ResponseWriter, r *http.Request) 
 	}
 	writer.Flush()
 }
+
+type dailyBill struct {
+	Date       string `json:"date"`
+	TotalCents int64  `json:"totalCents"`
+	ItemCount  int64  `json:"itemCount"`
+}
+
+func (s *Server) listDailyBills(w http.ResponseWriter, r *http.Request) {
+	p, _ := r.Context().Value(principalKey).(principal)
+	rows, err := s.db.Query(r.Context(), `SELECT
+		to_char(e.created_at, 'YYYY-MM-DD') AS bill_date,
+		SUM(abs(e.amount_cents))::bigint AS total_cents,
+		COUNT(*) AS item_count
+		FROM wallet_ledger_entries e
+		JOIN wallets w ON w.id = e.wallet_id
+		WHERE w.user_id = $1 AND e.business_type = 'usage'
+		GROUP BY bill_date
+		ORDER BY bill_date DESC
+		LIMIT 30`, p.ID)
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	defer rows.Close()
+	items := []dailyBill{}
+	for rows.Next() {
+		var item dailyBill
+		if err := rows.Scan(&item.Date, &item.TotalCents, &item.ItemCount); err != nil {
+			s.internalError(w, err)
+			return
+		}
+		items = append(items, item)
+	}
+	writeJSON(w, 200, map[string]any{"dailyBills": items})
+}

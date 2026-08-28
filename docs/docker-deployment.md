@@ -214,8 +214,8 @@ docker compose --env-file .env -f deploy/compose.yaml ps
 健康的服务栈状态应该如下：
 - `postgres`, `redis`, `api`, `app-router`, `egress-proxy` 状态显示为 `healthy`；
 - `migrate` 自动执行完数据迁移后显示为 `Exited (0)`；
-- `gateway` 为唯一映射宿主机端口的服务；
-- `worker` 与 `web` 处于持续运行状态 (`Up`)。
+- `gateway` 为唯一映射宿主机端口的服务，并显示为 `healthy`；
+- `worker` 处于持续运行状态 (`Up`)，`web` 显示为 `healthy`（前端静态资源可读取）。
 
 查看启动实时日志：
 

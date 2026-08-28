@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"net/http"
+	"context"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -10,22 +11,23 @@ import (
 )
 
 type ticketSummary struct {
-	ID             string    `json:"id"`
-	Number         int64     `json:"number"`
-	UserID         string    `json:"userId"`
-	RequesterName  string    `json:"requesterName"`
-	RequesterEmail string    `json:"requesterEmail"`
-	Subject        string    `json:"subject"`
-	Category       string    `json:"category"`
-	Priority       string    `json:"priority"`
-	Status         string    `json:"status"`
-	MessageCount   int       `json:"messageCount"`
-	LastMessage    string    `json:"lastMessage"`
-	LastAuthorName string    `json:"lastAuthorName"`
-	LastReplyStaff bool      `json:"lastReplyStaff"`
-	LastMessageAt  time.Time `json:"lastMessageAt"`
-	CreatedAt      time.Time `json:"createdAt"`
-	UpdatedAt      time.Time `json:"updatedAt"`
+	ID               string    `json:"id"`
+	Number           int64     `json:"number"`
+	UserID           string    `json:"userId"`
+	RequesterName    string    `json:"requesterName"`
+	RequesterEmail   string    `json:"requesterEmail"`
+	Subject          string    `json:"subject"`
+	Category         string    `json:"category"`
+	Priority         string    `json:"priority"`
+	Status           string    `json:"status"`
+	EscalatedToHuman bool      `json:"escalatedToHuman"`
+	MessageCount     int       `json:"messageCount"`
+	LastMessage      string    `json:"lastMessage"`
+	LastAuthorName   string    `json:"lastAuthorName"`
+	LastReplyStaff   bool      `json:"lastReplyStaff"`
+	LastMessageAt    time.Time `json:"lastMessageAt"`
+	CreatedAt        time.Time `json:"createdAt"`
+	UpdatedAt        time.Time `json:"updatedAt"`
 }
 
 type ticketMessage struct {
@@ -33,6 +35,7 @@ type ticketMessage struct {
 	AuthorID   string    `json:"authorId"`
 	AuthorName string    `json:"authorName"`
 	StaffReply bool      `json:"staffReply"`
+	AIReply    bool      `json:"aiReply"`
 	Body       string    `json:"body"`
 	CreatedAt  time.Time `json:"createdAt"`
 }
@@ -56,7 +59,7 @@ func (s *Server) adminListTickets(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listTicketsFor(w http.ResponseWriter, r *http.Request, where string, args ...any) {
-	rows, err := s.db.Query(r.Context(), `SELECT t.id::text,t.number,t.user_id::text,u.display_name,u.email,t.subject,t.category,t.priority,t.status,
+	rows, err := s.db.Query(r.Context(), `SELECT t.id::text,t.number,t.user_id::text,u.display_name,u.email,t.subject,t.category,t.priority,t.status,t.escalated_to_human,
 		(SELECT count(*) FROM support_ticket_messages m WHERE m.ticket_id=t.id),
 		coalesce(latest.body,''),coalesce(latest.author_name,''),coalesce(latest.staff_reply,false),
 		t.last_message_at,t.created_at,t.updated_at
@@ -77,7 +80,7 @@ func (s *Server) listTicketsFor(w http.ResponseWriter, r *http.Request, where st
 	for rows.Next() {
 		var item ticketSummary
 		if err = rows.Scan(&item.ID, &item.Number, &item.UserID, &item.RequesterName, &item.RequesterEmail, &item.Subject,
-			&item.Category, &item.Priority, &item.Status, &item.MessageCount, &item.LastMessage, &item.LastAuthorName,
+			&item.Category, &item.Priority, &item.Status, &item.EscalatedToHuman, &item.MessageCount, &item.LastMessage, &item.LastAuthorName,
 			&item.LastReplyStaff, &item.LastMessageAt, &item.CreatedAt, &item.UpdatedAt); err != nil {
 			s.internalError(w, err)
 			return
@@ -135,10 +138,19 @@ func (s *Server) createTicket(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, err)
 		return
 	}
-	if err = tx.Commit(r.Context()); err != nil {
+if err = tx.Commit(r.Context()); err != nil {
 		s.internalError(w, err)
 		return
 	}
+	
+	// AI trigger
+	go func() {
+		cfg, _ := getAISupportSettingsConfig(context.Background(), s)
+		if cfg.Enabled {
+			s.processAITicketReply(context.Background(), id, nil, q.Subject+"\n\n"+q.Body)
+		}
+	}()
+
 	writeJSON(w, http.StatusCreated, map[string]any{"id": id, "number": number, "status": "open"})
 }
 
@@ -157,7 +169,7 @@ func (s *Server) ticketDetail(w http.ResponseWriter, r *http.Request, admin bool
 		writeError(w, http.StatusBadRequest, "validation_failed", "ticketID must be a UUID")
 		return
 	}
-	query := `SELECT t.id::text,t.number,t.user_id::text,u.display_name,u.email,t.subject,t.category,t.priority,t.status,
+	query := `SELECT t.id::text,t.number,t.user_id::text,u.display_name,u.email,t.subject,t.category,t.priority,t.status,t.escalated_to_human,
 		(SELECT count(*) FROM support_ticket_messages m WHERE m.ticket_id=t.id),
 		coalesce(latest.body,''),coalesce(latest.author_name,''),coalesce(latest.staff_reply,false),
 		t.last_message_at,t.created_at,t.updated_at
@@ -174,7 +186,7 @@ func (s *Server) ticketDetail(w http.ResponseWriter, r *http.Request, admin bool
 	}
 	var item ticketSummary
 	err := s.db.QueryRow(r.Context(), query, args...).Scan(&item.ID, &item.Number, &item.UserID, &item.RequesterName, &item.RequesterEmail,
-		&item.Subject, &item.Category, &item.Priority, &item.Status, &item.MessageCount, &item.LastMessage, &item.LastAuthorName,
+		&item.Subject, &item.Category, &item.Priority, &item.Status, &item.EscalatedToHuman, &item.MessageCount, &item.LastMessage, &item.LastAuthorName,
 		&item.LastReplyStaff, &item.LastMessageAt, &item.CreatedAt, &item.UpdatedAt)
 	if err == pgx.ErrNoRows {
 		writeError(w, http.StatusNotFound, "ticket_not_found", "ticket not found")
@@ -184,7 +196,7 @@ func (s *Server) ticketDetail(w http.ResponseWriter, r *http.Request, admin bool
 		s.internalError(w, err)
 		return
 	}
-	rows, err := s.db.Query(r.Context(), `SELECT m.id::text,m.author_user_id::text,u.display_name,m.staff_reply,m.body,m.created_at
+	rows, err := s.db.Query(r.Context(), `SELECT m.id::text,m.author_user_id::text,u.display_name,m.staff_reply,m.ai_reply,m.body,m.created_at
 		FROM support_ticket_messages m JOIN users u ON u.id=m.author_user_id WHERE m.ticket_id=$1 ORDER BY m.created_at,m.id`, id)
 	if err != nil {
 		s.internalError(w, err)
@@ -194,7 +206,7 @@ func (s *Server) ticketDetail(w http.ResponseWriter, r *http.Request, admin bool
 	messages := []ticketMessage{}
 	for rows.Next() {
 		var message ticketMessage
-		if err = rows.Scan(&message.ID, &message.AuthorID, &message.AuthorName, &message.StaffReply, &message.Body, &message.CreatedAt); err != nil {
+		if err = rows.Scan(&message.ID, &message.AuthorID, &message.AuthorName, &message.StaffReply, &message.AIReply, &message.Body, &message.CreatedAt); err != nil {
 			s.internalError(w, err)
 			return
 		}
@@ -242,7 +254,8 @@ func (s *Server) addTicketReply(w http.ResponseWriter, r *http.Request, p princi
 	}
 	defer tx.Rollback(r.Context())
 	var ownerID, status string
-	if err = tx.QueryRow(r.Context(), `SELECT user_id::text,status FROM support_tickets WHERE id=$1 FOR UPDATE`, id).Scan(&ownerID, &status); err == pgx.ErrNoRows {
+	var escalatedToHuman bool
+	if err = tx.QueryRow(r.Context(), `SELECT user_id::text,status,escalated_to_human FROM support_tickets WHERE id=$1 FOR UPDATE`, id).Scan(&ownerID, &status, &escalatedToHuman); err == pgx.ErrNoRows {
 		writeError(w, http.StatusNotFound, "ticket_not_found", "ticket not found")
 		return
 	} else if err != nil {
@@ -283,10 +296,22 @@ func (s *Server) addTicketReply(w http.ResponseWriter, r *http.Request, p princi
 		s.internalError(w, err)
 		return
 	}
-	if err = tx.Commit(r.Context()); err != nil {
+if err = tx.Commit(r.Context()); err != nil {
 		s.internalError(w, err)
 		return
 	}
+
+	// AI trigger
+	if !staff && !escalatedToHuman {
+		go func() {
+			cfg, _ := getAISupportSettingsConfig(context.Background(), s)
+			if cfg.Enabled {
+				history, _ := s.getTicketHistory(context.Background(), id)
+				s.processAITicketReply(context.Background(), id, history, q.Body)
+			}
+		}()
+	}
+
 	writeJSON(w, http.StatusCreated, map[string]any{"id": messageID, "status": nextStatus})
 }
 
@@ -384,4 +409,48 @@ func validTicketStatus(value string) bool {
 func validTicketBody(value string) bool {
 	length := utf8.RuneCountInString(value)
 	return length >= 1 && length <= 10000
+}
+
+func (s *Server) escalateTicket(w http.ResponseWriter, r *http.Request) {
+	p, _ := r.Context().Value(principalKey).(principal)
+	id := r.PathValue("ticketID")
+	if !validUUID(id) {
+		writeError(w, http.StatusBadRequest, "validation_failed", "ticketID must be a UUID")
+		return
+	}
+	tx, err := s.db.Begin(r.Context())
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	defer tx.Rollback(r.Context())
+	
+	var ownerID string
+	if err = tx.QueryRow(r.Context(), `SELECT user_id::text FROM support_tickets WHERE id=$1 FOR UPDATE`, id).Scan(&ownerID); err == pgx.ErrNoRows {
+		writeError(w, http.StatusNotFound, "ticket_not_found", "ticket not found")
+		return
+	} else if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	if ownerID != p.ID {
+		writeError(w, http.StatusNotFound, "ticket_not_found", "ticket not found")
+		return
+	}
+	
+	if _, err = tx.Exec(r.Context(), `UPDATE support_tickets SET escalated_to_human=true,updated_at=now() WHERE id=$1`, id); err != nil {
+		s.internalError(w, err)
+		return
+	}
+	
+	if _, err = tx.Exec(r.Context(), `INSERT INTO audit_logs(actor_user_id,subject_user_id,action,resource_type,resource_id,request_id)
+		VALUES($1,$2,'ticket.escalate','support_ticket',$3,$4)`, p.auditActorID(), ownerID, id, requestID(r.Context())); err != nil {
+		s.internalError(w, err)
+		return
+	}
+	if err = tx.Commit(r.Context()); err != nil {
+		s.internalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"escalated": true})
 }

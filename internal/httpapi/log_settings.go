@@ -51,3 +51,39 @@ func (s *Server) clearRuntimeLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"cleared": true})
 }
+
+func (s *Server) clearAuditLogs(w http.ResponseWriter, r *http.Request) {
+	p, _ := r.Context().Value(principalKey).(principal)
+	tx, err := s.db.Begin(r.Context())
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	defer tx.Rollback(r.Context())
+
+	if _, err := tx.Exec(r.Context(), "ALTER TABLE audit_logs DISABLE TRIGGER audit_logs_no_mutation"); err != nil {
+		s.internalError(w, err)
+		return
+	}
+	if _, err := tx.Exec(r.Context(), "TRUNCATE audit_logs"); err != nil {
+		s.internalError(w, err)
+		return
+	}
+	if _, err := tx.Exec(r.Context(), "ALTER TABLE audit_logs ENABLE TRIGGER audit_logs_no_mutation"); err != nil {
+		s.internalError(w, err)
+		return
+	}
+	
+	if _, err := tx.Exec(r.Context(), `INSERT INTO audit_logs(actor_user_id,action,resource_type,resource_id,request_id,metadata)
+		VALUES($1,'audit-log.clear','audit_logs','all',$2,jsonb_build_object())`, p.ID, requestID(r.Context())); err != nil {
+		s.internalError(w, err)
+		return
+	}
+	
+	if err := tx.Commit(r.Context()); err != nil {
+		s.internalError(w, err)
+		return
+	}
+	
+	writeJSON(w, http.StatusOK, map[string]any{"cleared": true})
+}

@@ -18,6 +18,7 @@ import AuditAdminView from './views/AuditAdminView.vue'
 import CheckinSettingsView from './views/CheckinSettingsView.vue'
 import HomeView from './views/HomeView.vue'
 import HomeSettingsView from './views/HomeSettingsView.vue'
+import SystemSettingsView from './views/SystemSettingsView.vue'
 import DockerSettingsView from './views/DockerSettingsView.vue'
 import TicketsView from './views/TicketsView.vue'
 import AppDetailView from './views/AppDetailView.vue'
@@ -85,6 +86,7 @@ const router = createRouter({
         { path: 'admin/quota-settings', component: QuotaSettingsView, meta: { superAdmin: true } },
         { path: 'admin/log-settings', component: LogSettingsView, meta: { superAdmin: true } },
         { path: 'admin/audit', component: AuditAdminView, meta: { superAdmin: true } },
+        { path: 'admin/system', component: SystemSettingsView, meta: { superAdmin: true } },
         { path: 'admin/homepage', component: HomeSettingsView, meta: { superAdmin: true } },
         { path: 'admin/tickets', component: TicketsView, props: { admin: true }, meta: { admin: true } },
         { path: 'admin/docker', component: DockerSettingsView, meta: { admin: true } },
@@ -102,7 +104,11 @@ router.beforeEach(async (to) => {
     if (!status.initialized && to.path !== '/setup') return '/setup'
     if (status.initialized && status.hasAdmin && to.path === '/setup') return '/login'
   } catch { /* Let the page surface service availability errors. */ }
-  if (!['/', '/docs', '/setup', '/login', '/register', '/oauth/callback'].includes(to.path) && !localStorage.getItem('session_token')) return '/login'
+  const token = localStorage.getItem('session_token')
+  if (token && (to.path === '/login' || to.path === '/register')) {
+    return '/console'
+  }
+  if (!['/', '/docs', '/setup', '/login', '/register', '/oauth/callback'].includes(to.path) && !token) return '/login'
   if (to.meta.admin || to.meta.superAdmin) {
     try {
       const token = localStorage.getItem('session_token')

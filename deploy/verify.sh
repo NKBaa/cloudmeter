@@ -32,7 +32,7 @@ ALLOWED_HOST="${ALLOWED_HOST%$'\r'}"
 [[ -n "$ALLOWED_HOST" ]] || { echo 'PLATFORM_ALLOWED_HOST is required' >&2; exit 1; }
 wait_for_healthy() {
   local service container_id status
-  for service in api app-router egress-proxy; do
+  for service in api app-router egress-proxy web gateway; do
     container_id="$("${COMPOSE[@]}" ps -q "$service")"
     [[ -n "$container_id" ]] || { echo "$service container is not running" >&2; return 1; }
     for _ in {1..30}; do

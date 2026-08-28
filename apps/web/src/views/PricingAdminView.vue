@@ -58,30 +58,63 @@ const version = reactive({
   freeQuantity: "0",
   effectiveAt: "",
 });
-const pricingDrafts = new Map<string, { unitPriceYuan:number; precisionScale:number; roundingMode:string; minimumQuantity:string; freeQuantity:string; effectiveAt:string }>();
-type OverrideForm = { pricingVersionId:string; scope:string; scopeId:string };
+const pricingDrafts = new Map<
+  string,
+  {
+    unitPriceYuan: number;
+    precisionScale: number;
+    roundingMode: string;
+    minimumQuantity: string;
+    freeQuantity: string;
+    effectiveAt: string;
+  }
+>();
+type OverrideForm = {
+  pricingVersionId: string;
+  scope: string;
+  scopeId: string;
+};
 const overrideDrafts = new Map<string, OverrideForm>();
 const switchingPricing = ref(false);
-function defaultPricingVersion() { return { unitPriceYuan:0.01, precisionScale:6, roundingMode:"half_up", minimumQuantity:"0", freeQuantity:"0", effectiveAt:"" }; }
-function defaultOverrideForm():OverrideForm { return { pricingVersionId:"", scope:"product", scopeId:"" }; }
-function cloneDraft<T>(value:T):T { return JSON.parse(JSON.stringify(value)) as T; }
+function defaultPricingVersion() {
+  return {
+    unitPriceYuan: 0.01,
+    precisionScale: 6,
+    roundingMode: "half_up",
+    minimumQuantity: "0",
+    freeQuantity: "0",
+    effectiveAt: "",
+  };
+}
+function defaultOverrideForm(): OverrideForm {
+  return { pricingVersionId: "", scope: "product", scopeId: "" };
+}
+function cloneDraft<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
 function savePricingDraft() {
   if (!selected.value) return;
   pricingDrafts.set(selected.value, cloneDraft(version));
   overrideDrafts.set(selected.value, cloneDraft(overrideForm));
 }
-function loadPricingDraft(id:string) {
-  Object.assign(version, cloneDraft(pricingDrafts.get(id) || defaultPricingVersion()));
-  Object.assign(overrideForm, cloneDraft(overrideDrafts.get(id) || defaultOverrideForm()));
+function loadPricingDraft(id: string) {
+  Object.assign(
+    version,
+    cloneDraft(pricingDrafts.get(id) || defaultPricingVersion()),
+  );
+  Object.assign(
+    overrideForm,
+    cloneDraft(overrideDrafts.get(id) || defaultOverrideForm()),
+  );
 }
-async function selectPricing(id:string) {
-  if (id===selected.value || switchingPricing.value) return;
+async function selectPricing(id: string) {
+  if (id === selected.value || switchingPricing.value) return;
   savePricingDraft();
-  switchingPricing.value=true;
-  selected.value=id;
+  switchingPricing.value = true;
+  selected.value = id;
   loadPricingDraft(id);
   await nextTick();
-  window.setTimeout(()=>switchingPricing.value=false,180);
+  window.setTimeout(() => (switchingPricing.value = false), 180);
 }
 const overrideForm = reactive<OverrideForm>({
   pricingVersionId: "",
@@ -96,7 +129,9 @@ async function load() {
       api<{ users: any[] }>("/admin/users"),
       api<{ products: any[] }>("/admin/products"),
     ]);
-    items.value = prices.items.filter((entry) => entry.code !== "storage.system.gib_days");
+    items.value = prices.items.filter(
+      (entry) => entry.code !== "storage.system.gib_days",
+    );
     overrides.value = os.overrides;
     users.value = us.users.map((v) => ({
       id: v.id,
@@ -201,7 +236,10 @@ async function removeOverride(id: string) {
   }
 }
 function price(v: Version) {
-  return (v.unitPriceMicros / 100000000).toFixed(8).replace(/0+$/, "").replace(/\.$/, "");
+  return (v.unitPriceMicros / 100000000)
+    .toFixed(8)
+    .replace(/0+$/, "")
+    .replace(/\.$/, "");
 }
 </script>
 <template>
@@ -210,6 +248,7 @@ function price(v: Version) {
       <div>
         <p class="eyebrow">计费中心</p>
         <h1>用量价格</h1>
+        <p class="quiet">统一管理独立计费项、发布不可变价格版本及单品/用户覆盖策略。</p>
       </div>
       <button class="secondary compact" @click="load">
         <RefreshCw :size="16" />刷新
@@ -251,150 +290,156 @@ function price(v: Version) {
           :key="selected || 'pricing-empty'"
           :class="['pricing-main', switchingPricing && 'is-switching']"
         >
-        <section v-if="selected" class="form-panel">
-          <h2><BadgeCent :size="19" />发布价格版本</h2>
-          <form @submit.prevent="createVersion">
-            <div class="field-row">
-              <label
-                >每单位价格（元）<input
-                  v-model.number="version.unitPriceYuan"
-                  type="number"
-                  min="0"
-                  step="0.00000001"
-                  required
-                /><small>统一以人民币元录入，最多支持 8 位小数</small></label
-              ><label
-                >生效时间<input
-                  v-model="version.effectiveAt"
-                  type="datetime-local"
-                /><small>留空立即生效</small></label
-              >
-            </div>
-            <div class="field-row">
-              <label
-                >免费用量<input
-                  v-model="version.freeQuantity"
-                  inputmode="decimal" /></label
-              ><label
-                >最低计费用量<input
-                  v-model="version.minimumQuantity"
-                  inputmode="decimal"
-              /></label>
-            </div>
-            <label
-              >舍入方式<select v-model="version.roundingMode">
-                <option value="half_up">四舍五入</option>
-                <option value="up">向上取整</option>
-                <option value="down">向下取整</option>
-              </select></label
-            ><button class="primary compact" :disabled="busy === 'version'">
-              <Plus :size="16" />发布新版本
-            </button>
-          </form>
-        </section>
-        <section v-if="selected" class="form-panel">
-          <h2><BadgeCent :size="19" />价格覆盖</h2>
-          <form @submit.prevent="saveOverride">
-            <div class="field-row">
-              <label
-                >覆盖范围<select
-                  v-model="overrideForm.scope"
-                  @change="overrideForm.scopeId = ''"
-                >
-                  <option value="product">产品</option>
-                  <option value="user">用户</option>
-                </select></label
-              ><label
-                >目标<select v-model="overrideForm.scopeId" required>
-                  <option value="" disabled>选择目标</option>
-                  <option
-                    v-for="target in targets()"
-                    :key="target.id"
-                    :value="target.id"
-                  >
-                    {{ target.name }}
-                  </option>
-                </select></label
-              >
-            </div>
-            <label
-              >价格版本<select v-model="overrideForm.pricingVersionId" required>
-                <option value="" disabled>选择不可变版本</option>
-                <option
-                  v-for="v in items.find((i) => i.id === selected)?.versions ||
-                  []"
-                  :key="v.id"
-                  :value="v.id"
-                >
-                  v{{ v.version }} · ¥ {{ price(v) }}
-                </option>
-              </select></label
-            ><button class="secondary compact" :disabled="busy === 'override'">
-              <Plus :size="16" />保存覆盖
-            </button>
-          </form>
-          <div class="override-list">
-            <article
-              v-for="entry in overrides.filter(
-                (v) => v.pricingItemId === selected,
-              )"
-              :key="entry.id"
-              class="override-row"
-            >
-              <div>
-                <strong>{{ entry.scopeName }}</strong
-                ><small
-                  >{{ entry.scope === "user" ? "用户" : "产品" }} · v{{
-                    entry.version
-                  }}</small
+          <section v-if="selected" class="form-panel">
+            <h2><BadgeCent :size="19" />发布价格版本</h2>
+            <form @submit.prevent="createVersion">
+              <div class="field-row">
+                <label
+                  >每单位价格（元）<input
+                    v-model.number="version.unitPriceYuan"
+                    type="number"
+                    min="0"
+                    step="0.00000001"
+                    required
+                  /><small>统一以人民币元录入，最多支持 8 位小数</small></label
+                ><label
+                  >生效时间<input
+                    v-model="version.effectiveAt"
+                    type="datetime-local"
+                  /><small>留空立即生效</small></label
                 >
               </div>
-              <button
-                class="icon-action"
-                title="删除覆盖"
-                :disabled="busy === entry.id"
-                @click="removeOverride(entry.id)"
-              >
-                <Trash2 :size="17" />
+              <div class="field-row">
+                <label
+                  >免费用量<input
+                    v-model="version.freeQuantity"
+                    inputmode="decimal" /></label
+                ><label
+                  >最低计费用量<input
+                    v-model="version.minimumQuantity"
+                    inputmode="decimal"
+                /></label>
+              </div>
+              <label
+                >舍入方式<select v-model="version.roundingMode">
+                  <option value="half_up">四舍五入</option>
+                  <option value="up">向上取整</option>
+                  <option value="down">向下取整</option>
+                </select></label
+              ><button class="primary compact" :disabled="busy === 'version'">
+                <Plus :size="16" />发布新版本
               </button>
-            </article>
-            <p
-              v-if="!overrides.some((v) => v.pricingItemId === selected)"
-              class="quiet empty-copy"
-            >
-              未配置覆盖，将使用平台默认价格
-            </p>
-          </div>
-        </section>
-        <section
-          v-for="entry in items.filter((v) => v.id === selected)"
-          :key="entry.id"
-          class="version-list"
-        >
-          <div class="section-heading">
-            <div>
-              <p class="eyebrow">不可变记录</p>
-              <h2>{{ usageCodeLabel(entry.code) }}</h2>
-            </div>
-            <span>{{ entry.versions.length }} 个版本</span>
-          </div>
-          <article v-for="v in entry.versions" :key="v.id" class="price-row">
-            <span class="version-number">v{{ v.version }}</span>
-            <div>
-              <strong
-                >¥ {{ price(v) }} / {{ usageUnitLabel(entry.unit) }}</strong
-              ><small
-                >{{ new Date(v.effectiveAt).toLocaleString() }} 生效 · 免费
-                {{ v.freeQuantity }}</small
+            </form>
+          </section>
+          <section v-if="selected" class="form-panel">
+            <h2><BadgeCent :size="19" />价格覆盖</h2>
+            <form @submit.prevent="saveOverride">
+              <div class="field-row">
+                <label
+                  >覆盖范围<select
+                    v-model="overrideForm.scope"
+                    @change="overrideForm.scopeId = ''"
+                  >
+                    <option value="product">产品</option>
+                    <option value="user">用户</option>
+                  </select></label
+                ><label
+                  >目标<select v-model="overrideForm.scopeId" required>
+                    <option value="" disabled>选择目标</option>
+                    <option
+                      v-for="target in targets()"
+                      :key="target.id"
+                      :value="target.id"
+                    >
+                      {{ target.name }}
+                    </option>
+                  </select></label
+                >
+              </div>
+              <label
+                >价格版本<select
+                  v-model="overrideForm.pricingVersionId"
+                  required
+                >
+                  <option value="" disabled>选择不可变版本</option>
+                  <option
+                    v-for="v in items.find((i) => i.id === selected)
+                      ?.versions || []"
+                    :key="v.id"
+                    :value="v.id"
+                  >
+                    v{{ v.version }} · ¥ {{ price(v) }}
+                  </option>
+                </select></label
+              ><button
+                class="secondary compact"
+                :disabled="busy === 'override'"
               >
+                <Plus :size="16" />保存覆盖
+              </button>
+            </form>
+            <div class="override-list">
+              <article
+                v-for="entry in overrides.filter(
+                  (v) => v.pricingItemId === selected,
+                )"
+                :key="entry.id"
+                class="override-row"
+              >
+                <div>
+                  <strong>{{ entry.scopeName }}</strong
+                  ><small
+                    >{{ entry.scope === "user" ? "用户" : "产品" }} · v{{
+                      entry.version
+                    }}</small
+                  >
+                </div>
+                <button
+                  class="icon-action"
+                  title="删除覆盖"
+                  :disabled="busy === entry.id"
+                  @click="removeOverride(entry.id)"
+                >
+                  <Trash2 :size="17" />
+                </button>
+              </article>
+              <p
+                v-if="!overrides.some((v) => v.pricingItemId === selected)"
+                class="quiet empty-copy"
+              >
+                未配置覆盖，将使用平台默认价格
+              </p>
             </div>
-            <span class="status-pill active">已发布</span
-            ><CheckCircle2 class="ok" :size="19" />
-          </article>
-          <p v-if="!entry.versions.length" class="quiet empty-copy">
-            尚无价格，用量会标记为未配置价格且不会扣费
-          </p>
-        </section>
+          </section>
+          <section
+            v-for="entry in items.filter((v) => v.id === selected)"
+            :key="entry.id"
+            class="version-list"
+          >
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">不可变记录</p>
+                <h2>{{ usageCodeLabel(entry.code) }}</h2>
+              </div>
+              <span>{{ entry.versions.length }} 个版本</span>
+            </div>
+            <article v-for="v in entry.versions" :key="v.id" class="price-row">
+              <span class="version-number">v{{ v.version }}</span>
+              <div>
+                <strong
+                  >¥ {{ price(v) }} / {{ usageUnitLabel(entry.unit) }}</strong
+                ><small
+                  >{{ new Date(v.effectiveAt).toLocaleString() }} 生效 · 免费
+                  {{ v.freeQuantity }}</small
+                >
+              </div>
+              <span class="status-pill active">已发布</span
+              ><CheckCircle2 class="ok" :size="19" />
+            </article>
+            <p v-if="!entry.versions.length" class="quiet empty-copy">
+              尚无价格，用量会标记为未配置价格且不会扣费
+            </p>
+          </section>
         </div>
       </Transition>
     </div>

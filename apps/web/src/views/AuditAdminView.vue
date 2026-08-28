@@ -1,16 +1,184 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
-import { ChevronDown, Filter, RefreshCw } from '@lucide/vue'
-import { api } from '../api'
-type AuditLog={id:number;actorName?:string;actorEmail?:string;subjectName?:string;subjectEmail?:string;action:string;resourceType:string;resourceId?:string;requestId:string;ip?:string;metadata:Record<string,unknown>;createdAt:string;category:string}
-const logs=ref<AuditLog[]>([]),nextBefore=ref<number|null>(null),error=ref(''),busy=ref(false)
-const filters=reactive({action:'',identity:'',category:''})
-const categoryLabels:Record<string,string>={user:'用户',admin:'管理',consumption:'消费',recharge:'充值',system:'系统',error:'错误',login:'登录',refund:'退款',management:'资源'}
-async function load(append=false){try{busy.value=true;const params=new URLSearchParams({limit:'50'});if(filters.action.trim())params.set('action',filters.action.trim());if(filters.identity.trim())params.set('identity',filters.identity.trim());if(filters.category)params.set('category',filters.category);if(append&&nextBefore.value)params.set('before',String(nextBefore.value));const data=await api<{logs:AuditLog[];nextBefore:number|null}>('/admin/audit-logs?'+params);logs.value=append?[...logs.value,...data.logs]:data.logs;nextBefore.value=data.nextBefore;error.value=''}catch(e){error.value=(e as Error).message}finally{busy.value=false}}
-function reset(){filters.action='';filters.identity='';filters.category='';load()}
-function actor(item:AuditLog){return item.actorName?`${item.actorName} · ${item.actorEmail||''}`:'系统任务'}
-function subject(item:AuditLog){return item.subjectName?`${item.subjectName} · ${item.subjectEmail||''}`:'无目标账户'}
-onMounted(()=>load())
+import { onMounted, reactive, ref } from "vue";
+import { ChevronDown, Filter, RefreshCw } from "@lucide/vue";
+import { api } from "../api";
+type AuditLog = {
+  id: number;
+  actorName?: string;
+  actorEmail?: string;
+  subjectName?: string;
+  subjectEmail?: string;
+  action: string;
+  resourceType: string;
+  resourceId?: string;
+  requestId: string;
+  ip?: string;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  category: string;
+};
+const logs = ref<AuditLog[]>([]),
+  nextBefore = ref<number | null>(null),
+  error = ref(""),
+  busy = ref(false);
+const filters = reactive({ action: "", identity: "", category: "" });
+const categoryLabels: Record<string, string> = {
+  user: "用户",
+  admin: "管理",
+  consumption: "消费",
+  recharge: "充值",
+  system: "系统",
+  error: "错误",
+  login: "登录",
+  refund: "退款",
+  management: "资源",
+};
+async function load(append = false) {
+  try {
+    busy.value = true;
+    const params = new URLSearchParams({ limit: "50" });
+    if (filters.action.trim()) params.set("action", filters.action.trim());
+    if (filters.identity.trim())
+      params.set("identity", filters.identity.trim());
+    if (filters.category) params.set("category", filters.category);
+    if (append && nextBefore.value)
+      params.set("before", String(nextBefore.value));
+    const data = await api<{ logs: AuditLog[]; nextBefore: number | null }>(
+      "/admin/audit-logs?" + params,
+    );
+    logs.value = append ? [...logs.value, ...data.logs] : data.logs;
+    nextBefore.value = data.nextBefore;
+    error.value = "";
+  } catch (e) {
+    error.value = (e as Error).message;
+  } finally {
+    busy.value = false;
+  }
+}
+function reset() {
+  filters.action = "";
+  filters.identity = "";
+  filters.category = "";
+  load();
+}
+function actor(item: AuditLog) {
+  return item.actorName
+    ? `${item.actorName} · ${item.actorEmail || ""}`
+    : "系统任务";
+}
+function subject(item: AuditLog) {
+  return item.subjectName
+    ? `${item.subjectName} · ${item.subjectEmail || ""}`
+    : "无目标账户";
+}
+onMounted(() => load());
 </script>
-<template><main class="workspace admin-workspace"><header><div><p class="eyebrow">安全与合规</p><h1>审计日志</h1></div><button class="secondary compact" :disabled="busy" @click="load()"><RefreshCw :size="16"/>刷新</button></header><p v-if="error" class="message">{{error}}</p><section class="audit-toolbar"><form @submit.prevent="load()"><label>操作类型<input v-model="filters.action" placeholder="例如 payment 或 user"/></label><label>分类<select v-model="filters.category"><option value="">全部分类</option><option v-for="(label,key) in categoryLabels" :key="key" :value="key">{{label}}</option></select></label><label>账户<input v-model="filters.identity" placeholder="姓名或邮箱"/></label><button class="primary compact" :disabled="busy"><Filter :size="16"/>筛选</button><button type="button" class="secondary compact" @click="reset">清除</button></form></section><section class="audit-list"><div class="section-heading"><div><p class="eyebrow">不可变记录</p><h2>操作流水</h2></div><span>{{logs.length}} 条已加载</span></div><div v-if="busy&&!logs.length" class="skeleton-list" aria-busy="true"><article v-for="index in 5" :key="index" class="skeleton-row"><span class="skeleton skeleton-text" style="width:52px"></span><div style="flex:1;display:grid;gap:8px"><span class="skeleton skeleton-title" style="width:38%"></span><span class="skeleton skeleton-text" style="width:64%"></span></div><span class="skeleton skeleton-text" style="width:120px"></span></article></div><article v-for="item in logs" :key="item.id" class="audit-row"><div class="audit-id">#{{item.id}}</div><div><strong>{{item.action}} <span class="audit-category">{{categoryLabels[item.category]||'系统'}}</span></strong><small>{{actor(item)}} → {{subject(item)}}</small><small>{{item.resourceType}}<template v-if="item.resourceId"> · {{item.resourceId}}</template> · {{new Date(item.createdAt).toLocaleString()}}</small></div><div class="audit-context"><span>{{item.ip||'内部任务'}}</span><small>{{item.requestId}}</small></div></article><p v-if="!logs.length&&!busy" class="quiet empty-copy">没有符合条件的审计记录</p><button v-if="nextBefore" class="load-more" :disabled="busy" @click="load(true)"><ChevronDown :size="17"/>加载更早记录</button></section></main></template>
-<style scoped>.audit-category{display:inline-flex;align-items:center;margin-left:8px;padding:2px 7px;border-radius:999px;background:var(--surface-muted,#eef0f3);color:var(--text-muted,#60656d);font-size:11px;font-weight:600;vertical-align:middle}</style>
+<template>
+  <main class="workspace admin-workspace">
+    <header>
+      <div>
+        <p class="eyebrow">安全与合规</p>
+        <h1>审计日志</h1>
+        <p class="quiet">不可篡改的管理员操作流水与关键业务安全事件审计。</p>
+      </div>
+      <button class="secondary compact" :disabled="busy" @click="load()">
+        <RefreshCw :size="16" />刷新
+      </button>
+    </header>
+    <p v-if="error" class="message">{{ error }}</p>
+    <section class="audit-toolbar">
+      <form @submit.prevent="load()">
+        <label
+          >操作类型<input
+            v-model="filters.action"
+            placeholder="例如 payment 或 user" /></label
+        ><label
+          >分类<select v-model="filters.category">
+            <option value="">全部分类</option>
+            <option
+              v-for="(label, key) in categoryLabels"
+              :key="key"
+              :value="key"
+            >
+              {{ label }}
+            </option>
+          </select></label
+        ><label
+          >账户<input
+            v-model="filters.identity"
+            placeholder="姓名或邮箱" /></label
+        ><button class="primary compact" :disabled="busy">
+          <Filter :size="16" />筛选</button
+        ><button type="button" class="secondary compact" @click="reset">
+          清除
+        </button>
+      </form>
+    </section>
+    <section class="audit-list">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">不可变记录</p>
+          <h2>操作流水</h2>
+        </div>
+        <span>{{ logs.length }} 条已加载</span>
+      </div>
+      <div v-if="busy && !logs.length" class="skeleton-list" aria-busy="true">
+        <article v-for="index in 5" :key="index" class="skeleton-row">
+          <span class="skeleton skeleton-text" style="width: 52px"></span>
+          <div style="flex: 1; display: grid; gap: 8px">
+            <span class="skeleton skeleton-title" style="width: 38%"></span
+            ><span class="skeleton skeleton-text" style="width: 64%"></span>
+          </div>
+          <span class="skeleton skeleton-text" style="width: 120px"></span>
+        </article>
+      </div>
+      <article v-for="item in logs" :key="item.id" class="audit-row">
+        <div class="audit-id">#{{ item.id }}</div>
+        <div>
+          <strong
+            >{{ item.action }}
+            <span class="audit-category">{{
+              categoryLabels[item.category] || "系统"
+            }}</span></strong
+          ><small>{{ actor(item) }} → {{ subject(item) }}</small
+          ><small
+            >{{ item.resourceType
+            }}<template v-if="item.resourceId">
+              · {{ item.resourceId }}</template
+            >
+            · {{ new Date(item.createdAt).toLocaleString() }}</small
+          >
+        </div>
+        <div class="audit-context">
+          <span>{{ item.ip || "内部任务" }}</span
+          ><small>{{ item.requestId }}</small>
+        </div>
+      </article>
+      <p v-if="!logs.length && !busy" class="quiet empty-copy">
+        没有符合条件的审计记录
+      </p>
+      <button
+        v-if="nextBefore"
+        class="load-more"
+        :disabled="busy"
+        @click="load(true)"
+      >
+        <ChevronDown :size="17" />加载更早记录
+      </button>
+    </section>
+  </main>
+</template>
+<style scoped>
+.audit-category {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 8px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--surface-muted, #eef0f3);
+  color: var(--text-muted, #60656d);
+  font-size: 11px;
+  font-weight: 600;
+  vertical-align: middle;
+}
+</style>

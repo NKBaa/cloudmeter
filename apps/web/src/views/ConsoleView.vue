@@ -5,10 +5,13 @@ import {
   AppWindow,
   ArchiveRestore,
   BadgeDollarSign,
+  Boxes,
   CalendarDays,
   CalendarCheck,
   ChevronLeft,
   ChevronRight,
+  Coins,
+  CreditCard,
   Gift,
   Check,
   CircleStop,
@@ -22,6 +25,7 @@ import {
   KeyRound,
   Link2,
   LogOut,
+  MessageSquareText,
   Plus,
   Play,
   Receipt,
@@ -44,7 +48,14 @@ type Dependency = {
 };
 type Volume = { name: string; mountPath: string; sizeGiB: number };
 type SecretOption = { key: string; description?: string; editable?: boolean };
-type EditableOptions = { cpu?: boolean; memory?: boolean; dataVolume?: boolean; command?: boolean; dependencies?: boolean; environment?: boolean };
+type EditableOptions = {
+  cpu?: boolean;
+  memory?: boolean;
+  dataVolume?: boolean;
+  command?: boolean;
+  dependencies?: boolean;
+  environment?: boolean;
+};
 type Product = {
   id: string;
   slug: string;
@@ -75,12 +86,36 @@ type Product = {
     portMapping?: { available?: boolean };
   };
 };
-type ProductGroup = Omit<Product, "versionId" | "version" | "versionLabel" | "deployable" | "missingDependencies" | "runtimeSpec" | "routeSpec"> & {
-  versions: Array<Pick<Product, "versionId" | "version" | "versionLabel" | "deployable" | "missingDependencies" | "runtimeSpec" | "routeSpec">>;
+type ProductGroup = Omit<
+  Product,
+  | "versionId"
+  | "version"
+  | "versionLabel"
+  | "deployable"
+  | "missingDependencies"
+  | "runtimeSpec"
+  | "routeSpec"
+> & {
+  versions: Array<
+    Pick<
+      Product,
+      | "versionId"
+      | "version"
+      | "versionLabel"
+      | "deployable"
+      | "missingDependencies"
+      | "runtimeSpec"
+      | "routeSpec"
+    >
+  >;
 };
 type AppConfiguration = {
   app: { id: string; slug: string; status: string; productSlug: string };
-  current: { versionId: string; runtimeSpec: NonNullable<Product["runtimeSpec"]>; routeSpec: NonNullable<Product["routeSpec"]> };
+  current: {
+    versionId: string;
+    runtimeSpec: NonNullable<Product["runtimeSpec"]>;
+    routeSpec: NonNullable<Product["routeSpec"]>;
+  };
   target: {
     productId: string;
     productSlug: string;
@@ -121,8 +156,22 @@ type RuntimeMetric = {
   memoryUsageMiB: number;
   sampledAt: string;
 };
-type DeploymentEvent = { id?: number; fromState?: string; toState?: string; message?: string; createdAt?: string };
-type DeploymentJob = { id: string; state: string; attempts: number; lastError?: string | null; createdAt: string; updatedAt: string; events: DeploymentEvent[] };
+type DeploymentEvent = {
+  id?: number;
+  fromState?: string;
+  toState?: string;
+  message?: string;
+  createdAt?: string;
+};
+type DeploymentJob = {
+  id: string;
+  state: string;
+  attempts: number;
+  lastError?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  events: DeploymentEvent[];
+};
 type Usage = {
   usageCode: string;
   unit: string;
@@ -187,8 +236,18 @@ type CreditConsumption = {
   windowStart: string;
   createdAt: string;
 };
-type PaymentMethod = { name: string; type: string; minAmountCents: number; enabled: boolean };
-type PaymentProvider = { provider: string; enabled: boolean; paymentMethods?: PaymentMethod[]; amountOptions?: number[] };
+type PaymentMethod = {
+  name: string;
+  type: string;
+  minAmountCents: number;
+  enabled: boolean;
+};
+type PaymentProvider = {
+  provider: string;
+  enabled: boolean;
+  paymentMethods?: PaymentMethod[];
+  amountOptions?: number[];
+};
 type Release = {
   id: string;
   releaseNumber: number;
@@ -224,7 +283,12 @@ type Notification = {
   createdAt: string;
 };
 type AppSecret = { key: string; version: number; createdAt: string };
-type AppSecretResponse = { secrets: AppSecret[]; allowedKeys: string[]; editableKeys?: string[]; options?: SecretOption[] };
+type AppSecretResponse = {
+  secrets: AppSecret[];
+  allowedKeys: string[];
+  editableKeys?: string[];
+  options?: SecretOption[];
+};
 type CheckinSummary = {
   enabled: boolean;
   checkedInToday: boolean;
@@ -249,7 +313,8 @@ const props = defineProps<{
 const router = useRouter();
 const page = computed(() => props.page || "overview");
 const locationHost = window.location.hostname;
-const pageTitle = computed(  () =>
+const pageTitle = computed(
+  () =>
     ({
       overview: "概览",
       deploy: "部署应用",
@@ -260,6 +325,30 @@ const pageTitle = computed(  () =>
       checkin: "每日签到",
     })[page.value],
 );
+const pageEyebrow = computed(
+  () =>
+    ({
+      overview: "",
+      deploy: "应用部署",
+      apps: "实例管理",
+      billing: "财务结算",
+      recharge: "资金管理",
+      usage: "用量明细",
+      checkin: "每日福利",
+    })[page.value] || "",
+);
+const pageDescription = computed(
+  () =>
+    ({
+      overview: "监控系统资源、钱包余额与已部署实例概况。",
+      deploy: "选择管理员已发布的产品模板，一键启动容器实例。",
+      apps: "管理您正在运行的容器应用、运行状态与日志配置。",
+      billing: "查看账本变动流水、月度结算账单与赠送额度明细。",
+      recharge: "支持多种支付渠道充值，余额即时到账。",
+      usage: "按时间周期查询 CPU、内存、存储与网络流量等用量详情。",
+      checkin: "每日签到即可领取随机金额余额奖励。",
+    })[page.value],
+);
 const products = ref<Product[]>([]),
   productCatalog = ref<ProductGroup[]>([]),
   pickedProduct = ref<ProductGroup | null>(null),
@@ -267,6 +356,7 @@ const products = ref<Product[]>([]),
   usage = ref<Usage[]>([]),
   ledger = ref<LedgerEntry[]>([]),
   bills = ref<Bill[]>([]),
+  dailyBills = ref<any[]>([]),
   creditGrants = ref<CreditGrant[]>([]),
   creditConsumptions = ref<CreditConsumption[]>([]),
   creditAvailable = ref(0),
@@ -291,7 +381,12 @@ const impersonation = ref({ active: false, readOnly: true, actorName: "" });
 const faqs = ref<{ id: string; question: string; answer: string }[]>([]);
 const openFaq = ref<string>("");
 const logApp = ref<App | null>(null);
-const logData = ref<{ logs: string; status: string; lastError?: string; sampledAt?: string }>({ logs: "", status: "" });
+const logData = ref<{
+  logs: string;
+  status: string;
+  lastError?: string;
+  sampledAt?: string;
+}>({ logs: "", status: "" });
 const logBusy = ref(false);
 const writeLocked = computed(
   () => impersonation.value.active && impersonation.value.readOnly,
@@ -321,12 +416,16 @@ const deployVolumeFloorGiB = ref(0);
 const deployCommand = ref("");
 const deployPort = ref(8080);
 const deployPortMapping = ref(false);
-const deployPortMappingAvailable = computed(() => deployProduct.value?.routeSpec?.portMapping?.available === true);
+const deployPortMappingAvailable = computed(
+  () => deployProduct.value?.routeSpec?.portMapping?.available === true,
+);
 const deployEnvironment = ref<{ key: string; value: string }[]>([]);
 const deployDependencies = ref<Dependency[]>([]);
 const missingDeploySecretKeys = computed(() =>
   (deployProduct.value?.runtimeSpec?.secretKeys || []).filter(
-    (key) => !deployConfiguredSecretKeys.value.includes(key) && !String(deploySecrets.value[key] || '').trim(),
+    (key) =>
+      !deployConfiguredSecretKeys.value.includes(key) &&
+      !String(deploySecrets.value[key] || "").trim(),
   ),
 );
 const deploySecretOptions = computed<SecretOption[]>(() => {
@@ -391,9 +490,17 @@ async function doCheckin() {
     busy.value = "";
   }
 }
-const epayProvider = computed(() => paymentProviders.value.find((item) => item.provider === "epay"));
-const topupOptions = computed(() => epayProvider.value?.amountOptions?.length ? epayProvider.value.amountOptions : [10,20,50,100,200,300,400,500]);
-const paymentMethods = computed(() => (epayProvider.value?.paymentMethods || []).filter((item) => item.enabled));
+const epayProvider = computed(() =>
+  paymentProviders.value.find((item) => item.provider === "epay"),
+);
+const topupOptions = computed(() =>
+  epayProvider.value?.amountOptions?.length
+    ? epayProvider.value.amountOptions
+    : [10, 20, 50, 100, 200, 300, 400, 500],
+);
+const paymentMethods = computed(() =>
+  (epayProvider.value?.paymentMethods || []).filter((item) => item.enabled),
+);
 const totalSpend = computed(() =>
   ledger.value
     .filter((item) => item.amountCents < 0)
@@ -457,7 +564,9 @@ function logStatusLabel(status: string) {
       succeeded: "已拉取",
       cached: "已缓存",
       failed: "拉取失败",
-    }[status] || status || "未知"
+    }[status] ||
+    status ||
+    "未知"
   );
 }
 const transientAppStates = new Set(["deploying", "updating"]);
@@ -523,6 +632,7 @@ async function load() {
       notices,
       providers,
       faqData,
+      dailyBillsData,
     ] = await Promise.all([
       api<any>("/me"),
       api<any>("/products"),
@@ -540,41 +650,51 @@ async function load() {
       api<{ announcements: Announcement[] }>("/announcements"),
       api<{ notifications: Notification[] }>("/notifications"),
       api<{ providers: PaymentProvider[] }>("/payments/providers"),
-      api<{ faqs: { id: string; question: string; answer: string }[] }>("/faqs"),
+      api<{ faqs: { id: string; question: string; answer: string }[] }>(
+        "/faqs",
+      ),
+      api<any>("/billing/daily-bills"),
     ]);
     name.value = m.DisplayName;
-  impersonation.value = {
-    active: Boolean(m.Impersonating),
-    readOnly: Boolean(m.ImpersonationReadOnly),
-    actorName: m.ActorDisplayName || "管理员",
-  };
-  faqs.value = faqData.faqs || [];
-  products.value = catalogToFlat(p.products);
-  productCatalog.value = p.products;
-  apps.value = a.apps;
-  balance.value = b.balanceCents;
-  usage.value = u.usage;
-  ledger.value = l.entries;
-  bills.value = statementData.bills;
-  creditAvailable.value = creditData.availableCents;
-  creditGrants.value = creditData.grants;
-  creditConsumptions.value = creditData.consumptions;
-  orders.value = o.orders;
-  paymentProviders.value = providers.providers;
-  if (!topupOptions.value.includes(selectedTopup.value)) chooseTopup(topupOptions.value[0] || 10);
-  if (!paymentMethods.value.some((item) => item.type === selectedPaymentType.value)) selectedPaymentType.value = paymentMethods.value[0]?.type || "";
-  announcements.value = n.announcements;
-  notifications.value = notices.notifications;
-  const pairs = await Promise.all(
-    apps.value.map(
-      async (app) =>
-        [
-          app.id,
-          (await api<any>("/apps/" + app.id + "/releases")).releases,
-        ] as const,
-    ),
-  );
-  releases.value = Object.fromEntries(pairs);
+    impersonation.value = {
+      active: Boolean(m.Impersonating),
+      readOnly: Boolean(m.ImpersonationReadOnly),
+      actorName: m.ActorDisplayName || "管理员",
+    };
+    faqs.value = faqData.faqs || [];
+    products.value = catalogToFlat(p.products);
+    productCatalog.value = p.products;
+    apps.value = a.apps;
+    balance.value = b.balanceCents;
+    usage.value = u.usage;
+    ledger.value = l.entries;
+    bills.value = statementData.bills;
+    dailyBills.value = dailyBillsData.dailyBills || [];
+    creditAvailable.value = creditData.availableCents;
+    creditGrants.value = creditData.grants;
+    creditConsumptions.value = creditData.consumptions;
+    orders.value = o.orders;
+    paymentProviders.value = providers.providers;
+    if (!topupOptions.value.includes(selectedTopup.value))
+      chooseTopup(topupOptions.value[0] || 10);
+    if (
+      !paymentMethods.value.some(
+        (item) => item.type === selectedPaymentType.value,
+      )
+    )
+      selectedPaymentType.value = paymentMethods.value[0]?.type || "";
+    announcements.value = n.announcements;
+    notifications.value = notices.notifications;
+    const pairs = await Promise.all(
+      apps.value.map(
+        async (app) =>
+          [
+            app.id,
+            (await api<any>("/apps/" + app.id + "/releases")).releases,
+          ] as const,
+      ),
+    );
+    releases.value = Object.fromEntries(pairs);
   } finally {
     productsLoading.value = false;
   }
@@ -692,11 +812,12 @@ onMounted(async () => {
     if (!document.hidden) void refreshRuntimeMetrics();
   }, 3000);
 });
- onBeforeUnmount(() => {
-   if (appsRefreshTimer !== undefined) window.clearInterval(appsRefreshTimer);
-   if (metricsRefreshTimer !== undefined) window.clearInterval(metricsRefreshTimer);
-   if (logTimer !== undefined) window.clearInterval(logTimer);
- });
+onBeforeUnmount(() => {
+  if (appsRefreshTimer !== undefined) window.clearInterval(appsRefreshTimer);
+  if (metricsRefreshTimer !== undefined)
+    window.clearInterval(metricsRefreshTimer);
+  if (logTimer !== undefined) window.clearInterval(logTimer);
+});
 function catalogToFlat(catalog: ProductGroup[]): Product[] {
   const flat: Product[] = [];
   for (const group of catalog) {
@@ -715,9 +836,18 @@ function catalogToFlat(catalog: ProductGroup[]): Product[] {
 function openVersionPicker(group: ProductGroup) {
   pickedProduct.value = group;
 }
-function pickVersion(group: ProductGroup, version: ProductGroup["versions"][number]) {
+function pickVersion(
+  group: ProductGroup,
+  version: ProductGroup["versions"][number],
+) {
   pickedProduct.value = null;
-  openDeploy({ ...version, id: group.id, slug: group.slug, name: group.name, iconUrl: group.iconUrl } as Product);
+  openDeploy({
+    ...version,
+    id: group.id,
+    slug: group.slug,
+    name: group.name,
+    iconUrl: group.iconUrl,
+  } as Product);
 }
 function openDeploy(p: Product) {
   if (!p.deployable) {
@@ -736,7 +866,12 @@ function openDeploy(p: Product) {
   );
   deployCPU.value = p.runtimeSpec?.cpuCores || 1;
   deployMemory.value = p.runtimeSpec?.memoryMiB || 512;
-  deployDataVolumeGiB.value = p.runtimeSpec?.dataVolumeGiB || Math.max(0, ...(p.runtimeSpec?.volumes || []).map((volume) => volume.sizeGiB));
+  deployDataVolumeGiB.value =
+    p.runtimeSpec?.dataVolumeGiB ||
+    Math.max(
+      0,
+      ...(p.runtimeSpec?.volumes || []).map((volume) => volume.sizeGiB),
+    );
   deployVolumeFloorGiB.value = deployDataVolumeGiB.value;
   deployCommand.value = (p.runtimeSpec?.command || []).join(" ");
   deployPort.value = p.routeSpec?.containerPort || 8080;
@@ -753,7 +888,9 @@ async function openEditApp(app: App) {
     deployConfigurationLoading.value = true;
     busy.value = app.id;
     error.value = "";
-    const configuration = await api<AppConfiguration>(`/apps/${app.id}/configuration`);
+    const configuration = await api<AppConfiguration>(
+      `/apps/${app.id}/configuration`,
+    );
     const target: Product = {
       id: configuration.target.productId,
       slug: configuration.target.productSlug,
@@ -768,10 +905,15 @@ async function openEditApp(app: App) {
     const current = configuration.current.runtimeSpec || {};
     const minimumCPU = target.runtimeSpec?.cpuCores || 1;
     const minimumMemory = target.runtimeSpec?.memoryMiB || 512;
-    const minimumVolume = target.runtimeSpec?.dataVolumeGiB
-      || Math.max(0, ...(target.runtimeSpec?.volumes || []).map((volume) => volume.sizeGiB));
-    const currentVolume = current.dataVolumeGiB
-      || Math.max(0, ...(current.volumes || []).map((volume) => volume.sizeGiB));
+    const minimumVolume =
+      target.runtimeSpec?.dataVolumeGiB ||
+      Math.max(
+        0,
+        ...(target.runtimeSpec?.volumes || []).map((volume) => volume.sizeGiB),
+      );
+    const currentVolume =
+      current.dataVolumeGiB ||
+      Math.max(0, ...(current.volumes || []).map((volume) => volume.sizeGiB));
     deployMode.value = "update";
     editingApp.value = app;
     deployConfiguredSecretKeys.value = configuration.configuredSecretKeys || [];
@@ -781,16 +923,25 @@ async function openEditApp(app: App) {
       (target.runtimeSpec?.secretKeys || []).map((key) => [key, ""]),
     );
     deployCPU.value = Math.max(Number(current.cpuCores || 0), minimumCPU);
-    deployMemory.value = Math.max(Number(current.memoryMiB || 0), minimumMemory);
+    deployMemory.value = Math.max(
+      Number(current.memoryMiB || 0),
+      minimumMemory,
+    );
     deployDataVolumeGiB.value = Math.max(currentVolume, minimumVolume);
     deployVolumeFloorGiB.value = deployDataVolumeGiB.value;
     deployPortMapping.value = app.portMappingEnabled === true;
-    deployCommand.value = (current.command || target.runtimeSpec?.command || []).join(" " );
+    deployCommand.value = (
+      current.command ||
+      target.runtimeSpec?.command ||
+      []
+    ).join(" ");
     deployPort.value = target.routeSpec?.containerPort || 8080;
-    deployEnvironment.value = (target.runtimeSpec?.editableEnvKeys || []).map((key) => ({
-      key,
-      value: current.env?.[key] ?? target.runtimeSpec?.env?.[key] ?? "",
-    }));
+    deployEnvironment.value = (target.runtimeSpec?.editableEnvKeys || []).map(
+      (key) => ({
+        key,
+        value: current.env?.[key] ?? target.runtimeSpec?.env?.[key] ?? "",
+      }),
+    );
     deployDependencies.value = (
       target.runtimeSpec?.editableOptions?.dependencies
         ? current.dependencies || target.runtimeSpec?.dependencies || []
@@ -833,22 +984,40 @@ async function deploy() {
   try {
     busy.value = "deploy";
     const resources = {
-      cpuCores: p.runtimeSpec?.editableOptions?.cpu !== false ? deployCPU.value : undefined,
-      memoryMiB: p.runtimeSpec?.editableOptions?.memory !== false ? deployMemory.value : undefined,
-      dataVolumeGiB: p.runtimeSpec?.editableOptions?.dataVolume !== false && (p.runtimeSpec?.volumes?.length || 0) ? deployDataVolumeGiB.value : undefined,
+      cpuCores:
+        p.runtimeSpec?.editableOptions?.cpu !== false
+          ? deployCPU.value
+          : undefined,
+      memoryMiB:
+        p.runtimeSpec?.editableOptions?.memory !== false
+          ? deployMemory.value
+          : undefined,
+      dataVolumeGiB:
+        p.runtimeSpec?.editableOptions?.dataVolume !== false &&
+        (p.runtimeSpec?.volumes?.length || 0)
+          ? deployDataVolumeGiB.value
+          : undefined,
       command: p.runtimeSpec?.editableOptions?.command
-        ? (deployCommand.value.trim() ? deployCommand.value.trim().split(/\s+/) : [])
+        ? deployCommand.value.trim()
+          ? deployCommand.value.trim().split(/\s+/)
+          : []
         : undefined,
       environment: Object.fromEntries(
         deployEnvironment.value
           .filter((item) => item.key.trim())
           .map((item) => [item.key.trim(), item.value]),
       ),
-      dependencies: p.runtimeSpec?.editableOptions?.dependencies ? deployDependencies.value : undefined,
-      portMappingEnabled: deployPortMappingAvailable.value ? deployPortMapping.value : undefined,
+      dependencies: p.runtimeSpec?.editableOptions?.dependencies
+        ? deployDependencies.value
+        : undefined,
+      portMappingEnabled: deployPortMappingAvailable.value
+        ? deployPortMapping.value
+        : undefined,
     };
     const changedSecrets = Object.fromEntries(
-      Object.entries(deploySecrets.value).filter(([, value]) => String(value).trim() !== ""),
+      Object.entries(deploySecrets.value).filter(
+        ([, value]) => String(value).trim() !== "",
+      ),
     );
     if (deployMode.value === "update" && editingApp.value) {
       await api(`/apps/${editingApp.value.id}/releases`, {
@@ -867,12 +1036,12 @@ async function deploy() {
       const created = await api<{ slug?: string }>("/apps", {
         method: "POST",
         body: JSON.stringify({
-        productId: p.id,
-        versionId: p.versionId,
-        slug: deploySlug.value.trim(),
-        idempotencyKey: crypto.randomUUID(),
-        secrets: deploySecrets.value,
-        resources,
+          productId: p.id,
+          versionId: p.versionId,
+          slug: deploySlug.value.trim(),
+          idempotencyKey: crypto.randomUUID(),
+          secrets: deploySecrets.value,
+          resources,
         }),
       });
       sessionStorage.setItem(
@@ -889,23 +1058,29 @@ async function deploy() {
   }
 }
 function deploymentErrorHint(value?: string) {
-  const text = String(value || '');
-  if (/no such image/i.test(text)) return '镜像不存在或版本号不可用，请检查管理员发布的镜像地址与 Tag，并确认镜像源可访问。';
-  if (/pull access denied|unauthorized|authentication required/i.test(text)) return '镜像仓库拒绝访问，请让管理员检查 Registry 地址、凭据或镜像是否为私有仓库。';
-  if (/timeout|timed out|deadline exceeded/i.test(text)) return '拉取镜像超时，请检查镜像加速、代理、DNS 和网络连通性。';
-  if (/connection refused|port is already allocated/i.test(text)) return '容器启动端口或内部服务不可用，请让管理员检查内网端口与健康检查配置。';
-  return '部署任务未完成，请查看下方原始错误与事件时间线，或联系管理员。';
+  const text = String(value || "");
+  if (/no such image/i.test(text))
+    return "镜像不存在或版本号不可用，请检查管理员发布的镜像地址与 Tag，并确认镜像源可访问。";
+  if (/pull access denied|unauthorized|authentication required/i.test(text))
+    return "镜像仓库拒绝访问，请让管理员检查 Registry 地址、凭据或镜像是否为私有仓库。";
+  if (/timeout|timed out|deadline exceeded/i.test(text))
+    return "拉取镜像超时，请检查镜像加速、代理、DNS 和网络连通性。";
+  if (/connection refused|port is already allocated/i.test(text))
+    return "容器启动端口或内部服务不可用，请让管理员检查内网端口与健康检查配置。";
+  return "部署任务未完成，请查看下方原始错误与事件时间线，或联系管理员。";
 }
 function deploymentErrorText(value?: string) {
-  const text = String(value || '').trim();
-  return text.length > 1200 ? text.slice(0, 1200) + '…' : text;
+  const text = String(value || "").trim();
+  return text.length > 1200 ? text.slice(0, 1200) + "…" : text;
 }
 async function openDeploymentDetails(app: App) {
   deploymentApp.value = app;
   deploymentJobs.value = [];
   deploymentBusy.value = true;
   try {
-    const result = await api<{ deployments: DeploymentJob[] }>('/apps/' + app.id + '/deployments');
+    const result = await api<{ deployments: DeploymentJob[] }>(
+      "/apps/" + app.id + "/deployments",
+    );
     deploymentJobs.value = result.deployments || [];
   } catch (e) {
     error.value = (e as Error).message;
@@ -936,13 +1111,23 @@ function metricFreshness(app: App) {
   return seconds < 5 ? "实时 · 刚刚更新" : `实时 · ${seconds} 秒前`;
 }
 async function deleteApp(app: App) {
-  if (writeLocked.value || !window.confirm(`删除应用“${app.slug}”？运行容器、路由和持久数据卷会被回收，账单和发布审计历史仍会保留。此操作不可恢复。`)) return;
+  if (
+    writeLocked.value ||
+    !window.confirm(
+      `删除应用“${app.slug}”？运行容器、路由和持久数据卷会被回收，账单和发布审计历史仍会保留。此操作不可恢复。`,
+    )
+  )
+    return;
   try {
     busy.value = app.id;
     await api(`/apps/${app.id}`, { method: "DELETE" });
     message.value = "应用已进入删除清理队列";
     await load();
-  } catch (e) { error.value = (e as Error).message; } finally { busy.value = ""; }
+  } catch (e) {
+    error.value = (e as Error).message;
+  } finally {
+    busy.value = "";
+  }
 }
 async function rollback(app: App) {
   if (!app.previousReleaseId) {
@@ -972,21 +1157,33 @@ async function openLogs(app: App) {
   logData.value = { logs: "", status: "" };
   await refreshLogs();
   if (logTimer !== undefined) window.clearInterval(logTimer);
-  logTimer = window.setInterval(() => { void loadLogs(); }, 3000);
+  logTimer = window.setInterval(() => {
+    void loadLogs();
+  }, 3000);
 }
 function closeLogs() {
   logApp.value = null;
-  if (logTimer !== undefined) { window.clearInterval(logTimer); logTimer = undefined; }
+  if (logTimer !== undefined) {
+    window.clearInterval(logTimer);
+    logTimer = undefined;
+  }
 }
 async function loadLogs() {
   if (!logApp.value) return;
   logBusy.value = true;
   try {
-    logData.value = await api<{ logs: string; status: string; lastError?: string; sampledAt?: string }>(
-      `/apps/${logApp.value.id}/logs`,
-    );
+    logData.value = await api<{
+      logs: string;
+      status: string;
+      lastError?: string;
+      sampledAt?: string;
+    }>(`/apps/${logApp.value.id}/logs`);
   } catch (e) {
-    logData.value = { logs: "", status: "failed", lastError: (e as Error).message };
+    logData.value = {
+      logs: "",
+      status: "failed",
+      lastError: (e as Error).message,
+    };
   } finally {
     logBusy.value = false;
   }
@@ -995,11 +1192,18 @@ async function refreshLogs() {
   if (!logApp.value) return;
   logBusy.value = true;
   try {
-    const result = await api<{ status: string }>(`/apps/${logApp.value.id}/logs/refresh`, { method: "POST", body: "{}" });
+    const result = await api<{ status: string }>(
+      `/apps/${logApp.value.id}/logs/refresh`,
+      { method: "POST", body: "{}" },
+    );
     logData.value = { ...logData.value, status: result.status };
     await loadLogs();
   } catch (e) {
-    logData.value = { ...logData.value, status: "failed", lastError: (e as Error).message };
+    logData.value = {
+      ...logData.value,
+      status: "failed",
+      lastError: (e as Error).message,
+    };
   } finally {
     logBusy.value = false;
   }
@@ -1109,9 +1313,14 @@ async function createOrder() {
     if (!paymentProviders.value.some((v) => v.provider === "epay" && v.enabled))
       throw new Error("在线支付尚未开通，请联系管理员调整余额");
     const provider = "epay";
-    const method = paymentMethods.value.find((item) => item.type === selectedPaymentType.value);
+    const method = paymentMethods.value.find(
+      (item) => item.type === selectedPaymentType.value,
+    );
     if (!method) throw new Error("请选择可用的付款方式");
-    if (Math.round(topup.value * 100) < method.minAmountCents) throw new Error(method.name + "最低充值 ¥" + (method.minAmountCents / 100).toFixed(2));
+    if (Math.round(topup.value * 100) < method.minAmountCents)
+      throw new Error(
+        method.name + "最低充值 ¥" + (method.minAmountCents / 100).toFixed(2),
+      );
     const result = await api<{ checkoutUrl?: string }>("/payments/orders", {
       method: "POST",
       body: JSON.stringify({
@@ -1167,100 +1376,304 @@ async function exitImpersonation() {
         返回管理后台
       </button>
     </section>
-    <header>
+    <header class="page-heading">
       <div>
-        <p class="eyebrow">控制台</p>
+        <p v-if="pageEyebrow" class="eyebrow">{{ pageEyebrow }}</p>
         <h1>
           {{ page === "overview" ? `晚上好，${name || "..."}` : pageTitle }}
         </h1>
+        <p class="quiet">{{ pageDescription }}</p>
       </div>
+      <button v-if="page !== 'overview'" class="secondary compact" @click="load">
+        <RefreshCw :size="16" />刷新
+      </button>
     </header>
     <p v-if="error" class="message">{{ error }}</p>
     <p v-if="message" class="status-ok">{{ message }}</p>
-    <section v-if="page === 'overview'" class="metrics">
-      <article>
-        <small>钱包余额</small
-        ><strong>¥ {{ (balance / 100).toFixed(2) }}</strong
-        ><span>赠送额度 ¥ {{ (creditAvailable / 100).toFixed(2) }}</span>
-      </article>
-      <article>
-        <small>运行中应用</small
-        ><strong>{{ apps.filter((v) => v.status === "running").length }}</strong
-        ><span>{{ apps.length }} 个应用实例</span>
-      </article>
-      <article>
-        <small>可用模板</small><strong>{{ products.length }}</strong
-        ><span>管理员已发布</span>
-      </article>
-    </section>
-    <section v-if="page === 'overview'" class="overview-apps">
-      <div class="section-heading"><div><p class="eyebrow">已部署资源</p><h2>应用概要</h2></div><RouterLink class="secondary compact" to="/console/apps">查看全部</RouterLink></div>
-      <div v-if="appsLoading && !apps.length" class="overview-app-grid" aria-busy="true"><article v-for="index in 3" :key="index" class="overview-app-card"><div class="overview-app-title"><span class="skeleton" style="width:38px;height:38px;border-radius:11px"></span><div style="display:grid;gap:8px"><span class="skeleton skeleton-title" style="width:120px"></span><span class="skeleton skeleton-text" style="width:80px"></span></div></div><div class="runtime-sample-state"><span class="skeleton skeleton-text" style="width:100px"></span></div><div class="app-resource-bars"><div><span class="skeleton skeleton-text" style="width:60%"></span><span class="skeleton skeleton-text" style="width:30%"></span></div><div><span class="skeleton skeleton-text" style="width:60%"></span><span class="skeleton skeleton-text" style="width:30%"></span></div></div></article></div>
-      <div v-else class="overview-app-grid"><article v-for="app in apps" :key="app.id" class="overview-app-card"><div class="overview-app-title"><span class="app-icon"><AppWindow :size="18" /></span><div><strong>{{ instanceLabel(app) }}</strong><small>{{ app.productSlug }}</small></div><span :class="['status-pill', app.status === 'running' ? 'active' : 'pending']">{{ app.status === 'running' ? '运行中' : app.status }}</span></div><div class="runtime-sample-state"><i :class="{ live: metricsAvailable(app) }"></i>{{ metricFreshness(app) }}</div><div class="app-resource-bars"><div><span>CPU 实时占用</span><b>{{ metricsAvailable(app) ? (app.cpuUsageCores || 0).toFixed(2) : '--' }} / {{ app.cpuCores || 0 }} 核</b><i><em :style="{width: metricsAvailable(app) ? Math.min(100, (app.cpuUsageCores || 0) / Math.max(app.cpuCores || 1, 0.1) * 100) + '%' : '0%'}"></em></i></div><div><span>内存实时占用</span><b>{{ metricsAvailable(app) ? Math.round(app.memoryUsageMiB || 0) : '--' }} / {{ app.memoryMiB || 0 }} MiB</b><i><em :style="{width: metricsAvailable(app) ? Math.min(100, (app.memoryUsageMiB || 0) / Math.max(app.memoryMiB || 1, 1) * 100) + '%' : '0%'}"></em></i></div></div><footer><div><small>预计每月</small><strong>¥ {{ ((app.estimatedMonthlyCents || 0) / 100).toFixed(2) }}</strong><small v-if="!app.estimateComplete">（不含未定价项与流量）</small></div><span class="overview-app-access"><template v-if="app.hostPort"><a class="direct-access" :href="'http://' + locationHost + ':' + app.hostPort" target="_blank" rel="noopener" @click.stop>直连 :{{ app.hostPort }}<ExternalLink :size="12" /></a></template><button v-if="app.publicPath" class="primary compact" @click="visitApp(app)">访问应用<ExternalLink :size="14" /></button><span v-else class="quiet">尚无公网地址</span></span></footer></article><p v-if="!apps.length" class="quiet empty-copy">还没有部署应用，可从“部署应用”选择管理员发布的产品。</p></div>
-    </section>
-    <section v-if="page === 'overview' && faqs.length" class="faq-overview-panel">
-      <div class="section-heading"><div><p class="eyebrow">帮助中心</p><h2>常见问答</h2></div><RouterLink class="secondary compact" to="/console/faq">查看全部</RouterLink></div>
-      <div class="faq-overview-list">
-        <article v-for="item in faqs.slice(0, 5)" :key="item.id" class="faq-overview-item">
-          <button type="button" class="faq-overview-question" :aria-expanded="openFaq === item.id" @click="openFaq = openFaq === item.id ? '' : item.id"><CircleHelp :size="18" /><strong>{{ item.question }}</strong><ChevronDown :class="{ rotated: openFaq === item.id }" :size="17" /></button>
-          <div v-if="openFaq === item.id" class="faq-overview-answer"><p>{{ item.answer }}</p></div>
-        </article>
+    <section v-if="page === 'overview'" class="nextdev-stat-grid">
+      <div class="stat-card accent">
+        <div class="stat-card-header">
+          <span class="stat-label">钱包余额</span>
+          <Coins class="stat-icon" :size="16" />
+        </div>
+        <div class="stat-value mono-data">¥ {{ (balance / 100).toFixed(2) }}</div>
+        <div class="stat-hint">含赠送额度 ¥ {{ (creditAvailable / 100).toFixed(2) }}</div>
+      </div>
+
+      <div class="stat-card">
+        <div class="stat-card-header">
+          <span class="stat-label">运行中实例</span>
+          <Boxes class="stat-icon" :size="16" />
+        </div>
+        <div class="stat-value mono-data">{{ apps.filter((v) => v.status === 'running').length }}</div>
+        <div class="stat-hint">共计 {{ apps.length }} 个应用实例</div>
+      </div>
+
+      <div class="stat-card">
+        <div class="stat-card-header">
+          <span class="stat-label">可用模板</span>
+          <AppWindow class="stat-icon" :size="16" />
+        </div>
+        <div class="stat-value mono-data">{{ products.length }}</div>
+        <div class="stat-hint">管理员已发布可用产品</div>
+      </div>
+
+      <div class="stat-card">
+        <div class="stat-card-header">
+          <span class="stat-label">预估月费</span>
+          <BadgeDollarSign class="stat-icon" :size="16" />
+        </div>
+        <div class="stat-value mono-data">
+          ¥ {{ ((apps.reduce((sum, a) => sum + (a.estimatedMonthlyCents || 0), 0)) / 100).toFixed(2) }}
+        </div>
+        <div class="stat-hint">按实际用量毫秒计费</div>
       </div>
     </section>
-    <section
-      v-if="
-        page === 'overview' && (notifications.length || announcements.length)
-      "
-      class="announcement-feed"
-    >
-      <div class="section-heading">
-        <div>
-          <p class="eyebrow">平台通知</p>
-          <h2>账户消息与公告</h2>
+
+    <div v-if="page === 'overview'" class="nextdev-overview-layout">
+      <!-- 左列 (2/3): 已部署应用大卡片 + 常见问答 -->
+      <div class="overview-main-col">
+        <!-- 已部署应用卡片 -->
+        <div class="nextdev-card p-0">
+          <div class="card-header-bar">
+            <div class="card-title-group">
+              <span class="eyebrow">DEPLOYMENTS · 实例列表</span>
+              <h3>已部署应用</h3>
+            </div>
+            <RouterLink class="secondary compact" to="/console/apps">
+              查看全部 <ChevronRight :size="14" />
+            </RouterLink>
+          </div>
+          <div class="card-divider"></div>
+          <div class="card-inner-body">
+            <div
+              v-if="appsLoading && !apps.length"
+              class="empty-state-nextdev"
+              aria-busy="true"
+            >
+              <span class="skeleton skeleton-title" style="width: 140px"></span>
+              <span class="skeleton skeleton-text" style="width: 260px"></span>
+            </div>
+            <div v-else-if="!apps.length" class="empty-state-nextdev">
+              <div class="empty-icon-circle">
+                <Boxes :size="26" />
+              </div>
+              <h4>暂无运行中的应用实例</h4>
+              <p>从应用市场挑选官方维护的应用模板，一键配置并快速拉起容器实例。</p>
+              <RouterLink to="/console/deploy" class="primary compact mt-3">
+                <Rocket :size="15" /> 部署首个应用
+              </RouterLink>
+            </div>
+            <div v-else class="overview-app-grid p-4">
+              <article v-for="app in apps" :key="app.id" class="overview-app-card">
+                <div class="overview-app-title">
+                  <span class="app-icon"><AppWindow :size="18" /></span>
+                  <div>
+                    <strong>{{ instanceLabel(app) }}</strong>
+                    <small>{{ app.productSlug }}</small>
+                  </div>
+                  <span
+                    :class="[
+                      'status-pill',
+                      app.status === 'running' ? 'active' : 'pending',
+                    ]"
+                  >{{ app.status === "running" ? "运行中" : app.status }}</span>
+                </div>
+                <div class="runtime-sample-state">
+                  <i :class="{ live: metricsAvailable(app) }"></i>
+                  {{ metricFreshness(app) }}
+                </div>
+                <div class="app-resource-bars">
+                  <div>
+                    <span>CPU 实时占用</span>
+                    <b>{{ metricsAvailable(app) ? (app.cpuUsageCores || 0).toFixed(2) : "--" }} / {{ app.cpuCores || 0 }} 核</b>
+                    <i>
+                      <em
+                        :style="{
+                          width: metricsAvailable(app)
+                            ? Math.min(100, ((app.cpuUsageCores || 0) / Math.max(app.cpuCores || 1, 0.1)) * 100) + '%'
+                            : '0%',
+                        }"
+                      ></em>
+                    </i>
+                  </div>
+                  <div>
+                    <span>内存实时占用</span>
+                    <b>{{ metricsAvailable(app) ? Math.round(app.memoryUsageMiB || 0) : "--" }} / {{ app.memoryMiB || 0 }} MiB</b>
+                    <i>
+                      <em
+                        :style="{
+                          width: metricsAvailable(app)
+                            ? Math.min(100, ((app.memoryUsageMiB || 0) / Math.max(app.memoryMiB || 1, 1)) * 100) + '%'
+                            : '0%',
+                        }"
+                      ></em>
+                    </i>
+                  </div>
+                </div>
+                <footer>
+                  <div>
+                    <small>预计每月</small>
+                    <strong>¥ {{ ((app.estimatedMonthlyCents || 0) / 100).toFixed(2) }}</strong>
+                    <small v-if="!app.estimateComplete">（不含未定价项）</small>
+                  </div>
+                  <span class="overview-app-access">
+                    <template v-if="app.hostPort">
+                      <a
+                        class="direct-access"
+                        :href="'http://' + locationHost + ':' + app.hostPort"
+                        target="_blank"
+                        rel="noopener"
+                        @click.stop
+                      >直连 :{{ app.hostPort }}<ExternalLink :size="12" /></a>
+                    </template>
+                    <button
+                      v-if="app.publicPath"
+                      class="primary compact"
+                      @click="visitApp(app)"
+                    >
+                      访问应用<ExternalLink :size="14" />
+                    </button>
+                    <span v-else class="quiet">尚无公网地址</span>
+                  </span>
+                </footer>
+              </article>
+            </div>
+          </div>
         </div>
-        <span
-          >{{
-            notifications.filter((item) => !item.readAt).length
-          }}
-          条未读</span
-        >
+
+        <!-- 帮助中心 / 常见问答卡片 -->
+        <div v-if="faqs.length" class="nextdev-card p-0">
+          <div class="card-header-bar">
+            <div class="card-title-group">
+              <span class="eyebrow">HELP · 帮助中心</span>
+              <h3>常见问答</h3>
+            </div>
+            <RouterLink class="secondary compact" to="/console/faq">
+              查看全部 <ChevronRight :size="14" />
+            </RouterLink>
+          </div>
+          <div class="card-divider"></div>
+          <div class="faq-overview-list p-4">
+            <article
+              v-for="item in faqs.slice(0, 4)"
+              :key="item.id"
+              class="faq-overview-item"
+            >
+              <button
+                type="button"
+                class="faq-overview-question"
+                :aria-expanded="openFaq === item.id"
+                @click="openFaq = openFaq === item.id ? '' : item.id"
+              >
+                <CircleHelp :size="17" />
+                <strong>{{ item.question }}</strong>
+                <ChevronDown
+                  :class="{ rotated: openFaq === item.id }"
+                  :size="16"
+                />
+              </button>
+              <div v-if="openFaq === item.id" class="faq-overview-answer">
+                <p>{{ item.answer }}</p>
+              </div>
+            </article>
+          </div>
+        </div>
       </div>
-      <p v-if="!products.length" class="quiet empty-copy">
-        暂无可部署应用，请等待管理员创建、测试并发布应用。
-      </p>
-      <article
-        v-for="item in notifications"
-        :key="item.id"
-        :class="['announcement-card', item.severity, { read: item.readAt }]"
-      >
-        <span class="severity-dot"></span>
-        <div>
-          <strong>{{ item.title }}</strong>
-          <p>{{ item.content }}</p>
-          <small>{{ new Date(item.createdAt).toLocaleString() }}</small>
+
+      <!-- 右列 (1/3): 账户计划卡 + 快捷操作 + 平台通知 -->
+      <div class="overview-side-col">
+        <!-- 账户计划卡片 (NextDevTpl PlanCard) -->
+        <div class="nextdev-card p-6">
+          <span class="eyebrow">CURRENT PLAN · 账户计划</span>
+          <div class="plan-name-title mt-3">按量标准版</div>
+          <p class="plan-hint-text">毫秒级精准扣费 · 停机仅保留数据卷</p>
+          <div class="plan-balance-stat mono-data mt-4">
+            <small>当前可用余额</small>
+            <strong>¥ {{ (balance / 100).toFixed(2) }}</strong>
+          </div>
+          <RouterLink to="/console/recharge" class="primary w-full mt-4">
+            <CreditCard :size="15" /> 立即充值额度
+          </RouterLink>
         </div>
-        <button
-          v-if="!item.readAt"
-          class="icon-action"
-          title="标记已读"
-          @click="markNotificationRead(item)"
-        >
-          <Check :size="17" />
-        </button>
-      </article>
-      <article
-        v-for="item in announcements"
-        :key="item.id"
-        :class="['announcement-card', item.severity]"
-      >
-        <span class="severity-dot"></span>
-        <div>
-          <strong>{{ item.title }}</strong>
-          <p>{{ item.content }}</p>
-          <small>{{ new Date(item.startsAt).toLocaleString() }}</small>
+
+        <!-- 快捷操作卡片 (NextDevTpl QuickActions) -->
+        <div class="nextdev-card p-2">
+          <div class="card-mini-title">
+            <span class="eyebrow">QUICK ACTIONS · 快捷操作</span>
+          </div>
+          <div class="quick-action-list">
+            <RouterLink class="quick-action-row" to="/console/deploy">
+              <Rocket :size="16" />
+              <span>部署新应用</span>
+              <ChevronRight :size="14" class="arrow" />
+            </RouterLink>
+            <RouterLink class="quick-action-row" to="/console/billing">
+              <Coins :size="16" />
+              <span>余额与账单明细</span>
+              <ChevronRight :size="14" class="arrow" />
+            </RouterLink>
+            <RouterLink class="quick-action-row" to="/console/tickets">
+              <MessageSquareText :size="16" />
+              <span>工单与技术支持</span>
+              <ChevronRight :size="14" class="arrow" />
+            </RouterLink>
+            <RouterLink class="quick-action-row" to="/console/usage">
+              <Gauge :size="16" />
+              <span>资源用量统计</span>
+              <ChevronRight :size="14" class="arrow" />
+            </RouterLink>
+            <RouterLink class="quick-action-row" to="/console/checkin">
+              <Gift :size="16" />
+              <span>每日签到领额度</span>
+              <ChevronRight :size="14" class="arrow" />
+            </RouterLink>
+          </div>
         </div>
-      </article>
-    </section>
+
+        <!-- 平台通知与公告 -->
+        <div v-if="notifications.length || announcements.length" class="nextdev-card p-4">
+          <div class="card-mini-title flex justify-between items-center">
+            <span class="eyebrow">NOTICES · 平台通知</span>
+            <small class="mono-data text-xs">{{ notifications.filter((item) => !item.readAt).length }} 条未读</small>
+          </div>
+          <div class="notice-list mt-3">
+            <article
+              v-for="item in notifications.slice(0, 3)"
+              :key="item.id"
+              :class="['announcement-card', item.severity, { read: item.readAt }]"
+            >
+              <span class="severity-dot"></span>
+              <div>
+                <strong>{{ item.title }}</strong>
+                <p>{{ item.content }}</p>
+                <small>{{ new Date(item.createdAt).toLocaleString() }}</small>
+              </div>
+              <button
+                v-if="!item.readAt"
+                class="icon-action"
+                title="标记已读"
+                @click="markNotificationRead(item)"
+              >
+                <Check :size="14" />
+              </button>
+            </article>
+            <article
+              v-for="item in announcements.slice(0, 2)"
+              :key="item.id"
+              :class="['announcement-card', item.severity]"
+            >
+              <span class="severity-dot"></span>
+              <div>
+                <strong>{{ item.title }}</strong>
+                <p>{{ item.content }}</p>
+                <small>{{ new Date(item.startsAt).toLocaleString() }}</small>
+              </div>
+            </article>
+          </div>
+        </div>
+      </div>
+    </div>
     <section v-if="page === 'billing'" class="billing-panel">
       <div v-if="orders.length" class="order-list">
         <article v-for="order in orders.slice(0, 5)" :key="order.id">
@@ -1277,316 +1690,490 @@ async function exitImpersonation() {
           >
         </article>
       </div>
-      <div class="ledger-list">
-        <div class="ledger-heading">
-          <strong>账本明细</strong>
-          <span>最近 8 条</span>
-        </div>
-        <article v-for="entry in ledger.slice(0, 8)" :key="entry.id">
-          <span
-            :class="[
-              'ledger-amount',
-              entry.amountCents >= 0 ? 'credit' : 'debit',
-            ]"
-          >
-            {{ entry.amountCents >= 0 ? "+" : "" }}¥{{
-              (entry.amountCents / 100).toFixed(2)
-            }}
-          </span>
-          <div>
-            <strong>{{ ledgerLabel(entry.businessType) }}</strong>
-            <small
-              >{{ new Date(entry.createdAt).toLocaleString() }} · 余额 ¥{{
-                (entry.balanceAfterCents / 100).toFixed(2)
-              }}</small
-            >
+      <section class="nextdev-card p-0">
+        <div class="card-header-bar flex items-center justify-between">
+          <div class="card-title-group">
+            <span class="eyebrow">LEDGER · 账本流水</span>
+            <h3>账本明细</h3>
           </div>
-        </article>
-        <p v-if="!ledger.length" class="quiet empty-copy">还没有账本记录</p>
-      </div>
-      <div class="statement-list">
-        <div class="ledger-heading">
-          <strong>月度账单</strong><span>UTC 自然月</span>
+          <span class="mono-data text-sm">最近 8 条</span>
         </div>
-        <article v-for="bill in bills" :key="bill.id" class="statement-row">
-          <button class="statement-summary" @click="toggleBill(bill)">
+        <div class="card-divider"></div>
+        <div class="ledger-list">
+          <article v-for="entry in ledger.slice(0, 8)" :key="entry.id">
             <span
-              ><strong>{{ bill.periodStart.slice(0, 7) }}</strong
-              ><small
-                >{{ bill.itemCount }} 项费用 ·
-                {{ bill.status === "open" ? "进行中" : "已结算" }}</small
-              ></span
+              :class="[
+                'ledger-amount',
+                entry.amountCents >= 0 ? 'credit' : 'debit',
+              ]"
             >
-            <strong>¥{{ (bill.totalCents / 100).toFixed(2) }}</strong>
-          </button>
-          <button
-            class="icon-action"
-            title="导出 CSV"
-            @click="exportBill(bill)"
-          >
-            <FileDown :size="17" />
-          </button>
-          <div v-if="activeBill === bill.id" class="statement-items">
-            <div v-for="item in billItems[bill.id] || []" :key="item.id">
-              <span
-                ><strong>{{
-                  item.kind === "subscription"
-                    ? `历史套餐 · ${item.usageCode}`
-                    : usageCodeLabel(item.usageCode)
-                }}</strong
-                ><small>{{
-                  item.kind === "subscription"
-                    ? `历史服务周期 ${new Date(item.windowStart).toLocaleDateString()} - ${new Date(item.windowEnd).toLocaleDateString()}`
-                    : `${item.appSlug || "账户级"} · ${item.quantity} ${usageUnitLabel(item.unit)} · ${new Date(item.windowStart).toLocaleString()}`
-                }}</small></span
+              {{ entry.amountCents >= 0 ? "+" : "" }}¥{{
+                (entry.amountCents / 100).toFixed(2)
+              }}
+            </span>
+            <div>
+              <strong>{{ ledgerLabel(entry.businessType) }}</strong>
+              <small
+                >{{ new Date(entry.createdAt).toLocaleString() }} · 余额 ¥{{
+                  (entry.balanceAfterCents / 100).toFixed(2)
+                }}</small
               >
-              <strong>¥{{ (item.amountCents / 100).toFixed(2) }}</strong>
+            </div>
+          </article>
+          <div v-if="!ledger.length" class="card-inner-body" style="min-height:180px;">
+            <div class="empty-state-nextdev">
+              <div class="empty-icon-circle"><Coins :size="22" /></div>
+              <h4>还没有账本记录</h4>
+              <p>充值或消费后，账本流水将在此处显示。</p>
             </div>
           </div>
-        </article>
-        <p v-if="!bills.length" class="quiet empty-copy">当前还没有月度账单</p>
-      </div>
-      <div class="credit-list">
-        <div class="ledger-heading">
-          <strong>赠送额度</strong
-          ><span>可用 ¥{{ (creditAvailable / 100).toFixed(2) }}</span>
         </div>
-        <article v-for="grant in creditGrants.slice(0, 6)" :key="grant.id">
-          <div>
-            <strong>{{ grant.note || "平台赠送" }}</strong
-            ><small
-              >{{ grant.businessRef }} ·
-              {{
-                grant.expiresAt
-                  ? "到期 " + new Date(grant.expiresAt).toLocaleString()
-                  : "长期有效"
-              }}</small
+      </section>
+      <section class="nextdev-card p-0">
+        <div class="card-header-bar flex items-center justify-between">
+          <div class="card-title-group">
+            <span class="eyebrow">BILLS · 月度账单</span>
+            <h3>月度账单</h3>
+          </div>
+          <span class="mono-data text-sm">UTC 自然月</span>
+        </div>
+        <div class="card-divider"></div>
+        <div class="statement-list">
+          <article v-for="bill in bills" :key="bill.id" class="statement-row">
+            <button class="statement-summary" @click="toggleBill(bill)">
+              <span
+                ><strong>{{ bill.periodStart.slice(0, 7) }}</strong
+                ><small
+                  >{{ bill.itemCount }} 项费用 ·
+                  {{ bill.status === "open" ? "进行中" : "已结算" }}</small
+                ></span
+              >
+              <strong>¥{{ (bill.totalCents / 100).toFixed(2) }}</strong>
+            </button>
+            <button
+              class="icon-action"
+              title="导出 CSV"
+              @click="exportBill(bill)"
+            >
+              <FileDown :size="17" />
+            </button>
+            <div v-if="activeBill === bill.id" class="statement-items">
+              <div v-for="item in billItems[bill.id] || []" :key="item.id">
+                <span
+                  ><strong>{{
+                    item.kind === "subscription"
+                      ? `历史套餐 · ${item.usageCode}`
+                      : usageCodeLabel(item.usageCode)
+                  }}</strong
+                  ><small>{{
+                    item.kind === "subscription"
+                      ? `历史服务周期 ${new Date(item.windowStart).toLocaleDateString()} - ${new Date(item.windowEnd).toLocaleDateString()}`
+                      : `${item.appSlug || "账户级"} · ${item.quantity} ${usageUnitLabel(item.unit)} · ${new Date(item.windowStart).toLocaleString()}`
+                  }}</small></span
+                >
+                <strong>¥{{ (item.amountCents / 100).toFixed(2) }}</strong>
+              </div>
+            </div>
+          </article>
+          <p v-if="!bills.length" class="quiet empty-copy" style="display:none"></p>
+          <div v-if="!bills.length" class="card-inner-body" style="min-height:180px;">
+            <div class="empty-state-nextdev">
+              <div class="empty-icon-circle"><Receipt :size="22" /></div>
+              <h4>当前还没有月度账单</h4>
+              <p>每自然月结算一次，有用量费用时自动生成账单。</p>
+            </div>
+          </div>
+        </div>
+      </section>
+      <section class="nextdev-card p-0">
+        <div class="card-header-bar flex items-center justify-between">
+          <div class="card-title-group">
+            <span class="eyebrow">CREDITS · 赠送额度</span>
+            <h3>赠送额度</h3>
+          </div>
+          <span class="mono-data text-sm">可用 ¥{{ (creditAvailable / 100).toFixed(2) }}</span>
+        </div>
+        <div class="card-divider"></div>
+        <div class="credit-list">
+          <article v-for="grant in creditGrants.slice(0, 6)" :key="grant.id">
+            <div>
+              <strong>{{ grant.note || "平台赠送" }}</strong
+              ><small
+                >{{ grant.businessRef }} ·
+                {{
+                  grant.expiresAt
+                    ? "到期 " + new Date(grant.expiresAt).toLocaleString()
+                    : "长期有效"
+                }}</small
+              >
+            </div>
+            <span :class="['status-pill', grant.active ? 'active' : 'suspended']"
+              >¥{{ (grant.remainingCents / 100).toFixed(2) }} / ¥{{
+                (grant.amountCents / 100).toFixed(2)
+              }}</span
+            >
+          </article>
+          <div v-if="creditConsumptions.length" class="credit-consumptions">
+            <strong>最近抵扣</strong
+            ><small v-for="item in creditConsumptions.slice(0, 5)" :key="item.id"
+              >{{ usageCodeLabel(item.usageCode) }} · -¥{{
+                (item.amountCents / 100).toFixed(2)
+              }}
+              · {{ new Date(item.windowStart).toLocaleString() }}</small
             >
           </div>
-          <span :class="['status-pill', grant.active ? 'active' : 'suspended']"
-            >¥{{ (grant.remainingCents / 100).toFixed(2) }} / ¥{{
-              (grant.amountCents / 100).toFixed(2)
-            }}</span
-          >
-        </article>
-        <div v-if="creditConsumptions.length" class="credit-consumptions">
-          <strong>最近抵扣</strong
-          ><small v-for="item in creditConsumptions.slice(0, 5)" :key="item.id"
-            >{{ usageCodeLabel(item.usageCode) }} · -¥{{
-              (item.amountCents / 100).toFixed(2)
-            }}
-            · {{ new Date(item.windowStart).toLocaleString() }}</small
-          >
+          <div v-if="!creditGrants.length" class="card-inner-body" style="min-height:180px;">
+            <div class="empty-state-nextdev">
+              <div class="empty-icon-circle"><Gift :size="22" /></div>
+              <h4>当前没有赠送额度</h4>
+              <p>平台赠送的免费额度将在此处显示，可用于抵扣按量费用。</p>
+            </div>
+          </div>
         </div>
-        <p v-if="!creditGrants.length" class="quiet empty-copy">
-          当前没有赠送额度
-        </p>
-      </div>
-    </section>
-    <section v-if="page === 'apps' && appsLoading && !apps.length" class="product-list app-skeleton-list" aria-busy="true">
-      <div class="section-heading"><div><p class="eyebrow">我的应用</p><h2>部署任务</h2></div><span class="skeleton skeleton-text" style="width:64px"></span></div>
-      <article v-for="index in 3" :key="index" class="product-row"><span class="skeleton" style="width:40px;height:40px;border-radius:11px"></span><div style="flex:1;display:grid;gap:8px"><span class="skeleton skeleton-title" style="width:40%"></span><span class="skeleton skeleton-text" style="width:60%"></span></div><span class="skeleton skeleton-text" style="width:88px"></span></article>
-    </section>
-    <section v-if="page === 'apps' && !apps.length && !appsLoading" class="context-empty apps-empty">
-      <span class="context-empty-icon" aria-hidden="true">
-        <Rocket :size="28" />
-      </span>
-      <div class="apps-empty-content">
-        <p class="eyebrow">应用实例</p>
-        <h2>还没有部署应用</h2>
-        <p>
-          从管理员发布的产品中部署第一个应用；后续每次部署和更新都会形成可追溯的版本记录。
-        </p>
-        <div class="empty-actions">
-          <RouterLink class="primary compact" to="/console/deploy">
-            <Plus :size="16" />部署第一个应用
-          </RouterLink>
-          <RouterLink class="secondary compact" to="/console">
-            <Gauge :size="16" />返回概览
-          </RouterLink>
+      </section>
+      <section class="nextdev-card p-0">
+        <div class="card-header-bar flex items-center justify-between">
+          <div class="card-title-group">
+            <span class="eyebrow">DAILY BILLS · 每日账单</span>
+            <h3>每日账单</h3>
+          </div>
+          <span class="mono-data text-sm">UTC 自然日</span>
         </div>
-      </div>
+        <div class="card-divider"></div>
+        <div class="statement-list">
+          <article v-for="bill in dailyBills" :key="bill.date" class="statement-row">
+            <div class="statement-summary" style="padding-right: 20px;">
+              <span
+                ><strong>{{ bill.date }}</strong
+                ><small>{{ bill.itemCount }} 笔用量扣费</small
+                ></span
+              >
+              <strong>¥{{ (bill.totalCents / 100).toFixed(2) }}</strong>
+            </div>
+          </article>
+          <div v-if="!dailyBills.length" class="card-inner-body" style="min-height:180px;">
+            <div class="empty-state-nextdev">
+              <div class="empty-icon-circle"><Receipt :size="22" /></div>
+              <h4>当前还没有每日账单</h4>
+              <p>每自然日结算出账一次，有用量费用时自动汇总为每日账单。</p>
+            </div>
+          </div>
+        </div>
+      </section>
     </section>
-    <section v-if="page === 'apps' && apps.length" class="product-list">
+    <section
+      v-if="page === 'apps' && appsLoading && !apps.length"
+      class="product-list app-skeleton-list"
+      aria-busy="true"
+    >
       <div class="section-heading">
         <div>
           <p class="eyebrow">我的应用</p>
           <h2>部署任务</h2>
         </div>
-        <span>{{ apps.length }} 个应用</span>
+        <span class="skeleton skeleton-text" style="width: 64px"></span>
       </div>
-      <article v-for="app in apps" :key="app.id" class="product-row app-product-row" role="link" tabindex="0" @click="router.push('/console/apps/' + (app.instanceId || app.id))" @keydown.enter="router.push('/console/apps/' + (app.instanceId || app.id))">
-        <span class="product-icon"><AppWindow :size="20" /></span>
-        <div>
-          <strong>{{ instanceLabel(app) }}</strong
-          ><small>{{ app.productSlug }} · {{ appState(app) }}<template v-if="app.hostPort"> · 直连 :{{ app.hostPort }}</template></small>
+      <article v-for="index in 3" :key="index" class="product-row">
+        <span
+          class="skeleton"
+          style="width: 40px; height: 40px; border-radius: 11px"
+        ></span>
+        <div style="flex: 1; display: grid; gap: 8px">
+          <span class="skeleton skeleton-title" style="width: 40%"></span
+          ><span class="skeleton skeleton-text" style="width: 60%"></span>
         </div>
-        <div class="product-row-main">
-          <div v-if="app.status === 'failed' || app.jobLastError" class="deployment-error-card">
-            <div class="deployment-error-title"><CircleAlert :size="16"/><strong>{{ app.status === 'failed' ? '部署失败' : '部署任务异常' }}</strong><button class="secondary compact" type="button" @click="openDeploymentDetails(app)">查看部署详情</button></div>
-            <p>{{ deploymentErrorHint(app.jobLastError) }}</p>
-            <code v-if="app.jobLastError">{{ deploymentErrorText(app.jobLastError) }}</code>
+        <span class="skeleton skeleton-text" style="width: 88px"></span>
+      </article>
+    </section>
+    <section v-if="page === 'apps'" class="nextdev-card p-0">
+      <div class="card-header-bar flex items-center justify-between">
+        <div class="card-title-group">
+          <span class="eyebrow">INSTANCES · 容器实例</span>
+          <h3>我的应用列表</h3>
+        </div>
+        <RouterLink to="/console/deploy" class="primary compact">
+          <Plus :size="14" />
+          <span>部署新应用</span>
+        </RouterLink>
+      </div>
+      <div class="card-divider"></div>
+      <div v-if="!apps.length && !appsLoading" class="card-inner-body">
+        <div class="empty-state-nextdev">
+          <div class="empty-icon-circle">
+            <Boxes :size="24" />
+          </div>
+          <h4>暂无部署应用</h4>
+          <p>从应用市场挑选官方维护的应用模板，或输入自定义 Docker 镜像一键拉起容器实例。</p>
+          <div class="flex items-center gap-3 mt-3">
+            <RouterLink class="primary compact" to="/console/deploy">
+              <Plus :size="15" />部署首个应用
+            </RouterLink>
+            <RouterLink class="ghost compact" to="/console">
+              <Gauge :size="15" />返回概览
+            </RouterLink>
           </div>
         </div>
-        <div class="product-controls" @click.stop>
-          <span class="status-pill" :class="appStateClass(app)">{{
-            appState(app)
-          }}</span
-          ><button
-            class="icon-action"
-            title="查看日志"
-            :disabled="busy === app.id"
-            @click="openLogs(app)"
-          >
-            <FileText :size="17" /></button
-          ><button
-            class="icon-action"
-            title="管理 Secret"
-            @click="openSecrets(app)"
-          >
-            <KeyRound :size="17" /></button
-          ><button
-            v-if="app.status === 'running' && app.publicPath"
-            class="icon-action"
-            title="打开应用"
-            @click="visitApp(app)"
-            ><ExternalLink :size="17" /></button
-          ><button
-            v-if="app.status === 'running'"
-            class="icon-action"
-            title="编辑配置并重新部署"
-            :disabled="writeLocked || busy === app.id || deployConfigurationLoading"
-            @click="openEditApp(app)"
-          >
-            <RefreshCw :size="17" /></button
-          ><button
-            v-if="app.status === 'running' && app.previousReleaseId"
-            class="icon-action"
-            title="回滚应用"
-            :disabled="writeLocked || busy === app.id"
-            @click="rollback(app)"
-          >
-            <RotateCcw :size="17" /></button
-          ><button
-            v-if="app.status === 'running'"
-            class="icon-action stop-action"
-            title="停止应用"
-            :disabled="writeLocked || busy === app.id"
-            @click="stopApp(app)"
-          >
-            <CircleStop :size="17" /></button
-          ><button
-            v-if="
-              app.status === 'stopped' ||
-              (app.status === 'failed' && Boolean(app.lastSuccessfulReleaseId))
-            "
-            class="icon-action start-action"
-            title="启动应用"
-            :disabled="writeLocked || busy === app.id"
-            @click="startApp(app)"
-          >
-            <Play :size="17" />
-          </button
-          ><button
-            class="icon-action stop-action"
-            title="删除应用和持久数据"
-            :disabled="writeLocked || busy === app.id"
-            @click="deleteApp(app)"
-          >
-            <Trash2 :size="17" />
-          </button>
-        </div>
-      </article>
-    </section>
-    <section v-if="page === 'usage'" class="product-list">
-      <div class="section-heading">
-        <div>
-          <p class="eyebrow">用量与扣费</p>
-          <h2>最近用量</h2>
-        </div>
-        <span>{{ usage.length }} 个窗口</span>
       </div>
-      <article
-        v-for="item in usage.slice(0, 12)"
-        :key="item.usageCode + item.windowStart"
-        class="product-row"
-      >
-        <span class="product-icon"><CreditCard :size="20" /></span>
-        <div>
-          <strong>{{ usageCodeLabel(item.usageCode) }}</strong
-          ><small
-            >{{ item.quantity }} {{ usageUnitLabel(item.unit) }} ·
-            {{ new Date(item.windowStart).toLocaleString() }}</small
-          >
-        </div>
-        <span
-          class="status-pill"
-          :class="
-            item.billingDisposition === 'unpriced'
-              ? 'pending'
-              : item.sealedAt
-                ? 'active'
-                : 'suspended'
+      <div v-else-if="apps.length" class="product-list p-4">
+        <article
+          v-for="app in apps"
+          :key="app.id"
+          class="product-row app-product-row"
+          role="link"
+          tabindex="0"
+          @click="router.push('/console/apps/' + (app.instanceId || app.id))"
+          @keydown.enter="
+            router.push('/console/apps/' + (app.instanceId || app.id))
           "
-          >{{
-            item.billingDisposition === "unpriced"
-              ? "未配置价格"
-              : item.sealedAt
-                ? "已结算"
-                : "待结算"
-          }}<template v-if="item.amountCents != null">
-            · {{ item.amountCents }} 分</template
-          ></span
         >
-      </article>
-      <p v-if="!usage.length" class="quiet empty-copy">暂无用量记录</p>
+          <span class="product-icon"><AppWindow :size="20" /></span>
+          <div>
+            <strong>{{ instanceLabel(app) }}</strong>
+            <small
+              >{{ app.productSlug }} · {{ appState(app)
+              }}<template v-if="app.hostPort">
+                · 直连 :{{ app.hostPort }}</template
+              ></small
+            >
+          </div>
+          <div class="product-row-main">
+            <div
+              v-if="app.status === 'failed' || app.jobLastError"
+              class="deployment-error-card"
+            >
+              <div class="deployment-error-title">
+                <CircleAlert :size="16" /><strong>{{
+                  app.status === "failed" ? "部署失败" : "部署任务异常"
+                }}</strong
+                ><button
+                  class="secondary compact"
+                  type="button"
+                  @click="openDeploymentDetails(app)"
+                >
+                  查看部署详情
+                </button>
+              </div>
+              <p>{{ deploymentErrorHint(app.jobLastError) }}</p>
+              <code v-if="app.jobLastError">{{
+                deploymentErrorText(app.jobLastError)
+              }}</code>
+            </div>
+          </div>
+          <div class="product-controls" @click.stop>
+            <span class="status-pill" :class="appStateClass(app)">{{
+              appState(app)
+            }}</span
+            ><button
+              class="icon-action"
+              title="查看日志"
+              :disabled="busy === app.id"
+              @click="openLogs(app)"
+            >
+              <FileText :size="17" /></button
+            ><button
+              class="icon-action"
+              title="管理 Secret"
+              @click="openSecrets(app)"
+            >
+              <KeyRound :size="17" /></button
+            ><button
+              v-if="app.status === 'running' && app.publicPath"
+              class="icon-action"
+              title="打开应用"
+              @click="visitApp(app)"
+            >
+              <ExternalLink :size="17" /></button
+            ><button
+              v-if="app.status === 'running'"
+              class="icon-action"
+              title="编辑配置并重新部署"
+              :disabled="
+                writeLocked || busy === app.id || deployConfigurationLoading
+              "
+              @click="openEditApp(app)"
+            >
+              <RefreshCw :size="17" /></button
+            ><button
+              v-if="app.status === 'running' && app.previousReleaseId"
+              class="icon-action"
+              title="回滚应用"
+              :disabled="writeLocked || busy === app.id"
+              @click="rollback(app)"
+            >
+              <RotateCcw :size="17" /></button
+            ><button
+              v-if="app.status === 'running'"
+              class="icon-action stop-action"
+              title="停止应用"
+              :disabled="writeLocked || busy === app.id"
+              @click="stopApp(app)"
+            >
+              <CircleStop :size="17" /></button
+            ><button
+              v-if="
+                app.status === 'stopped' ||
+                (app.status === 'failed' && Boolean(app.lastSuccessfulReleaseId))
+              "
+              class="icon-action start-action"
+              title="启动应用"
+              :disabled="writeLocked || busy === app.id"
+              @click="startApp(app)"
+            >
+              <Play :size="17" /></button
+            ><button
+              class="icon-action stop-action"
+              title="删除应用和持久数据"
+              :disabled="writeLocked || busy === app.id"
+              @click="deleteApp(app)"
+            >
+              <Trash2 :size="17" />
+            </button>
+          </div>
+        </article>
+      </div>
     </section>
-    <section v-if="page === 'deploy'" class="product-list">
-      <div class="section-heading">
-        <div>
-          <p class="eyebrow">应用模板</p>
-          <h2>产品目录</h2>
+    <section v-if="page === 'usage'" class="nextdev-card p-0">
+      <div class="card-header-bar flex items-center justify-between">
+        <div class="card-title-group">
+          <span class="eyebrow">USAGE · 用量与扣费</span>
+          <h3>最近用量</h3>
         </div>
-        <div class="deploy-catalog-actions">
-          <span
-            >{{
-              productCatalog.reduce((sum, group) => sum + group.versions.filter((v) => v.deployable).length, 0)
-            }}
-            个可部署版本</span
-          >
+        <span class="mono-data text-sm">{{ usage.length }} 个窗口</span>
+      </div>
+      <div class="card-divider"></div>
+      <div v-if="!usage.length" class="card-inner-body">
+        <div class="empty-state-nextdev">
+          <div class="empty-icon-circle">
+            <Gauge :size="24" />
+          </div>
+          <h4>暂无用量记录</h4>
+          <p>部署并运行应用后，系统将每秒采集 CPU、内存、存储与网络用量，数据将在此处展示。</p>
         </div>
       </div>
-      <div v-if="productsLoading&&!productCatalog.length" class="skeleton-list" aria-busy="true"><article v-for="index in 3" :key="index" class="product-row skeleton-row"><span class="skeleton" style="width:40px;height:40px;border-radius:11px"></span><div style="flex:1;display:grid;gap:8px"><span class="skeleton skeleton-title" style="width:36%"></span><span class="skeleton skeleton-text" style="width:56%"></span></div><span class="skeleton skeleton-text" style="width:96px"></span></article></div>
-      <template v-else>
-      <article
-        v-for="group in productCatalog"
-        :key="group.id"
-        class="product-row deploy-product-group"
-        :class="{ unavailable: !group.versions.some((v) => v.deployable) }"
-        role="button"
-        tabindex="0"
-        @click="openVersionPicker(group)"
-        @keydown.enter="openVersionPicker(group)"
-      >
-        <span class="product-icon"><AppWindow :size="20"/><img v-if="group.iconUrl" :src="group.iconUrl" alt="" @error="($event.currentTarget as HTMLImageElement).style.display='none'"/></span>
-        <div>
-          <strong>{{ group.name }}</strong
-          ><small
-            >{{ group.slug }}<template v-if="group.versions.length"> · {{ group.versions.length }} 个已发布版本</template><template v-else> · 暂无已发布版本</template></small
-          >
-        </div>
-        <button
-          v-if="group.versions.length"
-          class="secondary compact"
-          :disabled="writeLocked || !group.versions.some((v) => v.deployable)"
-          @click.stop="openVersionPicker(group)"
+      <div v-else class="product-list">
+        <article
+          v-for="item in usage.slice(0, 12)"
+          :key="item.usageCode + item.windowStart"
+          class="product-row"
         >
-          <Plus :size="16" />选择版本
-        </button>
-        <span v-else class="status-pill suspended">暂无版本</span>
-      </article>
-      <p v-if="!productCatalog.length" class="quiet empty-copy">还没有可部署的应用模板</p>
-      </template>
+          <span class="product-icon"><CreditCard :size="20" /></span>
+          <div>
+            <strong>{{ usageCodeLabel(item.usageCode) }}</strong
+            ><small
+              >{{ item.quantity }} {{ usageUnitLabel(item.unit) }} ·
+              {{ new Date(item.windowStart).toLocaleString() }}</small
+            >
+          </div>
+          <span
+            class="status-pill"
+            :class="
+              item.billingDisposition === 'unpriced'
+                ? 'pending'
+                : item.sealedAt
+                  ? 'active'
+                  : 'suspended'
+            "
+            >{{
+              item.billingDisposition === "unpriced"
+                ? "未配置价格"
+                : item.sealedAt
+                  ? "已结算"
+                  : "待结算"
+            }}<template v-if="item.amountCents != null">
+              · {{ item.amountCents }} 分</template
+            ></span
+          >
+        </article>
+      </div>
+    </section>
+    <section v-if="page === 'deploy'" class="nextdev-card p-0">
+      <div class="card-header-bar flex items-center justify-between">
+        <div class="card-title-group">
+          <span class="eyebrow">CATALOG · 应用模板</span>
+          <h3>产品目录</h3>
+        </div>
+        <span class="mono-data text-sm">{{
+          productCatalog.reduce(
+            (sum, group) =>
+              sum + group.versions.filter((v) => v.deployable).length,
+            0,
+          )
+        }} 个可部署版本</span>
+      </div>
+      <div class="card-divider"></div>
+      <div
+        v-if="productsLoading && !productCatalog.length"
+        class="skeleton-list p-4"
+        aria-busy="true"
+      >
+        <article
+          v-for="index in 3"
+          :key="index"
+          class="product-row skeleton-row"
+        >
+          <span
+            class="skeleton"
+            style="width: 40px; height: 40px; border-radius: 11px"
+          ></span>
+          <div style="flex: 1; display: grid; gap: 8px">
+            <span class="skeleton skeleton-title" style="width: 36%"></span
+            ><span class="skeleton skeleton-text" style="width: 56%"></span>
+          </div>
+          <span class="skeleton skeleton-text" style="width: 96px"></span>
+        </article>
+      </div>
+      <div v-else class="product-list">
+        <template>
+        <article
+          v-for="group in productCatalog"
+          :key="group.id"
+          class="product-row deploy-product-group"
+          :class="{ unavailable: !group.versions.some((v) => v.deployable) }"
+          role="button"
+          tabindex="0"
+          @click="openVersionPicker(group)"
+          @keydown.enter="openVersionPicker(group)"
+        >
+          <span class="product-icon"
+            ><AppWindow :size="20" /><img
+              v-if="group.iconUrl"
+              :src="group.iconUrl"
+              alt=""
+              @error="
+                ($event.currentTarget as HTMLImageElement).style.display =
+                  'none'
+              "
+          /></span>
+          <div>
+            <strong>{{ group.name }}</strong
+            ><small
+              >{{ group.slug
+              }}<template v-if="group.versions.length">
+                · {{ group.versions.length }} 个已发布版本</template
+              ><template v-else> · 暂无已发布版本</template></small
+            >
+          </div>
+          <button
+            v-if="group.versions.length"
+            class="secondary compact"
+            :disabled="writeLocked || !group.versions.some((v) => v.deployable)"
+            @click.stop="openVersionPicker(group)"
+          >
+            <Plus :size="16" />选择版本
+          </button>
+          <span v-else class="status-pill suspended">暂无版本</span>
+        </article>
+        <div v-if="!productCatalog.length" class="card-inner-body">
+          <div class="empty-state-nextdev">
+            <div class="empty-icon-circle">
+              <AppWindow :size="24" />
+            </div>
+            <h4>暂无可用应用模板</h4>
+            <p>管理员尚未发布任何产品模板，请联系管理员在产品管理中添加并发布产品。</p>
+          </div>
+        </div>
+        </template>
+      </div>
     </section>
     <section v-if="page === 'recharge'" class="recharge-page">
       <div class="recharge-metrics">
@@ -1654,7 +2241,25 @@ async function exitImpersonation() {
           <div class="payment-choice">
             <strong>付款方式</strong>
             <div>
-              <button v-for="method in paymentMethods" :key="method.type" type="button" :class="['payment-method',{active:selectedPaymentType===method.type}]" @click="selectedPaymentType=method.type"><CreditCard :size="19"/><span><strong>{{method.name}}</strong><small>最低充值 ¥{{(method.minAmountCents/100).toFixed(2)}}</small></span><Check v-if="selectedPaymentType===method.type" :size="16"/></button>
+              <button
+                v-for="method in paymentMethods"
+                :key="method.type"
+                type="button"
+                :class="[
+                  'payment-method',
+                  { active: selectedPaymentType === method.type },
+                ]"
+                @click="selectedPaymentType = method.type"
+              >
+                <CreditCard :size="19" /><span
+                  ><strong>{{ method.name }}</strong
+                  ><small
+                    >最低充值 ¥{{
+                      (method.minAmountCents / 100).toFixed(2)
+                    }}</small
+                  ></span
+                ><Check v-if="selectedPaymentType === method.type" :size="16" />
+              </button>
             </div>
             <p
               v-if="
@@ -1675,7 +2280,8 @@ async function exitImpersonation() {
               class="primary"
               :disabled="
                 writeLocked ||
-                  topup <= 0 || !selectedPaymentType ||
+                topup <= 0 ||
+                !selectedPaymentType ||
                 !paymentProviders.some(
                   (item) => item.provider === 'epay' && item.enabled,
                 )
@@ -1802,22 +2408,60 @@ async function exitImpersonation() {
     </section>
   </main>
   <Transition name="modal-pop"
-    ><div v-if="pickedProduct" class="modal-backdrop" @click.self="pickedProduct = null">
+    ><div
+      v-if="pickedProduct"
+      class="modal-backdrop"
+      @click.self="pickedProduct = null"
+    >
       <section class="secret-dialog deploy-dialog version-picker-dialog">
         <header>
           <div>
             <p class="eyebrow">{{ pickedProduct.slug }}</p>
             <h2>{{ pickedProduct.name }}</h2>
           </div>
-          <button class="icon-action" title="关闭" @click="pickedProduct = null"><X :size="18" /></button>
+          <button
+            class="icon-action"
+            title="关闭"
+            @click="pickedProduct = null"
+          >
+            <X :size="18" />
+          </button>
         </header>
         <div v-if="pickedProduct.versions.length" class="version-picker-list">
-          <article v-for="version in pickedProduct.versions" :key="version.versionId" :class="['version-picker-row', { unavailable: !version.deployable }]">
-            <div><strong>{{ version.versionLabel || ('版本 v' + version.version) }}</strong><small>v{{ version.version }}<template v-if="version.missingDependencies?.length"> · 缺少 {{ version.missingDependencies.join('、') }}</template><template v-else-if="!version.deployable"> · 当前套餐未包含</template></small></div>
-            <button class="primary compact" :disabled="writeLocked || !version.deployable" @click="pickVersion(pickedProduct, version)"><Rocket :size="15" />部署</button>
+          <article
+            v-for="version in pickedProduct.versions"
+            :key="version.versionId"
+            :class="[
+              'version-picker-row',
+              { unavailable: !version.deployable },
+            ]"
+          >
+            <div>
+              <strong>{{
+                version.versionLabel || "版本 v" + version.version
+              }}</strong
+              ><small
+                >v{{ version.version
+                }}<template v-if="version.missingDependencies?.length">
+                  · 缺少 {{ version.missingDependencies.join("、") }}</template
+                ><template v-else-if="!version.deployable">
+                  · 当前套餐未包含</template
+                ></small
+              >
+            </div>
+            <button
+              class="primary compact"
+              :disabled="writeLocked || !version.deployable"
+              @click="pickVersion(pickedProduct, version)"
+            >
+              <Rocket :size="15" />部署
+            </button>
           </article>
         </div>
-        <div v-else class="context-empty compact-empty"><AppWindow :size="22" /><p>该应用暂无已发布版本，请联系管理员。</p></div>
+        <div v-else class="context-empty compact-empty">
+          <AppWindow :size="22" />
+          <p>该应用暂无已发布版本，请联系管理员。</p>
+        </div>
       </section>
     </div></Transition
   >
@@ -1826,8 +2470,15 @@ async function exitImpersonation() {
       <section class="secret-dialog deploy-dialog">
         <header>
           <div>
-            <p class="eyebrow">{{ deployMode === 'update' ? '编辑配置 · 重新部署' : '部署应用' }}</p>
-            <h2>{{ deployProduct.name }}<small v-if="deployMode === 'update'"> · {{ deploySlug }}</small></h2>
+            <p class="eyebrow">
+              {{ deployMode === "update" ? "编辑配置 · 重新部署" : "部署应用" }}
+            </p>
+            <h2>
+              {{ deployProduct.name
+              }}<small v-if="deployMode === 'update'">
+                · {{ deploySlug }}</small
+              >
+            </h2>
           </div>
           <button class="icon-action" title="关闭" @click="closeDeploy">
             <X :size="18" />
@@ -1851,9 +2502,15 @@ async function exitImpersonation() {
                 max="64"
                 step="0.1"
                 required
-                :readonly="deployProduct.runtimeSpec?.editableOptions?.cpu === false"
+                :readonly="
+                  deployProduct.runtimeSpec?.editableOptions?.cpu === false
+                "
               /><small
-                >最低 {{ deployProduct.runtimeSpec?.cpuCores || 1 }} 核{{ deployProduct.runtimeSpec?.editableOptions?.cpu === false ? '，管理员已固定' : '，可向上调整' }}</small
+                >最低 {{ deployProduct.runtimeSpec?.cpuCores || 1 }} 核{{
+                  deployProduct.runtimeSpec?.editableOptions?.cpu === false
+                    ? "，管理员已固定"
+                    : "，可向上调整"
+                }}</small
               ></label
             >
             <label
@@ -1864,34 +2521,72 @@ async function exitImpersonation() {
                 max="262144"
                 step="64"
                 required
-                :readonly="deployProduct.runtimeSpec?.editableOptions?.memory === false"
+                :readonly="
+                  deployProduct.runtimeSpec?.editableOptions?.memory === false
+                "
               /><small
-                >最低
-                {{ deployProduct.runtimeSpec?.memoryMiB || 512 }} MiB{{ deployProduct.runtimeSpec?.editableOptions?.memory === false ? '，管理员已固定' : '，可向上调整' }}</small
+                >最低 {{ deployProduct.runtimeSpec?.memoryMiB || 512 }} MiB{{
+                  deployProduct.runtimeSpec?.editableOptions?.memory === false
+                    ? "，管理员已固定"
+                    : "，可向上调整"
+                }}</small
               ></label
             >
             <label
               >容器内网端口<input :value="deployPort" readonly /><small
                 >管理员按镜像实际监听端口固定；公网请求由 Gateway 转发到容器的
-                {{ deployPort }} 端口，用户调整 CPU、内存或数据卷不会改变它</small
+                {{ deployPort }} 端口，用户调整
+                CPU、内存或数据卷不会改变它</small
               ></label
             >
-            <div v-if="deployPortMappingAvailable" class="switch-setting deploy-port-mapping">
-              <div><strong>开启端口映射（直连）</strong><small>在宿主机直接发布端口，绕过网关直连；端口由系统自动分配</small></div>
-              <label class="switch"><input v-model="deployPortMapping" type="checkbox"/><span/></label>
+            <div
+              v-if="deployPortMappingAvailable"
+              class="switch-setting deploy-port-mapping"
+            >
+              <div>
+                <strong>开启端口映射（直连）</strong
+                ><small
+                  >在宿主机直接发布端口，绕过网关直连；端口由系统自动分配</small
+                >
+              </div>
+              <label class="switch"
+                ><input v-model="deployPortMapping" type="checkbox" /><span
+              /></label>
             </div>
           </div>
           <label v-if="deployProduct.runtimeSpec?.volumes?.length"
             >共享数据卷容量 GiB<input
               v-model.number="deployDataVolumeGiB"
               type="number"
-              :min="deployVolumeFloorGiB || deployProduct.runtimeSpec?.dataVolumeGiB || Math.max(...(deployProduct.runtimeSpec?.volumes || []).map((volume) => volume.sizeGiB))"
+              :min="
+                deployVolumeFloorGiB ||
+                deployProduct.runtimeSpec?.dataVolumeGiB ||
+                Math.max(
+                  ...(deployProduct.runtimeSpec?.volumes || []).map(
+                    (volume) => volume.sizeGiB,
+                  ),
+                )
+              "
               max="16384"
               step="1"
               required
-              :readonly="deployProduct.runtimeSpec?.editableOptions?.dataVolume === false"
+              :readonly="
+                deployProduct.runtimeSpec?.editableOptions?.dataVolume === false
+              "
             /><small
-              >全部挂载（{{ (deployProduct.runtimeSpec?.volumes || []).map((volume) => volume.mountPath).join('、') }}）和成功备份共享同一容量，{{ deployMode === 'update' ? '当前配置只允许扩容，最低' : '最低' }} {{ deployVolumeFloorGiB || deployProduct.runtimeSpec?.dataVolumeGiB || deployDataVolumeGiB }} GiB，只计费一次</small
+              >全部挂载（{{
+                (deployProduct.runtimeSpec?.volumes || [])
+                  .map((volume) => volume.mountPath)
+                  .join("、")
+              }}）和成功备份共享同一容量，{{
+                deployMode === "update" ? "当前配置只允许扩容，最低" : "最低"
+              }}
+              {{
+                deployVolumeFloorGiB ||
+                deployProduct.runtimeSpec?.dataVolumeGiB ||
+                deployDataVolumeGiB
+              }}
+              GiB，只计费一次</small
             ></label
           >
           <label v-if="deployProduct.runtimeSpec?.editableOptions?.command"
@@ -1903,7 +2598,14 @@ async function exitImpersonation() {
               >按空格拆分参数；复杂参数建议由镜像入口脚本处理</small
             ></label
           >
-          <div v-if="deployProduct.runtimeSpec?.editableOptions?.environment === true && (deployProduct.runtimeSpec?.editableEnvKeys?.length || 0)" class="deploy-custom-list">
+          <div
+            v-if="
+              deployProduct.runtimeSpec?.editableOptions?.environment ===
+                true &&
+              (deployProduct.runtimeSpec?.editableEnvKeys?.length || 0)
+            "
+            class="deploy-custom-list"
+          >
             <div class="deploy-secret-heading">
               <Settings2 :size="17" />
               <div>
@@ -1947,10 +2649,16 @@ async function exitImpersonation() {
               >
                 <X :size="16" />
               </button>
-              <small class="env-help">{{ deployProduct.runtimeSpec?.envDescriptions?.[item.key] || "管理员未提供说明" }}</small>
+              <small class="env-help">{{
+                deployProduct.runtimeSpec?.envDescriptions?.[item.key] ||
+                "管理员未提供说明"
+              }}</small>
             </div>
           </div>
-          <div v-if="deployProduct.runtimeSpec?.editableOptions?.dependencies" class="deploy-dependencies">
+          <div
+            v-if="deployProduct.runtimeSpec?.editableOptions?.dependencies"
+            class="deploy-dependencies"
+          >
             <div class="deploy-secret-heading">
               <Link2 :size="17" />
               <div>
@@ -1997,32 +2705,72 @@ async function exitImpersonation() {
             <div class="deploy-secret-heading">
               <KeyRound :size="17" />
               <div>
-                <strong>{{ deployMode === 'update' ? 'Secret 配置' : '部署 Secret' }}</strong
-                ><small v-if="deployMode === 'create'">加密保存，提交后不会再次显示</small
-                ><small v-else>明文不会回显；留空表示继续使用当前版本，只有管理员开放的字段可修改</small>
+                <strong>{{
+                  deployMode === "update" ? "Secret 配置" : "部署 Secret"
+                }}</strong
+                ><small v-if="deployMode === 'create'"
+                  >加密保存，提交后不会再次显示</small
+                ><small v-else
+                  >明文不会回显；留空表示继续使用当前版本，只有管理员开放的字段可修改</small
+                >
               </div>
             </div>
             <template v-if="deployMode === 'create'">
-              <label v-for="option in deploySecretOptions" :key="option.key" class="deploy-secret-field">
+              <label
+                v-for="option in deploySecretOptions"
+                :key="option.key"
+                class="deploy-secret-field"
+              >
                 {{ option.key }}
-                <small v-if="option.description" class="env-help">{{ option.description }}</small>
-                <input v-model="deploySecrets[option.key]" type="password" required autocomplete="new-password" :placeholder="option.description || '请输入 Secret 值'" />
+                <small v-if="option.description" class="env-help">{{
+                  option.description
+                }}</small>
+                <input
+                  v-model="deploySecrets[option.key]"
+                  type="password"
+                  required
+                  autocomplete="new-password"
+                  :placeholder="option.description || '请输入 Secret 值'"
+                />
               </label>
             </template>
             <div v-else class="deploy-secret-update-list">
               <template v-for="option in deploySecretOptions" :key="option.key">
                 <label v-if="option.editable" class="deploy-secret-field">
                   {{ option.key }}
-                  <small v-if="option.description" class="env-help">{{ option.description }}</small>
-                  <input v-model="deploySecrets[option.key]" type="password" autocomplete="new-password" :placeholder="deployConfiguredSecretKeys.includes(option.key) ? '留空继续使用当前版本' : '尚未配置，必须填写'" :required="!deployConfiguredSecretKeys.includes(option.key)" />
+                  <small v-if="option.description" class="env-help">{{
+                    option.description
+                  }}</small>
+                  <input
+                    v-model="deploySecrets[option.key]"
+                    type="password"
+                    autocomplete="new-password"
+                    :placeholder="
+                      deployConfiguredSecretKeys.includes(option.key)
+                        ? '留空继续使用当前版本'
+                        : '尚未配置，必须填写'
+                    "
+                    :required="!deployConfiguredSecretKeys.includes(option.key)"
+                  />
                 </label>
                 <div v-else class="deploy-secret-locked">
                   <KeyRound :size="15" />
-                  <div><strong>{{ option.key }}</strong><small>{{ option.description || '管理员未提供说明' }}</small></div>
+                  <div>
+                    <strong>{{ option.key }}</strong
+                    ><small>{{
+                      option.description || "管理员未提供说明"
+                    }}</small>
+                  </div>
                   <span>仅管理员</span>
                 </div>
               </template>
-              <p v-if="missingDeploySecretKeys.length" class="deploy-secret-warning">尚未配置：{{ missingDeploySecretKeys.join('、') }}。固定 Secret 需要管理员先配置；可编辑 Secret 可在上方填写。</p>
+              <p
+                v-if="missingDeploySecretKeys.length"
+                class="deploy-secret-warning"
+              >
+                尚未配置：{{ missingDeploySecretKeys.join("、") }}。固定 Secret
+                需要管理员先配置；可编辑 Secret 可在上方填写。
+              </p>
             </div>
           </template>
           <p v-else class="quiet">此模板不需要额外 Secret。</p>
@@ -2037,7 +2785,9 @@ async function exitImpersonation() {
               class="primary compact"
               :disabled="writeLocked || busy === 'deploy'"
             >
-              <Rocket :size="16" />{{ deployMode === 'update' ? '保存配置并重新部署' : '创建部署' }}
+              <Rocket :size="16" />{{
+                deployMode === "update" ? "保存配置并重新部署" : "创建部署"
+              }}
             </button>
           </div>
         </form>
@@ -2057,7 +2807,12 @@ async function exitImpersonation() {
       </header>
       <div class="secret-explainer">
         <KeyRound :size="18" />
-        <p><strong>应用 Secret 用于 API Key、令牌和数据库密码等敏感值。</strong><span>平台加密保存且永不回显；每次修改创建新版本。正在运行的容器继续使用当前发布固定的旧版本，执行“编辑配置并重新部署”后才会注入最新版本。</span></p>
+        <p>
+          <strong>应用 Secret 用于 API Key、令牌和数据库密码等敏感值。</strong
+          ><span
+            >平台加密保存且永不回显；每次修改创建新版本。正在运行的容器继续使用当前发布固定的旧版本，执行“编辑配置并重新部署”后才会注入最新版本。</span
+          >
+        </p>
       </div>
       <div class="secret-list">
         <article v-for="item in secretItems" :key="item.key">
@@ -2096,28 +2851,58 @@ async function exitImpersonation() {
       </p>
     </section>
   </div>
-  <div v-if="deploymentApp" class="modal-backdrop" @click.self="deploymentApp = null">
+  <div
+    v-if="deploymentApp"
+    class="modal-backdrop"
+    @click.self="deploymentApp = null"
+  >
     <section class="secret-dialog deployment-dialog">
       <header>
         <div>
           <p class="eyebrow">{{ deploymentApp.slug }}</p>
           <h2>部署详情</h2>
         </div>
-        <button class="icon-action" title="关闭" @click="deploymentApp = null"><X :size="18" /></button>
+        <button class="icon-action" title="关闭" @click="deploymentApp = null">
+          <X :size="18" />
+        </button>
       </header>
       <p v-if="deploymentBusy" class="quiet">正在读取部署事件…</p>
       <p v-else-if="!deploymentJobs.length" class="quiet">暂无部署任务记录</p>
       <div v-for="job in deploymentJobs" :key="job.id" class="deployment-job">
         <div class="deployment-job-heading">
-          <span :class="['status-pill', job.state === 'succeeded' ? 'active' : job.state === 'failed' ? 'danger' : 'pending']">{{ state(job.state) }}</span>
-          <small>{{ new Date(job.updatedAt || job.createdAt).toLocaleString() }} · 尝试 {{ job.attempts }} 次</small>
+          <span
+            :class="[
+              'status-pill',
+              job.state === 'succeeded'
+                ? 'active'
+                : job.state === 'failed'
+                  ? 'danger'
+                  : 'pending',
+            ]"
+            >{{ state(job.state) }}</span
+          >
+          <small
+            >{{ new Date(job.updatedAt || job.createdAt).toLocaleString() }} ·
+            尝试 {{ job.attempts }} 次</small
+          >
         </div>
-        <p v-if="job.lastError" class="deployment-detail-hint">{{ deploymentErrorHint(job.lastError) }}</p>
-        <code v-if="job.lastError" class="deployment-raw-error">{{ deploymentErrorText(job.lastError) }}</code>
+        <p v-if="job.lastError" class="deployment-detail-hint">
+          {{ deploymentErrorHint(job.lastError) }}
+        </p>
+        <code v-if="job.lastError" class="deployment-raw-error">{{
+          deploymentErrorText(job.lastError)
+        }}</code>
         <ol v-if="job.events.length" class="deployment-timeline">
           <li v-for="event in job.events" :key="event.id || event.createdAt">
-            <span>{{ event.toState ? state(event.toState) : '事件' }}</span>
-            <small>{{ event.message || '状态已更新' }} · {{ event.createdAt ? new Date(event.createdAt).toLocaleString() : '' }}</small>
+            <span>{{ event.toState ? state(event.toState) : "事件" }}</span>
+            <small
+              >{{ event.message || "状态已更新" }} ·
+              {{
+                event.createdAt
+                  ? new Date(event.createdAt).toLocaleString()
+                  : ""
+              }}</small
+            >
           </li>
         </ol>
       </div>
@@ -2129,17 +2914,42 @@ async function exitImpersonation() {
         <div>
           <p class="eyebrow">{{ logApp.slug }}</p>
           <h2>运行日志</h2>
-          <small v-if="logData.sampledAt">采样于 {{ new Date(logData.sampledAt).toLocaleString() }} · 每 3 秒自动刷新</small>
+          <small v-if="logData.sampledAt"
+            >采样于 {{ new Date(logData.sampledAt).toLocaleString() }} · 每 3
+            秒自动刷新</small
+          >
         </div>
-        <button class="icon-action" title="关闭" @click="closeLogs"><X :size="18" /></button>
+        <button class="icon-action" title="关闭" @click="closeLogs">
+          <X :size="18" />
+        </button>
       </header>
       <div class="log-toolbar">
-        <span :class="['status-pill', logData.status === 'succeeded' || logData.status === 'cached' ? 'active' : logData.status === 'failed' ? 'danger' : 'pending']">{{ logStatusLabel(logData.status) }}</span>
-        <button class="secondary compact" :disabled="logBusy" @click="refreshLogs"><RefreshCw :class="{ spin: logBusy }" :size="15" />立即刷新</button>
+        <span
+          :class="[
+            'status-pill',
+            logData.status === 'succeeded' || logData.status === 'cached'
+              ? 'active'
+              : logData.status === 'failed'
+                ? 'danger'
+                : 'pending',
+          ]"
+          >{{ logStatusLabel(logData.status) }}</span
+        >
+        <button
+          class="secondary compact"
+          :disabled="logBusy"
+          @click="refreshLogs"
+        >
+          <RefreshCw :class="{ spin: logBusy }" :size="15" />立即刷新
+        </button>
       </div>
       <p v-if="logData.lastError" class="message">{{ logData.lastError }}</p>
-      <p v-if="!logData.logs && !logBusy" class="quiet log-empty">还没有可显示的日志，点击“拉取最新日志”获取容器运行日志。</p>
-      <pre class="log-viewer" :class="{ 'log-loading': logBusy }">{{ logData.logs || (logBusy ? '正在拉取日志…' : '') }}</pre>
+      <p v-if="!logData.logs && !logBusy" class="quiet log-empty">
+        还没有可显示的日志，点击“拉取最新日志”获取容器运行日志。
+      </p>
+      <pre class="log-viewer" :class="{ 'log-loading': logBusy }">{{
+        logData.logs || (logBusy ? "正在拉取日志…" : "")
+      }}</pre>
     </section>
   </div>
 </template>

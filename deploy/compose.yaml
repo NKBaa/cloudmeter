@@ -1,7 +1,15 @@
 name: cloudmeter
 
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "50m"
+    max-file: "3"
+
+
 services:
   gateway:
+    logging: *default-logging
     image: caddy:2.9-alpine
     restart: unless-stopped
     ports:
@@ -10,8 +18,16 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
     depends_on:
       api: {condition: service_healthy}
-      web: {condition: service_started}
+      web: {condition: service_healthy}
       app-router: {condition: service_healthy}
+    healthcheck:
+      # Probe through the same public path clients use. The Host header is
+      # required because the gateway deliberately rejects unknown hosts.
+      test: ["CMD-SHELL", "wget -q -O /dev/null --header=Host:${PLATFORM_ALLOWED_HOST} http://127.0.0.1:8080/api/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
     environment:
       ROUTER_INTERNAL_TOKEN: ${ROUTER_INTERNAL_TOKEN:?ROUTER_INTERNAL_TOKEN is required}
       PLATFORM_ALLOWED_HOST: ${PLATFORM_ALLOWED_HOST:?PLATFORM_ALLOWED_HOST is required}
@@ -22,17 +38,25 @@ services:
     security_opt: [no-new-privileges:true]
 
   web:
+    logging: *default-logging
     build:
       context: ..
-      dockerfile: deploy/Dockerfile.web
+      dockerfile: deploy/Dockerfile.web.prebuilt
     restart: unless-stopped
     expose: ["8080"]
     networks: [platform_network]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
     labels:
       cloudmeter.owner: ${COMPOSE_PROJECT_NAME:-cloudmeter}
     security_opt: [no-new-privileges:true]
 
   egress-proxy:
+    logging: *default-logging
     build:
       context: ..
       dockerfile: deploy/Dockerfile.backend
@@ -55,6 +79,7 @@ services:
     security_opt: [no-new-privileges:true]
 
   app-router:
+    logging: *default-logging
     build:
       context: ..
       dockerfile: deploy/Dockerfile.backend
@@ -77,6 +102,7 @@ services:
     security_opt: [no-new-privileges:true]
 
   api:
+    logging: *default-logging
     build:
       context: ..
       dockerfile: deploy/Dockerfile.backend
@@ -106,6 +132,7 @@ services:
     security_opt: [no-new-privileges:true]
 
   worker:
+    logging: *default-logging
     build:
       context: ..
       dockerfile: deploy/Dockerfile.backend
@@ -139,6 +166,7 @@ services:
     security_opt: [no-new-privileges:true]
 
   migrate:
+    logging: *default-logging
     image: migrate/migrate:v4.18.1
     command: ["-path", "/migrations", "-database", "postgres://cloudmeter:${POSTGRES_PASSWORD}@postgres:5432/cloudmeter?sslmode=disable", "up"]
     volumes:
@@ -149,6 +177,7 @@ services:
     restart: "no"
 
   postgres:
+    logging: *default-logging
     image: postgres:17-alpine
     restart: unless-stopped
     environment:
@@ -166,6 +195,7 @@ services:
       retries: 10
 
   redis:
+    logging: *default-logging
     image: redis:7.4-alpine
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD}"]

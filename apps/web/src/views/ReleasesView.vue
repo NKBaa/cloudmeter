@@ -1,10 +1,156 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
-import { CheckCircle2, History, PackagePlus, RefreshCw, Rocket } from '@lucide/vue'
-import { api } from '../api'
-type App={id:string;slug:string;status:string;productSlug:string};type Release={id:string;releaseNumber:number;productVersionId:string;state:string;createdAt:string;jobState?:string;jobId?:string}
-const apps=ref<App[]>([]), releases=ref<Record<string,Release[]>>({}), error=ref(''), loading=ref(false)
-async function load(){loading.value=true;try{const data=await api<{apps:App[]}>('/apps');apps.value=data.apps;const pairs=await Promise.all(apps.value.map(async app=>[app.id,(await api<{releases:Release[]}>('/apps/'+app.id+'/releases')).releases] as const));releases.value=Object.fromEntries(pairs)}catch(e){error.value=(e as Error).message}finally{loading.value=false}}
-onMounted(load)
+import { onMounted, ref } from "vue";
+import {
+  CheckCircle2,
+  History,
+  PackagePlus,
+  Plus,
+  RefreshCw,
+  Rocket,
+} from "@lucide/vue";
+import { api } from "../api";
+type App = { id: string; slug: string; status: string; productSlug: string };
+type Release = {
+  id: string;
+  releaseNumber: number;
+  productVersionId: string;
+  state: string;
+  createdAt: string;
+  jobState?: string;
+  jobId?: string;
+};
+const apps = ref<App[]>([]),
+  releases = ref<Record<string, Release[]>>({}),
+  error = ref(""),
+  loading = ref(false);
+async function load() {
+  loading.value = true;
+  try {
+    const data = await api<{ apps: App[] }>("/apps");
+    apps.value = data.apps;
+    const pairs = await Promise.all(
+      apps.value.map(
+        async (app) =>
+          [
+            app.id,
+            (
+              await api<{ releases: Release[] }>(
+                "/apps/" + app.id + "/releases",
+              )
+            ).releases,
+          ] as const,
+      ),
+    );
+    releases.value = Object.fromEntries(pairs);
+  } catch (e) {
+    error.value = (e as Error).message;
+  } finally {
+    loading.value = false;
+  }
+}
+onMounted(load);
 </script>
-<template><main class="workspace admin-workspace"><header><div><p class="eyebrow">发布审计</p><h1>应用版本历史</h1><p>查看每次部署生成的版本、任务状态和当前生效版本。</p></div><button class="secondary compact" @click="load"><RefreshCw :size="16"/>刷新</button></header><p v-if="error" class="message">{{error}}</p><section v-if="loading&&!apps.length" class="skeleton-list" aria-busy="true"><div v-for="index in 3" :key="index" class="skeleton skeleton-card" style="height:150px"></div></section><section v-for="app in apps" :key="app.id" class="release-list"><div class="section-heading"><div><p class="eyebrow">{{app.productSlug}}</p><h2>{{app.slug}}</h2></div><span>{{(releases[app.id]||[]).length}} 个版本</span></div><article v-for="release in releases[app.id]||[]" :key="release.id" class="release-row"><span class="version-number">v{{release.releaseNumber}}</span><div><strong>{{release.state==='active'?'当前版本':release.state}}</strong><small>{{release.productVersionId}} · {{release.jobState||'无任务'}} · {{new Date(release.createdAt).toLocaleString()}}</small></div><span :class="['status-pill',release.state==='active'?'active':'suspended']">{{release.state}}</span><CheckCircle2 v-if="release.state==='active'" class="ok" :size="19"/></article><div v-if="!(releases[app.id]||[]).length" class="context-empty compact-empty"><History :size="22"/><div><strong>尚未生成版本记录</strong><p>应用首次部署成功后，发布版本会按时间显示在这里。</p></div></div></section><section v-if="!apps.length&&!loading" class="context-empty"><span class="context-empty-icon"><Rocket :size="26"/></span><div><p class="eyebrow">发布记录</p><h2>还没有应用版本</h2><p>从管理员发布的产品中部署应用；每次部署和更新都会形成可追溯的版本记录。</p><div class="empty-actions"><RouterLink class="primary compact" to="/console/deploy"><PackagePlus :size="16"/>部署第一个应用</RouterLink><RouterLink class="secondary compact" to="/console/apps"><History :size="16"/>查看我的应用</RouterLink></div></div></section></main></template>
+<template>
+  <main class="workspace">
+    <header class="page-heading">
+      <div>
+        <p class="eyebrow">发布审计</p>
+        <h1>应用版本历史</h1>
+        <p class="quiet">查看每次部署生成的版本、任务状态和当前生效版本。</p>
+      </div>
+      <button class="secondary compact" @click="load">
+        <RefreshCw :size="16" />刷新
+      </button>
+    </header>
+    <p v-if="error" class="message">{{ error }}</p>
+    <section
+      v-if="loading && !apps.length"
+      class="skeleton-list"
+      aria-busy="true"
+    >
+      <div
+        v-for="index in 3"
+        :key="index"
+        class="skeleton skeleton-card"
+        style="height: 150px"
+      ></div>
+    </section>
+    <section v-for="app in apps" :key="app.id" class="release-list">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">{{ app.productSlug }}</p>
+          <h2>{{ app.slug }}</h2>
+        </div>
+        <span>{{ (releases[app.id] || []).length }} 个版本</span>
+      </div>
+      <article
+        v-for="release in releases[app.id] || []"
+        :key="release.id"
+        class="release-row"
+      >
+        <span class="version-number">v{{ release.releaseNumber }}</span>
+        <div>
+          <strong>{{
+            release.state === "active" ? "当前版本" : release.state
+          }}</strong
+          ><small
+            >{{ release.productVersionId }} ·
+            {{ release.jobState || "无任务" }} ·
+            {{ new Date(release.createdAt).toLocaleString() }}</small
+          >
+        </div>
+        <span
+          :class="[
+            'status-pill',
+            release.state === 'active' ? 'active' : 'suspended',
+          ]"
+          >{{ release.state }}</span
+        ><CheckCircle2
+          v-if="release.state === 'active'"
+          class="ok"
+          :size="19"
+        />
+      </article>
+      <div
+        v-if="!(releases[app.id] || []).length"
+        class="context-empty compact-empty"
+      >
+        <History :size="22" />
+        <div>
+          <strong>尚未生成版本记录</strong>
+          <p>应用首次部署成功后，发布版本会按时间显示在这里。</p>
+        </div>
+      </div>
+    </section>
+    <section v-if="!apps.length && !loading" class="nextdev-card p-0">
+      <div class="card-header-bar flex items-center justify-between">
+        <div class="card-title-group">
+          <span class="eyebrow">RELEASES · 版本历史</span>
+          <h3>版本发布列表</h3>
+        </div>
+        <RouterLink to="/console/deploy" class="primary compact">
+          <Plus :size="14" />
+          <span>部署新应用</span>
+        </RouterLink>
+      </div>
+      <div class="card-divider"></div>
+      <div class="card-inner-body">
+        <div class="empty-state-nextdev">
+          <div class="empty-icon-circle">
+            <Rocket :size="24" />
+          </div>
+          <h4>暂无应用版本记录</h4>
+          <p>从应用市场部署应用后，每次上线与更新都将自动生成不可篡改的版本快照。</p>
+          <div class="flex items-center gap-3 mt-3">
+            <RouterLink class="primary compact" to="/console/deploy">
+              <PackagePlus :size="15" />部署首个应用
+            </RouterLink>
+            <RouterLink class="ghost compact" to="/console/apps">
+              <History :size="15" />查看我的应用
+            </RouterLink>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+</template>

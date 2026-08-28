@@ -1,16 +1,363 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
-import { ChevronDown, CircleHelp, Pencil, Plus, RefreshCw, Save, Trash2, X } from '@lucide/vue'
-import { api } from '../api'
-type FAQ={id:string;question:string;answer:string;enabled:boolean;sortOrder:number;updatedAt:string}
-const props=defineProps<{admin?:boolean}>(),items=ref<FAQ[]>([]),loading=ref(true),error=ref(''),message=ref(''),open=ref(''),editing=ref<FAQ|null>(null),editorOpen=ref(false),form=reactive({question:'',answer:'',enabled:true,sortOrder:0})
-async function load(){loading.value=true;error.value='';try{items.value=(await api<{faqs:FAQ[]}>(props.admin?'/admin/faqs':'/faqs')).faqs}catch(e){error.value=(e as Error).message}finally{loading.value=false}}
-function begin(item?:FAQ){editing.value=item||null;editorOpen.value=true;Object.assign(form,item?{question:item.question,answer:item.answer,enabled:item.enabled,sortOrder:item.sortOrder}:{question:'',answer:'',enabled:true,sortOrder:items.value.length*10})}
-function cancel(){editorOpen.value=false;editing.value=null;Object.assign(form,{question:'',answer:'',enabled:true,sortOrder:0})}
-async function save(){try{const path=editing.value?'/admin/faqs/'+editing.value.id:'/admin/faqs';await api(path,{method:editing.value?'PUT':'POST',body:JSON.stringify(form)});message.value=editing.value?'常见问题已更新':'常见问题已创建';cancel();await load()}catch(e){error.value=(e as Error).message}}
-async function remove(item:FAQ){if(!confirm('确定删除“'+item.question+'”？此操作会写入审计日志。'))return;try{await api('/admin/faqs/'+item.id,{method:'DELETE'});message.value='常见问题已删除';await load()}catch(e){error.value=(e as Error).message}}
-async function toggle(item:FAQ){try{await api('/admin/faqs/'+item.id,{method:'PUT',body:JSON.stringify({...item,enabled:item.enabled})});message.value=item.enabled?'已启用':'已停用';await load()}catch(e){error.value=(e as Error).message;item.enabled=!item.enabled}}
-onMounted(load)
+import { onMounted, reactive, ref } from "vue";
+import {
+  ChevronDown,
+  CircleHelp,
+  Pencil,
+  Plus,
+  RefreshCw,
+  Save,
+  Trash2,
+  X,
+} from "@lucide/vue";
+import { api } from "../api";
+type FAQ = {
+  id: string;
+  question: string;
+  answer: string;
+  enabled: boolean;
+  sortOrder: number;
+  updatedAt: string;
+};
+const props = defineProps<{ admin?: boolean }>(),
+  items = ref<FAQ[]>([]),
+  loading = ref(true),
+  error = ref(""),
+  message = ref(""),
+  open = ref(""),
+  editing = ref<FAQ | null>(null),
+  editorOpen = ref(false),
+  form = reactive({ question: "", answer: "", enabled: true, sortOrder: 0 });
+async function load() {
+  loading.value = true;
+  error.value = "";
+  try {
+    items.value = (
+      await api<{ faqs: FAQ[] }>(props.admin ? "/admin/faqs" : "/faqs")
+    ).faqs;
+  } catch (e) {
+    error.value = (e as Error).message;
+  } finally {
+    loading.value = false;
+  }
+}
+function begin(item?: FAQ) {
+  editing.value = item || null;
+  editorOpen.value = true;
+  Object.assign(
+    form,
+    item
+      ? {
+          question: item.question,
+          answer: item.answer,
+          enabled: item.enabled,
+          sortOrder: item.sortOrder,
+        }
+      : {
+          question: "",
+          answer: "",
+          enabled: true,
+          sortOrder: items.value.length * 10,
+        },
+  );
+}
+function cancel() {
+  editorOpen.value = false;
+  editing.value = null;
+  Object.assign(form, {
+    question: "",
+    answer: "",
+    enabled: true,
+    sortOrder: 0,
+  });
+}
+async function save() {
+  try {
+    const path = editing.value
+      ? "/admin/faqs/" + editing.value.id
+      : "/admin/faqs";
+    await api(path, {
+      method: editing.value ? "PUT" : "POST",
+      body: JSON.stringify(form),
+    });
+    message.value = editing.value ? "常见问题已更新" : "常见问题已创建";
+    cancel();
+    await load();
+  } catch (e) {
+    error.value = (e as Error).message;
+  }
+}
+async function remove(item: FAQ) {
+  if (!confirm("确定删除“" + item.question + "”？此操作会写入审计日志。"))
+    return;
+  try {
+    await api("/admin/faqs/" + item.id, { method: "DELETE" });
+    message.value = "常见问题已删除";
+    await load();
+  } catch (e) {
+    error.value = (e as Error).message;
+  }
+}
+async function toggle(item: FAQ) {
+  try {
+    await api("/admin/faqs/" + item.id, {
+      method: "PUT",
+      body: JSON.stringify({ ...item, enabled: item.enabled }),
+    });
+    message.value = item.enabled ? "已启用" : "已停用";
+    await load();
+  } catch (e) {
+    error.value = (e as Error).message;
+    item.enabled = !item.enabled;
+  }
+}
+onMounted(load);
 </script>
-<template><main class="workspace faq-page"><section class="faq-panel"><div class="section-heading faq-heading"><div><p class="eyebrow">帮助中心</p><h1>{{admin?'常见问答管理':'常见问答'}}</h1><p class="faq-subtitle">{{admin?'维护用户可见的问题、答案、状态与顺序。':'查找部署、计费和应用管理中的常见问题。'}}</p></div><button v-if="admin" class="primary compact" @click="begin()"><Plus :size="16"/>新增问题</button></div><p v-if="error" class="message">{{error}}</p><p v-if="message" class="message">{{message}}</p><div v-if="loading" class="faq-skeleton" aria-busy="true"><article v-for="index in 4" :key="index" class="skeleton-row"><div style="flex:1;display:grid;gap:8px"><span class="skeleton skeleton-title" style="width:55%"></span></div><span class="skeleton" style="width:20px;height:20px;border-radius:6px"></span></article></div><div v-else class="faq-list"><article v-for="item in items" :key="item.id" :class="['faq-item',{disabled:admin&&!item.enabled}]"><button class="faq-question" @click="open=open===item.id?'':item.id"><span><CircleHelp :size="18"/><strong>{{item.question}}</strong><small v-if="admin">排序 {{item.sortOrder}}</small></span><span class="faq-question-right"><label v-if="admin" class="switch" :title="item.enabled?'停用':'启用'" @click.stop><input v-model="item.enabled" type="checkbox" @change="toggle(item)"/><span/></label><ChevronDown :class="{rotated:open===item.id}" :size="18"/></span></button><div v-if="open===item.id" class="faq-answer"><p>{{item.answer}}</p><div v-if="admin" class="faq-actions"><button class="secondary compact" @click="begin(item)"><Pencil :size="15"/>编辑</button><button class="danger compact" @click="remove(item)"><Trash2 :size="15"/>删除</button></div></div></article><div v-if="!items.length" class="faq-empty"><CircleHelp :size="24"/><p>{{admin?'还没有常见问题，点击右上角开始创建。':'暂时没有已发布的常见问题。'}}</p></div></div></section><div v-if="admin&&editorOpen" class="modal-backdrop" @click.self="cancel"><section class="modal-card"><header><div><p class="eyebrow">FAQ 编辑</p><h2>{{editing?'编辑问题':'新增问题'}}</h2></div><button class="icon-action" @click="cancel"><X :size="18"/></button></header><form @submit.prevent="save"><label>问题<input v-model="form.question" maxlength="300" required/></label><label>答案<textarea v-model="form.answer" maxlength="10000" rows="8" required/></label><div class="field-row"><label>排序<input v-model.number="form.sortOrder" type="number" min="-1000000" max="1000000"/></label></div><div class="switch-setting"><div><strong>对用户启用</strong><small>停用后普通用户不可见</small></div><label class="switch"><input v-model="form.enabled" type="checkbox"/><span/></label></div><footer><button type="button" class="secondary" @click="cancel">取消</button><button class="primary"><Save :size="16"/>保存</button></footer></form></section></div></main></template>
-<style scoped>.faq-page{display:grid}.faq-panel{background:var(--paper);border:1px solid var(--line);border-radius:var(--radius-md);padding:22px 24px}.faq-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:14px}.faq-heading h1{margin:4px 0 0;font-size:22px}.faq-subtitle{margin:6px 0 0;color:var(--muted);font-size:13px;line-height:1.5}.faq-skeleton{display:grid;gap:8px}.faq-list{display:grid;gap:8px}.faq-item{border:1px solid var(--border,#ddd);border-radius:14px;background:#1a1d23;overflow:hidden}.faq-item.disabled{opacity:.68}.faq-question{width:100%;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px 16px;background:transparent;color:inherit;border:0;text-align:left;cursor:pointer}.faq-question>span{display:flex;align-items:center;gap:10px;min-width:0}.faq-question>span:first-child{flex:1}.faq-question strong{font-size:13.5px;font-weight:650}.faq-question-right{display:flex;align-items:center;gap:12px}.faq-question small{color:var(--text-muted,#777)}.faq-question svg{transition:transform .18s ease;flex:0 0 auto}.faq-question .rotated{transform:rotate(180deg)}.faq-answer{padding:0 16px 15px;border-top:1px solid var(--border,#ddd)}.faq-answer p{margin:12px 0 0;white-space:pre-wrap;line-height:1.7;color:var(--muted)}.faq-actions{display:flex;gap:8px;justify-content:flex-end}.faq-empty{display:flex;align-items:center;justify-content:center;gap:10px;min-height:120px;color:var(--muted)}@media(max-width:620px){.faq-heading{flex-direction:column}}</style>
+<template>
+  <main class="workspace faq-page">
+    <section class="faq-panel">
+      <div class="section-heading faq-heading">
+        <div>
+          <p class="eyebrow">帮助中心</p>
+          <h1>{{ admin ? "常见问答管理" : "常见问答" }}</h1>
+          <p class="faq-subtitle">
+            {{
+              admin
+                ? "维护用户可见的问题、答案、状态与顺序。"
+                : "查找部署、计费和应用管理中的常见问题。"
+            }}
+          </p>
+        </div>
+        <button v-if="admin" class="primary compact" @click="begin()">
+          <Plus :size="16" />新增问题
+        </button>
+      </div>
+      <p v-if="error" class="message">{{ error }}</p>
+      <p v-if="message" class="message">{{ message }}</p>
+      <div v-if="loading" class="faq-skeleton" aria-busy="true">
+        <article v-for="index in 4" :key="index" class="skeleton-row">
+          <div style="flex: 1; display: grid; gap: 8px">
+            <span class="skeleton skeleton-title" style="width: 55%"></span>
+          </div>
+          <span
+            class="skeleton"
+            style="width: 20px; height: 20px; border-radius: 6px"
+          ></span>
+        </article>
+      </div>
+      <div v-else class="faq-list">
+        <article
+          v-for="item in items"
+          :key="item.id"
+          :class="['faq-item', { disabled: admin && !item.enabled }]"
+        >
+          <button
+            class="faq-question"
+            @click="open = open === item.id ? '' : item.id"
+          >
+            <span
+              ><CircleHelp :size="18" /><strong>{{ item.question }}</strong
+              ><small v-if="admin">排序 {{ item.sortOrder }}</small></span
+            ><span class="faq-question-right"
+              ><label
+                v-if="admin"
+                class="switch"
+                :title="item.enabled ? '停用' : '启用'"
+                @click.stop
+                ><input
+                  v-model="item.enabled"
+                  type="checkbox"
+                  @change="toggle(item)" /><span /></label
+              ><ChevronDown :class="{ rotated: open === item.id }" :size="18"
+            /></span>
+          </button>
+          <div v-if="open === item.id" class="faq-answer">
+            <p>{{ item.answer }}</p>
+            <div v-if="admin" class="faq-actions">
+              <button class="secondary compact" @click="begin(item)">
+                <Pencil :size="15" />编辑</button
+              ><button class="danger compact" @click="remove(item)">
+                <Trash2 :size="15" />删除
+              </button>
+            </div>
+          </div>
+        </article>
+        <div v-if="!items.length" class="faq-empty">
+          <CircleHelp :size="24" />
+          <p>
+            {{
+              admin
+                ? "还没有常见问题，点击右上角开始创建。"
+                : "暂时没有已发布的常见问题。"
+            }}
+          </p>
+        </div>
+      </div>
+    </section>
+    <div v-if="admin && editorOpen" class="modal-backdrop" @click.self="cancel">
+      <section class="modal-card">
+        <header>
+          <div>
+            <p class="eyebrow">FAQ 编辑</p>
+            <h2>{{ editing ? "编辑问题" : "新增问题" }}</h2>
+          </div>
+          <button class="icon-action" @click="cancel"><X :size="18" /></button>
+        </header>
+        <form @submit.prevent="save">
+          <label
+            >问题<input
+              v-model="form.question"
+              maxlength="300"
+              required /></label
+          ><label
+            >答案<textarea
+              v-model="form.answer"
+              maxlength="10000"
+              rows="8"
+              required
+            />
+          </label>
+          <div class="field-row">
+            <label
+              >排序<input
+                v-model.number="form.sortOrder"
+                type="number"
+                min="-1000000"
+                max="1000000"
+            /></label>
+          </div>
+          <div class="switch-setting">
+            <div>
+              <strong>对用户启用</strong><small>停用后普通用户不可见</small>
+            </div>
+            <label class="switch"
+              ><input v-model="form.enabled" type="checkbox" /><span
+            /></label>
+          </div>
+          <footer>
+            <button type="button" class="secondary" @click="cancel">取消</button
+            ><button class="primary"><Save :size="16" />保存</button>
+          </footer>
+        </form>
+      </section>
+    </div>
+  </main>
+</template>
+<style scoped>
+.faq-page {
+  display: grid;
+  align-content: start;
+}
+.faq-page > header {
+  margin-bottom: 0;
+}
+.faq-panel {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: 22px 24px;
+}
+.faq-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+.faq-heading h1 {
+  margin: 4px 0 0;
+  font-size: 22px;
+}
+.faq-subtitle {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.faq-skeleton {
+  display: grid;
+  gap: 8px;
+}
+.faq-list {
+  display: grid;
+  gap: 8px;
+}
+.faq-item {
+  border: 1px solid var(--border, #ddd);
+  border-radius: 14px;
+  background: #1a1d23;
+  overflow: hidden;
+}
+.faq-item.disabled {
+  opacity: 0.68;
+}
+.faq-question {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 13px 16px;
+  background: transparent;
+  color: inherit;
+  border: 0;
+  text-align: left;
+  cursor: pointer;
+}
+.faq-question > span {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.faq-question > span:first-child {
+  flex: 1;
+}
+.faq-question strong {
+  font-size: 13.5px;
+  font-weight: 650;
+}
+.faq-question-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.faq-question small {
+  color: var(--text-muted, #777);
+}
+.faq-question svg {
+  transition: transform 0.18s ease;
+  flex: 0 0 auto;
+}
+.faq-question .rotated {
+  transform: rotate(180deg);
+}
+.faq-answer {
+  padding: 0 16px 15px;
+  border-top: 1px solid var(--border, #ddd);
+}
+.faq-answer p {
+  margin: 12px 0 0;
+  white-space: pre-wrap;
+  line-height: 1.7;
+  color: var(--muted);
+}
+.faq-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.faq-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 120px;
+  color: var(--muted);
+}
+@media (max-width: 620px) {
+  .faq-heading {
+    flex-direction: column;
+  }
+}
+</style>

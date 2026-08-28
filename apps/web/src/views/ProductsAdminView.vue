@@ -1,5 +1,12 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from "vue";
+import {
+  computed,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+  reactive,
+  ref,
+} from "vue";
 import {
   AppWindow,
   Archive,
@@ -52,7 +59,14 @@ type RuntimeSpec = {
   dataVolumeGiB?: number;
   editableOptions?: EditableOptions;
 };
-type EditableOptions = { cpu: boolean; memory: boolean; dataVolume: boolean; command: boolean; dependencies: boolean; environment: boolean };
+type EditableOptions = {
+  cpu: boolean;
+  memory: boolean;
+  dataVolume: boolean;
+  command: boolean;
+  dependencies: boolean;
+  environment: boolean;
+};
 type RouteSpec = {
   containerPort?: number;
   basePath?: string;
@@ -96,7 +110,12 @@ type Product = {
   status: string;
   versions: Version[];
 };
-type KeyValue = { key: string; value: string; editable: boolean; description: string };
+type KeyValue = {
+  key: string;
+  value: string;
+  editable: boolean;
+  description: string;
+};
 type SecretForm = { key: string; description: string; editable: boolean };
 type VersionForm = {
   versionLabel: string;
@@ -153,10 +172,72 @@ const showTemplateExample = ref(false);
 const showCreateProduct = ref(false);
 const expandedVersions = ref(new Set<string>());
 const editingVersion = ref<Version | null>(null);
-const templateExample = JSON.stringify({ product: { name: "示例应用", slug: "example-app" }, version: { imageDigest: "ghcr.io/example/app:v1.0.0", runtimeSpec: { cpuCores: 1, memoryMiB: 512, dataVolumeGiB: 10, editableOptions: { cpu: true, memory: true, dataVolume: true, command: false, dependencies: false }, command: ["server", "--production"], env: { APP_MODE: "production", LOG_LEVEL: "info" }, envDescriptions: { APP_MODE: "应用运行模式", LOG_LEVEL: "日志级别，可选 debug/info/warn/error" }, editableEnvKeys: ["LOG_LEVEL"], secretKeys: ["API_KEY"], secretDescriptions: { API_KEY: "第三方服务 API 密钥" }, editableSecretKeys: ["API_KEY"], volumes: [{ name: "data", mountPath: "/data", sizeGiB: 10 }], dependencies: [] }, routeSpec: { containerPort: 3000, basePath: "/", stripPrefix: true, websocket: true, sse: true, cookiePath: "/" }, healthSpec: { path: "/health", intervalSeconds: 10, timeoutSeconds: 5, acceptedStatusCodes: [] }, updateSpec: { dataPolicy: "volume_compatible" } } }, null, 2);
-const templateExampleWithIcon = templateExample.replace('"slug": "example-app"', '"slug": "example-app",\n    "iconUrl": "https://example.com/app-icon.png"');
-async function copyTemplateExample() { await navigator.clipboard.writeText(templateExampleWithIcon); done("示例模板已复制"); }
-function downloadTemplateExample() { const link=document.createElement("a"); link.href=URL.createObjectURL(new Blob([templateExampleWithIcon],{type:"application/json"})); link.download="cloudmeter-product-template.example.json"; link.click(); URL.revokeObjectURL(link.href); }
+const templateExample = JSON.stringify(
+  {
+    product: { name: "示例应用", slug: "example-app" },
+    version: {
+      imageDigest: "ghcr.io/example/app:v1.0.0",
+      runtimeSpec: {
+        cpuCores: 1,
+        memoryMiB: 512,
+        dataVolumeGiB: 10,
+        editableOptions: {
+          cpu: true,
+          memory: true,
+          dataVolume: true,
+          command: false,
+          dependencies: false,
+        },
+        command: ["server", "--production"],
+        env: { APP_MODE: "production", LOG_LEVEL: "info" },
+        envDescriptions: {
+          APP_MODE: "应用运行模式",
+          LOG_LEVEL: "日志级别，可选 debug/info/warn/error",
+        },
+        editableEnvKeys: ["LOG_LEVEL"],
+        secretKeys: ["API_KEY"],
+        secretDescriptions: { API_KEY: "第三方服务 API 密钥" },
+        editableSecretKeys: ["API_KEY"],
+        volumes: [{ name: "data", mountPath: "/data", sizeGiB: 10 }],
+        dependencies: [],
+      },
+      routeSpec: {
+        containerPort: 3000,
+        basePath: "/",
+        stripPrefix: true,
+        websocket: true,
+        sse: true,
+        cookiePath: "/",
+      },
+      healthSpec: {
+        path: "/health",
+        intervalSeconds: 10,
+        timeoutSeconds: 5,
+        acceptedStatusCodes: [],
+      },
+      updateSpec: { dataPolicy: "volume_compatible" },
+    },
+  },
+  null,
+  2,
+);
+const templateExampleWithIcon = templateExample.replace(
+  '"slug": "example-app"',
+  '"slug": "example-app",\n    "iconUrl": "https://example.com/app-icon.png"',
+);
+async function copyTemplateExample() {
+  await navigator.clipboard.writeText(templateExampleWithIcon);
+  done("示例模板已复制");
+}
+function downloadTemplateExample() {
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(
+    new Blob([templateExampleWithIcon], { type: "application/json" }),
+  );
+  link.download = "cloudmeter-product-template.example.json";
+  link.click();
+  URL.revokeObjectURL(link.href);
+}
 let pollTimer: number | undefined;
 const selectedProduct = computed(() =>
   products.value.find((item) => item.id === selected.value),
@@ -191,7 +272,14 @@ function defaultVersionForm(): VersionForm {
     acceptedStatusCodes: "",
     dataPolicy: "volume_compatible",
     dataVolumeGiB: 10,
-    editableOptions: { cpu: true, memory: true, dataVolume: true, command: false, dependencies: false, environment: false },
+    editableOptions: {
+      cpu: true,
+      memory: true,
+      dataVolume: true,
+      command: false,
+      dependencies: false,
+      environment: false,
+    },
   };
 }
 function resetVersionForm() {
@@ -214,7 +302,10 @@ function saveCurrentDraft() {
 }
 function loadDraft(productID: string) {
   const draft = versionDrafts.get(productID);
-  Object.assign(versionForm, draft ? cloneVersionForm(draft.form) : defaultVersionForm());
+  Object.assign(
+    versionForm,
+    draft ? cloneVersionForm(draft.form) : defaultVersionForm(),
+  );
   templateSummary.value = draft ? [...draft.summary] : [];
   editingVersion.value = draft?.sourceVersion || null;
   fieldErrors.value = {};
@@ -229,7 +320,9 @@ async function selectProduct(productID: string) {
   await new Promise<void>((resolve) => {
     requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
   });
-  window.setTimeout(() => { switchingProduct.value = false; }, 180);
+  window.setTimeout(() => {
+    switchingProduct.value = false;
+  }, 180);
 }
 async function revealVersionEditor(focus = true) {
   // Close the create/import surface before waiting for the new editor. Keeping
@@ -250,7 +343,9 @@ async function revealVersionEditor(focus = true) {
         ?.focus({ preventScroll: true });
   }, 300);
 }
-function fieldError(key: string) { return fieldErrors.value[key] || ""; }
+function fieldError(key: string) {
+  return fieldErrors.value[key] || "";
+}
 function clearFieldError(key: string) {
   if (!fieldErrors.value[key]) return;
   const next = { ...fieldErrors.value };
@@ -325,18 +420,29 @@ function importedSecretKeys(
       ? value.map((item) => {
           if (item && typeof item === "object" && "key" in item) {
             const record = item as Record<string, unknown>;
-            return { key: String(record.key), description: record.description, editable: record.editable };
+            return {
+              key: String(record.key),
+              description: record.description,
+              editable: record.editable,
+            };
           }
           return { key: String(item) };
         })
       : value && typeof value === "object"
-        ? Object.entries(value as Record<string, unknown>).map(([key, description]) => ({ key, description }))
+        ? Object.entries(value as Record<string, unknown>).map(
+            ([key, description]) => ({ key, description }),
+          )
         : [];
   return entries.map((entry) => ({
     key: entry.key,
     description: String(entry.description ?? descriptions[entry.key] ?? ""),
     // Legacy templates did not have editableSecretKeys; keep those keys editable.
-    editable: entry.editable === undefined ? (editableKeys ? editableKeys.has(entry.key) : true) : entry.editable === true,
+    editable:
+      entry.editable === undefined
+        ? editableKeys
+          ? editableKeys.has(entry.key)
+          : true
+        : entry.editable === true,
   }));
 }
 function openTemplateImport() {
@@ -379,8 +485,12 @@ async function importTemplate(event: Event) {
         : [],
     );
     const secretSource = runtime.secretKeys || runtime.secrets || [];
-    const importedEditableSecrets: Set<string> | undefined = Array.isArray(runtime.editableSecretKeys)
-      ? new Set<string>(runtime.editableSecretKeys.map((value: unknown) => String(value)))
+    const importedEditableSecrets: Set<string> | undefined = Array.isArray(
+      runtime.editableSecretKeys,
+    )
+      ? new Set<string>(
+          runtime.editableSecretKeys.map((value: unknown) => String(value)),
+        )
       : undefined;
     const volumeSource = runtime.volumes || [];
     const dependencySource = runtime.dependencies || [];
@@ -399,7 +509,11 @@ async function importTemplate(event: Event) {
         editable,
         runtime.envDescriptions || {},
       ),
-      secrets: importedSecretKeys(secretSource, runtime.secretDescriptions || {}, importedEditableSecrets),
+      secrets: importedSecretKeys(
+        secretSource,
+        runtime.secretDescriptions || {},
+        importedEditableSecrets,
+      ),
       volumes: Array.isArray(volumeSource)
         ? volumeSource.map((volume: any) => ({
             name: String(volume.name || "data"),
@@ -409,7 +523,12 @@ async function importTemplate(event: Event) {
         : [],
       dataVolumeGiB: numberValue(
         runtime.dataVolumeGiB,
-        Math.max(10, ...((Array.isArray(volumeSource) ? volumeSource : []).map((volume: any) => numberValue(volume.sizeGiB, 10)))),
+        Math.max(
+          10,
+          ...(Array.isArray(volumeSource) ? volumeSource : []).map(
+            (volume: any) => numberValue(volume.sizeGiB, 10),
+          ),
+        ),
       ),
       editableOptions: {
         cpu: importedEditableOption(runtime, "cpu", true),
@@ -433,7 +552,7 @@ async function importTemplate(event: Event) {
       intervalSeconds: numberValue(health.intervalSeconds, 10),
       timeoutSeconds: numberValue(health.timeoutSeconds, 5),
       acceptedStatusCodes: Array.isArray(health.acceptedStatusCodes)
-        ? health.acceptedStatusCodes.join(", " )
+        ? health.acceptedStatusCodes.join(", ")
         : "",
       dataPolicy: [
         "stateless",
@@ -470,7 +589,9 @@ async function importTemplate(event: Event) {
       `环境变量 ${importedForm.environment.length} 项`,
       `Secret ${importedForm.secrets.length} 项`,
       `数据卷 ${importedForm.volumes.length} 项`,
-      importedForm.volumes.length ? `共享容量最低 ${importedForm.dataVolumeGiB} GiB` : "无共享卷容量",
+      importedForm.volumes.length
+        ? `共享容量最低 ${importedForm.dataVolumeGiB} GiB`
+        : "无共享卷容量",
       `依赖 ${importedForm.dependencies.length} 项`,
       `容器内网端口 ${importedForm.containerPort}`,
     ];
@@ -520,7 +641,11 @@ async function load(silent = false) {
     products.value = (
       await api<{ products: Product[] }>("/admin/products")
     ).products;
-    if (!selected.value && products.value.length && !templateSummary.value.length)
+    if (
+      !selected.value &&
+      products.value.length &&
+      !templateSummary.value.length
+    )
       await selectProduct(products.value[0].id);
   } catch (value) {
     if (!silent) failed(value);
@@ -607,7 +732,10 @@ async function saveProductName() {
     busy.value = "edit-product";
     await api(`/admin/products/${editingProduct.value.id}`, {
       method: "PATCH",
-      body: JSON.stringify({ name: editName.value, iconUrl: editIconURL.value }),
+      body: JSON.stringify({
+        name: editName.value,
+        iconUrl: editIconURL.value,
+      }),
     });
     closeEditProduct();
     done("产品名称已更新");
@@ -648,7 +776,11 @@ function removeAt<T>(items: T[], index: number) {
 function addVolume() {
   if (versionForm.dataPolicy === "stateless")
     versionForm.dataPolicy = "volume_compatible";
-  versionForm.volumes.push({ name: "data", mountPath: "/data", sizeGiB: versionForm.dataVolumeGiB });
+  versionForm.volumes.push({
+    name: "data",
+    mountPath: "/data",
+    sizeGiB: versionForm.dataVolumeGiB,
+  });
 }
 function addDependency() {
   const target = dependencyProducts.value[0];
@@ -682,7 +814,13 @@ function editableEnvironmentKeys() {
     .filter((entry) => entry.editable && entry.key.trim())
     .map((entry) => entry.key.trim());
 }
-function environmentDescriptions() { return Object.fromEntries(versionForm.environment.filter((entry) => entry.key.trim() && entry.description.trim()).map((entry) => [entry.key.trim(), entry.description.trim()])); }
+function environmentDescriptions() {
+  return Object.fromEntries(
+    versionForm.environment
+      .filter((entry) => entry.key.trim() && entry.description.trim())
+      .map((entry) => [entry.key.trim(), entry.description.trim()]),
+  );
+}
 function secretKeys() {
   const values = versionForm.secrets
     .map((entry) => entry.key.trim().toUpperCase())
@@ -708,7 +846,10 @@ function secretDescriptions() {
   return Object.fromEntries(
     versionForm.secrets
       .filter((entry) => entry.key.trim() && entry.description.trim())
-      .map((entry) => [entry.key.trim().toUpperCase(), entry.description.trim()]),
+      .map((entry) => [
+        entry.key.trim().toUpperCase(),
+        entry.description.trim(),
+      ]),
   );
 }
 function editableSecretKeys() {
@@ -732,8 +873,7 @@ function healthAcceptedStatusCodes() {
       "额外成功状态码必须是 100 到 599 的整数，多个状态码用逗号分隔",
     );
   const unique = [...new Set(values)];
-  if (unique.length > 32)
-    throw new Error("额外成功状态码最多填写 32 个");
+  if (unique.length > 32) throw new Error("额外成功状态码最多填写 32 个");
   return unique;
 }
 async function createVersion() {
@@ -765,7 +905,8 @@ async function createVersion() {
       editableSecretKeys: editableSecretKeys(),
       dependencies: dependencies(),
     };
-    if (versionForm.volumes.length) runtimeSpec.dataVolumeGiB = versionForm.dataVolumeGiB;
+    if (versionForm.volumes.length)
+      runtimeSpec.dataVolumeGiB = versionForm.dataVolumeGiB;
     const command = versionForm.command
       .map((argument) => argument.value.trim())
       .filter(Boolean);
@@ -798,16 +939,26 @@ async function createVersion() {
     });
     const basedOnPublishedVersion = Boolean(editingVersion.value);
     resetVersionForm();
-    done(basedOnPublishedVersion ? "已基于已发布版本创建新版本" : "新版本已创建");
+    done(
+      basedOnPublishedVersion ? "已基于已发布版本创建新版本" : "新版本已创建",
+    );
     await load();
   } catch (value) {
     const text = (value as Error).message || "版本配置有误";
     if (text.includes("image must") || text.includes("镜像")) {
-      await focusInvalidField("imageDigest", "请填写带版本号的镜像地址，例如 nginx:1.27");
+      await focusInvalidField(
+        "imageDigest",
+        "请填写带版本号的镜像地址，例如 nginx:1.27",
+      );
     } else if (text.includes("环境变量") && text.includes("重复")) {
       const duplicate = text.match(/环境变量\s+(\S+)\s+重复/)?.[1];
-      const index = versionForm.environment.findIndex((entry, current) =>
-        entry.key.trim() === duplicate && versionForm.environment.findIndex((other) => other.key.trim() === duplicate) !== current);
+      const index = versionForm.environment.findIndex(
+        (entry, current) =>
+          entry.key.trim() === duplicate &&
+          versionForm.environment.findIndex(
+            (other) => other.key.trim() === duplicate,
+          ) !== current,
+      );
       await focusInvalidField(`environment-${Math.max(index, 0)}-key`, text);
     } else if (text.includes("Secret") && text.includes("重复")) {
       await focusInvalidField("secret-0", text);
@@ -845,7 +996,9 @@ function versionFormFromItem(item: Version): VersionForm {
         : undefined,
     ),
     volumes,
-    dependencies: (runtime.dependencies || []).map((dependency) => ({ ...dependency })),
+    dependencies: (runtime.dependencies || []).map((dependency) => ({
+      ...dependency,
+    })),
     dataVolumeGiB: numberValue(
       runtime.dataVolumeGiB,
       Math.max(1, ...volumes.map((volume) => numberValue(volume.sizeGiB, 1))),
@@ -868,7 +1021,9 @@ function versionFormFromItem(item: Version): VersionForm {
     healthPath: item.healthSpec?.path ?? "",
     intervalSeconds: numberValue(item.healthSpec?.intervalSeconds, 5),
     timeoutSeconds: numberValue(item.healthSpec?.timeoutSeconds, 5),
-    acceptedStatusCodes: (item.healthSpec?.acceptedStatusCodes || []).join(", "),
+    acceptedStatusCodes: (item.healthSpec?.acceptedStatusCodes || []).join(
+      ", ",
+    ),
     dataPolicy: ["stateless", "volume_compatible", "backup_required"].includes(
       item.updateSpec?.dataPolicy || "",
     )
@@ -912,14 +1067,24 @@ async function toggleVersion(item: Version) {
 }
 async function deleteSelectedProduct() {
   const item = selectedProduct.value;
-  if (!item || !window.confirm(`完全删除模板“${item.name}”？此操作仅删除模板相关内容（版本与产品定义），不会删除任何用户已部署实例、容器、数据卷或实例记录。发布和审计历史会保留，且不可恢复。`)) return;
+  if (
+    !item ||
+    !window.confirm(
+      `完全删除模板“${item.name}”？此操作仅删除模板相关内容（版本与产品定义），不会删除任何用户已部署实例、容器、数据卷或实例记录。发布和审计历史会保留，且不可恢复。`,
+    )
+  )
+    return;
   try {
     busy.value = "delete-product";
     await api(`/admin/products/${item.id}`, { method: "DELETE" });
     selected.value = "";
     done("应用模板已删除");
     await load();
-  } catch (value) { failed(value); } finally { busy.value = ""; }
+  } catch (value) {
+    failed(value);
+  } finally {
+    busy.value = "";
+  }
 }
 async function archiveVersion(item: Version) {
   const productID = selected.value;
@@ -928,13 +1093,27 @@ async function archiveVersion(item: Version) {
   const scope = hasReleases
     ? "该版本仍被已部署实例引用，删除模板不会影响正在运行的实例；实例将无法再通过此模板更新。此操作不可恢复。"
     : "删除该版本将同时清理其测试记录，且不可恢复。已部署实例不受影响。";
-  if (!window.confirm(`删除版本“${item.versionLabel || `v${item.version}`}”？${scope}`)) return;
+  if (
+    !window.confirm(
+      `删除版本“${item.versionLabel || `v${item.version}`}”？${scope}`,
+    )
+  )
+    return;
   try {
     busy.value = `archive-${item.id}`;
-    const result = await api<{ hardDeleted?: boolean }>(`/admin/products/${productID}/versions/${item.id}`, { method: 'DELETE' });
-    done(result.hardDeleted ? '版本已彻底删除' : '版本已删除，实例仍可继续管理');
+    const result = await api<{ hardDeleted?: boolean }>(
+      `/admin/products/${productID}/versions/${item.id}`,
+      { method: "DELETE" },
+    );
+    done(
+      result.hardDeleted ? "版本已彻底删除" : "版本已删除，实例仍可继续管理",
+    );
     await load();
-  } catch (value) { failed(value); } finally { busy.value = ''; }
+  } catch (value) {
+    failed(value);
+  } finally {
+    busy.value = "";
+  }
 }
 async function publish(productID: string, item: Version) {
   try {
@@ -1027,6 +1206,7 @@ function dataPolicyLabel(value?: string) {
       <div>
         <p class="eyebrow">应用目录</p>
         <h1>产品与版本</h1>
+        <p class="quiet">维护产品模板、不可变版本发布、环境变量规范及持久化卷定义。</p>
       </div>
       <div class="admin-template-actions">
         <input
@@ -1043,8 +1223,20 @@ function dataPolicyLabel(value?: string) {
         >
           <FileDown :size="16" />从模板导入
         </button>
-        <button class="secondary compact" type="button" @click="showTemplateExample = true">查看示例</button>
-        <button class="primary compact" type="button" @click="showCreateProduct = true"><Plus :size="16"/>创建产品</button>
+        <button
+          class="secondary compact"
+          type="button"
+          @click="showTemplateExample = true"
+        >
+          查看示例
+        </button>
+        <button
+          class="primary compact"
+          type="button"
+          @click="showCreateProduct = true"
+        >
+          <Plus :size="16" />创建产品
+        </button>
       </div>
     </header>
     <p v-if="error" class="message">{{ error }}</p>
@@ -1058,7 +1250,22 @@ function dataPolicyLabel(value?: string) {
           </div>
           <span>{{ products.length }}</span>
         </div>
-        <div v-if="productsLoading&&!products.length" class="product-select-skeleton" aria-busy="true"><div v-for="index in 4" :key="index" class="skeleton-row"><span class="skeleton" style="width:38px;height:38px;border-radius:11px"></span><div style="flex:1;display:grid;gap:7px"><span class="skeleton skeleton-title" style="width:70%"></span><span class="skeleton skeleton-text" style="width:50%"></span></div></div></div>
+        <div
+          v-if="productsLoading && !products.length"
+          class="product-select-skeleton"
+          aria-busy="true"
+        >
+          <div v-for="index in 4" :key="index" class="skeleton-row">
+            <span
+              class="skeleton"
+              style="width: 38px; height: 38px; border-radius: 11px"
+            ></span>
+            <div style="flex: 1; display: grid; gap: 7px">
+              <span class="skeleton skeleton-title" style="width: 70%"></span
+              ><span class="skeleton skeleton-text" style="width: 50%"></span>
+            </div>
+          </div>
+        </div>
         <button
           v-for="item in products"
           :key="item.id"
@@ -1069,27 +1276,52 @@ function dataPolicyLabel(value?: string) {
           ]"
           @click="selectProduct(item.id)"
         >
-          <span class="catalog-icon"><Box :size="18" /><img v-if="item.iconUrl" :src="item.iconUrl" alt="" @error="($event.currentTarget as HTMLImageElement).style.display='none'" /></span><span
+          <span class="catalog-icon"
+            ><Box :size="18" /><img
+              v-if="item.iconUrl"
+              :src="item.iconUrl"
+              alt=""
+              @error="
+                ($event.currentTarget as HTMLImageElement).style.display =
+                  'none'
+              " /></span
+          ><span
             ><strong>{{ item.name }}</strong
             ><small
               >{{ item.slug }} · {{ productStatusLabel(item.status) }}</small
             ></span
           >
         </button>
-        <p v-if="!products.length&&!productsLoading" class="quiet empty-copy">还没有产品</p>
+        <p v-if="!products.length && !productsLoading" class="quiet empty-copy">
+          还没有产品
+        </p>
       </section>
       <div :class="['product-admin-main', switchingProduct && 'is-switching']">
         <section
           v-if="selected"
           ref="versionEditorElement"
           :key="selected"
-          :class="['form-panel', 'version-builder', switchingProduct && 'is-switching']"
+          :class="[
+            'form-panel',
+            'version-builder',
+            switchingProduct && 'is-switching',
+          ]"
         >
           <div class="builder-heading">
             <div>
               <p class="eyebrow">{{ selectedProduct?.name }}</p>
-              <h2><Rocket :size="19" />{{ editingVersion ? "编辑并创建新版本" : "添加版本" }}</h2>
-              <div class="product-flow-steps" aria-label="产品发布流程"><span class="done">1 产品信息</span><ChevronRight :size="13"/><span class="current">2 配置版本</span><ChevronRight :size="13"/><span>3 测试部署</span><ChevronRight :size="13"/><span>4 发布上架</span></div>
+              <h2>
+                <Rocket :size="19" />{{
+                  editingVersion ? "编辑并创建新版本" : "添加版本"
+                }}
+              </h2>
+              <div class="product-flow-steps" aria-label="产品发布流程">
+                <span class="done">1 产品信息</span
+                ><ChevronRight :size="13" /><span class="current"
+                  >2 配置版本</span
+                ><ChevronRight :size="13" /><span>3 测试部署</span
+                ><ChevronRight :size="13" /><span>4 发布上架</span>
+              </div>
             </div>
             <div v-if="selectedProduct" class="builder-heading-actions">
               <span
@@ -1136,9 +1368,15 @@ function dataPolicyLabel(value?: string) {
             v-if="templateSummary.length"
             class="import-summary admin-import-summary"
           >
-            <strong>{{ editingVersion ? "已发布版本已回填" : "模板配置已回填" }}</strong>
+            <strong>{{
+              editingVersion ? "已发布版本已回填" : "模板配置已回填"
+            }}</strong>
             <small>{{ templateSummary.join(" · ") }}</small>
-            <small>{{ editingVersion ? "保存时会创建新的不可变版本，原版本与现有用户部署不受影响。" : "产品已就绪；请检查配置后创建版本，测试通过后再发布。" }}</small>
+            <small>{{
+              editingVersion
+                ? "保存时会创建新的不可变版本，原版本与现有用户部署不受影响。"
+                : "产品已就绪；请检查配置后创建版本，测试通过后再发布。"
+            }}</small>
           </div>
           <div
             v-if="selectedProduct?.status === 'retired'"
@@ -1152,7 +1390,12 @@ function dataPolicyLabel(value?: string) {
               >
             </div>
           </div>
-          <form ref="versionFormElement" v-else @invalid.capture="handleInvalid" @submit.prevent="createVersion">
+          <form
+            ref="versionFormElement"
+            v-else
+            @invalid.capture="handleInvalid"
+            @submit.prevent="createVersion"
+          >
             <section class="config-section first">
               <div class="config-heading">
                 <Settings2 :size="18" />
@@ -1167,7 +1410,9 @@ function dataPolicyLabel(value?: string) {
                   data-field="versionLabel"
                   maxlength="64"
                   placeholder="例如 v1.2.0、2026.08 稳定版"
-                /><small>用于管理员识别和用户查看；留空时使用自动序号</small></label
+                /><small
+                  >用于管理员识别和用户查看；留空时使用自动序号</small
+                ></label
               >
               <label
                 >镜像地址与版本<input
@@ -1177,7 +1422,10 @@ function dataPolicyLabel(value?: string) {
                   @input="clearFieldError('imageDigest')"
                   required
                   placeholder="例如 nginx:1.27 或 ghcr.io/org/app:v2.3.1"
-              /><small v-if="fieldError('imageDigest')" class="field-error">{{ fieldError('imageDigest') }}</small></label>
+                /><small v-if="fieldError('imageDigest')" class="field-error">{{
+                  fieldError("imageDigest")
+                }}</small></label
+              >
               <div class="config-grid three">
                 <label
                   >最低 CPU 核心<input
@@ -1190,7 +1438,14 @@ function dataPolicyLabel(value?: string) {
                     max="64"
                     step="0.1"
                     required
-                /><span class="field-editable-toggle"><label class="switch"><input v-model="versionForm.editableOptions.cpu" type="checkbox" /><span/></label><em>允许用户提高配置</em></span></label>
+                  /><span class="field-editable-toggle"
+                    ><label class="switch"
+                      ><input
+                        v-model="versionForm.editableOptions.cpu"
+                        type="checkbox" /><span /></label
+                    ><em>允许用户提高配置</em></span
+                  ></label
+                >
                 <label
                   >最低内存 MiB<input
                     v-model.number="versionForm.memoryMiB"
@@ -1202,7 +1457,14 @@ function dataPolicyLabel(value?: string) {
                     max="262144"
                     step="64"
                     required
-                /><span class="field-editable-toggle"><label class="switch"><input v-model="versionForm.editableOptions.memory" type="checkbox" /><span/></label><em>允许用户提高配置</em></span></label>
+                  /><span class="field-editable-toggle"
+                    ><label class="switch"
+                      ><input
+                        v-model="versionForm.editableOptions.memory"
+                        type="checkbox" /><span /></label
+                    ><em>允许用户提高配置</em></span
+                  ></label
+                >
               </div>
             </section>
             <section class="config-section">
@@ -1220,7 +1482,17 @@ function dataPolicyLabel(value?: string) {
                   <Plus :size="15" />参数
                 </button>
               </div>
-              <div class="option-permission"><label class="switch"><input v-model="versionForm.editableOptions.command" type="checkbox" /><span/></label><em>允许用户修改启动命令</em></div>
+              <div class="switch-setting env-global-toggle">
+                <div>
+                  <strong>允许用户修改启动命令</strong>
+                  <small>开启后，允许用户在创建实例时修改该应用的启动命令</small>
+                </div>
+                <label class="switch"
+                  ><input
+                    v-model="versionForm.editableOptions.command"
+                    type="checkbox" /><span
+                /></label>
+              </div>
               <div class="repeat-list">
                 <div
                   v-for="(argument, index) in versionForm.command"
@@ -1269,18 +1541,50 @@ function dataPolicyLabel(value?: string) {
                   <Plus :size="15" />变量
                 </button>
               </div>
-              <div class="switch-setting env-global-toggle"><div><strong>允许用户修改环境变量</strong><small>总开关：开启后，下方标记"用户可改"的变量才对用户开放编辑</small></div><label class="switch"><input v-model="versionForm.editableOptions.environment" type="checkbox"/><span/></label></div>
+              <div class="switch-setting env-global-toggle">
+                <div>
+                  <strong>允许用户修改环境变量</strong
+                  ><small
+                    >总开关：开启后，下方标记"用户可改"的变量才对用户开放编辑</small
+                  >
+                </div>
+                <label class="switch"
+                  ><input
+                    v-model="versionForm.editableOptions.environment"
+                    type="checkbox" /><span
+                /></label>
+              </div>
               <div class="repeat-list">
                 <div
                   v-for="(entry, index) in versionForm.environment"
                   :key="index"
                   class="repeat-row key-value-row editable-env-row"
                 >
-                  <input v-model="entry.key" :data-field="`environment-${index}-key`" :class="{ 'field-invalid': fieldError(`environment-${index}-key`) }" @input="clearFieldError(`environment-${index}-key`)" placeholder="APP_MODE" /><input
+                  <input
+                    v-model="entry.key"
+                    :data-field="`environment-${index}-key`"
+                    :class="{
+                      'field-invalid': fieldError(`environment-${index}-key`),
+                    }"
+                    @input="clearFieldError(`environment-${index}-key`)"
+                    placeholder="APP_MODE"
+                  /><input
                     v-model="entry.value"
                     placeholder="production"
-                  /><span class="compact-switch-cell"><label class="switch"><input v-model="entry.editable" type="checkbox" :disabled="!versionForm.editableOptions.environment"/><span/></label><em>用户可改</em></span><input v-model="entry.description" class="env-description" placeholder="注释：帮助用户理解该变量"
-                  ><button
+                  /><span class="compact-switch-cell"
+                    ><label class="switch"
+                      ><input
+                        v-model="entry.editable"
+                        type="checkbox"
+                        :disabled="
+                          !versionForm.editableOptions.environment
+                        " /><span /></label
+                    ><em>用户可改</em></span
+                  ><input
+                    v-model="entry.description"
+                    class="env-description"
+                    placeholder="注释：帮助用户理解该变量"
+                  /><button
                     type="button"
                     class="icon-action"
                     title="删除变量"
@@ -1307,7 +1611,13 @@ function dataPolicyLabel(value?: string) {
                 <button
                   type="button"
                   class="secondary compact"
-                  @click="versionForm.secrets.push({ key: '', description: '', editable: true })"
+                  @click="
+                    versionForm.secrets.push({
+                      key: '',
+                      description: '',
+                      editable: true,
+                    })
+                  "
                 >
                   <Plus :size="15" />Secret
                 </button>
@@ -1321,15 +1631,29 @@ function dataPolicyLabel(value?: string) {
                   <input
                     v-model="entry.key"
                     :data-field="`secret-${index}`"
-                    :class="{ 'field-invalid': fieldError(`secret-${index}`) || (index === 0 && fieldError('secret-0')) }"
-                    @input="clearFieldError(`secret-${index}`); clearFieldError('secret-0')"
+                    :class="{
+                      'field-invalid':
+                        fieldError(`secret-${index}`) ||
+                        (index === 0 && fieldError('secret-0')),
+                    }"
+                    @input="
+                      clearFieldError(`secret-${index}`);
+                      clearFieldError('secret-0');
+                    "
                     placeholder="API_KEY"
                     @blur="entry.key = entry.key.trim().toUpperCase()"
                   /><input
                     v-model="entry.description"
                     class="env-description"
                     placeholder="注释：帮助用户理解该 Secret"
-                  /><span class="compact-switch-cell"><label class="switch"><input v-model="entry.editable" type="checkbox"/><span/></label><em>用户可修改</em></span><span v-if="!entry.editable" class="locked-hint">仅管理员</span
+                  /><span class="compact-switch-cell"
+                    ><label class="switch"
+                      ><input
+                        v-model="entry.editable"
+                        type="checkbox" /><span /></label
+                    ><em>用户可修改</em></span
+                  ><span v-if="!entry.editable" class="locked-hint"
+                    >仅管理员</span
                   ><button
                     type="button"
                     class="icon-action"
@@ -1363,7 +1687,17 @@ function dataPolicyLabel(value?: string) {
                   <Plus :size="15" />依赖
                 </button>
               </div>
-              <div class="option-permission"><label class="switch"><input v-model="versionForm.editableOptions.dependencies" type="checkbox" /><span/></label><em>允许用户调整依赖绑定</em></div>
+              <div class="switch-setting env-global-toggle">
+                <div>
+                  <strong>允许用户调整依赖绑定</strong>
+                  <small>开启后，允许用户在部署应用时覆盖绑定的依赖服务实例</small>
+                </div>
+                <label class="switch"
+                  ><input
+                    v-model="versionForm.editableOptions.dependencies"
+                    type="checkbox" /><span
+                /></label>
+              </div>
               <div class="repeat-list">
                 <div
                   v-for="(dependency, index) in versionForm.dependencies"
@@ -1374,8 +1708,15 @@ function dataPolicyLabel(value?: string) {
                     >依赖标识<input
                       v-model="dependency.key"
                       :data-field="`dependency-${index}-key`"
-                      :class="{ 'field-invalid': fieldError(`dependency-${index}-key`) || (index === 0 && fieldError('dependency-0-key')) }"
-                      @input="clearFieldError(`dependency-${index}-key`); clearFieldError('dependency-0-key')"
+                      :class="{
+                        'field-invalid':
+                          fieldError(`dependency-${index}-key`) ||
+                          (index === 0 && fieldError('dependency-0-key')),
+                      }"
+                      @input="
+                        clearFieldError(`dependency-${index}-key`);
+                        clearFieldError('dependency-0-key');
+                      "
                       required
                       pattern="[a-z][a-z0-9-]{0,31}"
                       placeholder="model-api" /></label
@@ -1393,12 +1734,25 @@ function dataPolicyLabel(value?: string) {
                     >固定服务名<input
                       v-model="dependency.serviceSlug"
                       :data-field="`dependency-${index}-service`"
-                      :class="{ 'field-invalid': fieldError(`dependency-${index}-service`) || (index === 0 && fieldError('dependency-0-service')) }"
-                      @input="clearFieldError(`dependency-${index}-service`); clearFieldError('dependency-0-service')"
+                      :class="{
+                        'field-invalid':
+                          fieldError(`dependency-${index}-service`) ||
+                          (index === 0 && fieldError('dependency-0-service')),
+                      }"
+                      @input="
+                        clearFieldError(`dependency-${index}-service`);
+                        clearFieldError('dependency-0-service');
+                      "
                       required
                       pattern="[a-z0-9][a-z0-9-]{0,62}"
                       placeholder="ollama" /></label
-                  ><span class="compact-switch-cell"><label class="switch"><input v-model="dependency.required" type="checkbox"/><span/></label><em>部署前必须运行</em></span><button
+                  ><span class="compact-switch-cell"
+                    ><label class="switch"
+                      ><input
+                        v-model="dependency.required"
+                        type="checkbox" /><span /></label
+                    ><em>部署前必须运行</em></span
+                  ><button
                     type="button"
                     class="icon-action"
                     title="删除依赖"
@@ -1444,9 +1798,36 @@ function dataPolicyLabel(value?: string) {
                   </option>
                 </select></label
               >
-              <div v-if="versionForm.volumes.length" class="shared-volume-setting">
-                <label>最低共享卷容量 GiB<input v-model.number="versionForm.dataVolumeGiB" data-field="dataVolumeGiB" :class="{ 'field-invalid': fieldError('dataVolumeGiB') }" @input="clearFieldError('dataVolumeGiB')" type="number" min="1" max="16384" step="1" required /><small>所有持久化挂载共享这一个容量额度，只计费一次</small></label>
-                <div class="option-permission"><label class="switch"><input v-model="versionForm.editableOptions.dataVolume" type="checkbox" /><span/></label><em>允许用户提高共享卷容量</em></div>
+              <div
+                v-if="versionForm.volumes.length"
+                class="shared-volume-setting"
+              >
+                <label
+                  >最低共享卷容量 GiB<input
+                    v-model.number="versionForm.dataVolumeGiB"
+                    data-field="dataVolumeGiB"
+                    :class="{ 'field-invalid': fieldError('dataVolumeGiB') }"
+                    @input="clearFieldError('dataVolumeGiB')"
+                    type="number"
+                    min="1"
+                    max="16384"
+                    step="1"
+                    required
+                  /><small
+                    >所有持久化挂载共享这一个容量额度，只计费一次</small
+                  ></label
+                >
+                <div class="switch-setting env-global-toggle">
+                  <div>
+                    <strong>允许用户提高共享卷容量</strong>
+                    <small>开启后，允许用户在部署应用时增加此实例的持久化挂载卷额度</small>
+                  </div>
+                  <label class="switch"
+                    ><input
+                      v-model="versionForm.editableOptions.dataVolume"
+                      type="checkbox" /><span
+                  /></label>
+                </div>
               </div>
               <div class="repeat-list volume-list">
                 <div
@@ -1492,7 +1873,8 @@ function dataPolicyLabel(value?: string) {
               </div>
               <div class="config-grid three">
                 <label class="aligned-config-field"
-                  ><span>容器内网监听端口</span><input
+                  ><span>容器内网监听端口</span
+                  ><input
                     v-model.number="versionForm.containerPort"
                     data-field="containerPort"
                     :class="{ 'field-invalid': fieldError('containerPort') }"
@@ -1506,15 +1888,18 @@ function dataPolicyLabel(value?: string) {
                     >必须与镜像进程实际监听端口一致；它不是宿主机映射端口。平台会用此端口执行健康检查、内网转发和同用户容器互访</small
                   ></label
                 ><label class="aligned-config-field"
-                  ><span>内部 Base Path</span><input
+                  ><span>内部 Base Path</span
+                  ><input
                     v-model="versionForm.basePath"
                     data-field="basePath"
                     :class="{ 'field-invalid': fieldError('basePath') }"
                     @input="clearFieldError('basePath')"
                     required
-                    placeholder="/" /><small>应用在容器内部响应请求的基础路径</small></label
+                    placeholder="/"
+                  /><small>应用在容器内部响应请求的基础路径</small></label
                 ><label class="aligned-config-field"
-                  ><span>Cookie Path</span><input
+                  ><span>Cookie Path</span
+                  ><input
                     v-model="versionForm.cookiePath"
                     placeholder="/"
                   /><small>留空不改写 Cookie Path</small></label
@@ -1526,12 +1911,44 @@ function dataPolicyLabel(value?: string) {
                 同时会在宿主机直接发布容器内网端口，两种访问方式并存。
               </p>
               <div class="toggle-grid">
-                <div class="switch-setting"><div><strong>移除平台应用前缀</strong></div><label class="switch"><input v-model="versionForm.stripPrefix" type="checkbox" @change="applyPrefixMode"/><span/></label></div>
-                <div class="switch-setting"><div><strong>允许 WebSocket</strong></div><label class="switch"><input v-model="versionForm.websocket" type="checkbox"/><span/></label></div>
-                <div class="switch-setting"><div><strong>允许 SSE 流式响应</strong></div><label class="switch"><input v-model="versionForm.sse" type="checkbox"/><span/></label></div>
+                <div class="switch-setting">
+                  <div><strong>移除平台应用前缀</strong></div>
+                  <label class="switch"
+                    ><input
+                      v-model="versionForm.stripPrefix"
+                      type="checkbox"
+                      @change="applyPrefixMode" /><span
+                  /></label>
+                </div>
+                <div class="switch-setting">
+                  <div><strong>允许 WebSocket</strong></div>
+                  <label class="switch"
+                    ><input
+                      v-model="versionForm.websocket"
+                      type="checkbox" /><span
+                  /></label>
+                </div>
+                <div class="switch-setting">
+                  <div><strong>允许 SSE 流式响应</strong></div>
+                  <label class="switch"
+                    ><input v-model="versionForm.sse" type="checkbox" /><span
+                  /></label>
+                </div>
               </div>
               <div class="port-mapping-row">
-                <div class="switch-setting"><div><strong>允许用户开启端口映射</strong><small>开启后用户可在部署时为实例选择直连访问，端口每次部署由系统自动分配</small></div><label class="switch"><input v-model="versionForm.portMappingAvailable" type="checkbox"/><span/></label></div>
+                <div class="switch-setting">
+                  <div>
+                    <strong>允许用户开启端口映射</strong
+                    ><small
+                      >开启后用户可在部署时为实例选择直连访问，端口每次部署由系统自动分配</small
+                    >
+                  </div>
+                  <label class="switch"
+                    ><input
+                      v-model="versionForm.portMappingAvailable"
+                      type="checkbox" /><span
+                  /></label>
+                </div>
               </div>
             </section>
             <section class="config-section">
@@ -1544,12 +1961,14 @@ function dataPolicyLabel(value?: string) {
               </div>
               <div class="config-grid four health-grid">
                 <label class="aligned-config-field"
-                  ><span>检查路径</span><input
+                  ><span>检查路径</span
+                  ><input
                     v-model="versionForm.healthPath"
                     placeholder="/health"
                   /><small>留空仅检查容器运行状态</small></label
                 ><label class="aligned-config-field"
-                  ><span>检查间隔（秒）</span><input
+                  ><span>检查间隔（秒）</span
+                  ><input
                     v-model.number="versionForm.intervalSeconds"
                     data-field="intervalSeconds"
                     :class="{ 'field-invalid': fieldError('intervalSeconds') }"
@@ -1558,9 +1977,11 @@ function dataPolicyLabel(value?: string) {
                     min="1"
                     max="120"
                     step="1"
-                    required /><small>两次健康检查之间的等待时间</small></label
+                    required
+                  /><small>两次健康检查之间的等待时间</small></label
                 ><label class="aligned-config-field"
-                  ><span>超时（秒）</span><input
+                  ><span>超时（秒）</span
+                  ><input
                     v-model.number="versionForm.timeoutSeconds"
                     data-field="timeoutSeconds"
                     :class="{ 'field-invalid': fieldError('timeoutSeconds') }"
@@ -1570,9 +1991,10 @@ function dataPolicyLabel(value?: string) {
                     max="30"
                     step="1"
                     required
-                /><small>单次健康检查允许的最长响应时间</small></label
+                  /><small>单次健康检查允许的最长响应时间</small></label
                 ><label class="aligned-config-field"
-                  ><span>额外成功状态码</span><input
+                  ><span>额外成功状态码</span
+                  ><input
                     v-model="versionForm.acceptedStatusCodes"
                     data-field="acceptedStatusCodes"
                     :class="{
@@ -1594,7 +2016,10 @@ function dataPolicyLabel(value?: string) {
               >
                 重置</button
               ><button class="primary compact" :disabled="busy === 'version'">
-                <Save v-if="editingVersion" :size="16" /><Plus v-else :size="16" />{{ editingVersion ? "保存为新版本" : "创建" }}
+                <Save v-if="editingVersion" :size="16" /><Plus
+                  v-else
+                  :size="16"
+                />{{ editingVersion ? "保存为新版本" : "创建" }}
               </button>
             </div>
           </form>
@@ -1618,16 +2043,23 @@ function dataPolicyLabel(value?: string) {
             ]"
             @click="toggleVersion(item)"
           >
-            <span class="version-number">{{ item.versionLabel || `v${item.version}` }}</span>
+            <span class="version-number">{{
+              item.versionLabel || `v${item.version}`
+            }}</span>
             <div class="version-copy">
-              <strong>版本 {{ item.version }} · {{ item.imageDigest.split("@")[0] }}</strong>
+              <strong
+                >版本 {{ item.version }} ·
+                {{ item.imageDigest.split("@")[0] }}</strong
+              >
               <small v-if="expandedVersions.has(item.id)"
                 >最低 {{ item.runtimeSpec.cpuCores || 1 }} 核 ·
                 {{ item.runtimeSpec.memoryMiB || 512 }} MiB · 容器内网端口
                 {{ item.routeSpec.containerPort || 8080 }} ·
                 {{ dataPolicyLabel(item.updateSpec?.dataPolicy) }}</small
               >
-              <small v-if="expandedVersions.has(item.id)" class="digest-copy">{{ item.imageDigest }}</small>
+              <small v-if="expandedVersions.has(item.id)" class="digest-copy">{{
+                item.imageDigest
+              }}</small>
             </div>
             <div class="version-state">
               <LoaderCircle
@@ -1671,19 +2103,29 @@ function dataPolicyLabel(value?: string) {
                 <Rocket :size="16" />发布
               </button>
               <button
-                v-else-if="item.publishedAt && selectedProduct.status !== 'retired'"
+                v-else-if="
+                  item.publishedAt && selectedProduct.status !== 'retired'
+                "
                 class="secondary compact"
                 type="button"
                 @click="loadVersionIntoEditor(item)"
-              ><Pencil :size="15" />载入编辑</button>
+              >
+                <Pencil :size="15" />载入编辑
+              </button>
               <button
                 v-if="!isTestRunning(item)"
                 class="icon-action stop-action"
                 type="button"
                 :disabled="busy === 'archive-' + item.id"
-                :title="item.releaseCount ? '删除版本（实例仍可管理）' : '彻底删除版本'"
+                :title="
+                  item.releaseCount
+                    ? '删除版本（实例仍可管理）'
+                    : '彻底删除版本'
+                "
                 @click="archiveVersion(item)"
-              ><Trash2 :size="16" /></button>
+              >
+                <Trash2 :size="16" />
+              </button>
               <Archive
                 v-else-if="selectedProduct.status === 'retired'"
                 class="quiet"
@@ -1691,11 +2133,18 @@ function dataPolicyLabel(value?: string) {
                 aria-label="产品已下架"
               />
             </div>
-            <ChevronDown :class="['version-chevron', expandedVersions.has(item.id) && 'open']" :size="18" />
+            <ChevronDown
+              :class="[
+                'version-chevron',
+                expandedVersions.has(item.id) && 'open',
+              ]"
+              :size="18"
+            />
             <p
               v-if="
                 expandedVersions.has(item.id) &&
-                item.latestTest?.state === 'failed' && item.latestTest.lastError
+                item.latestTest?.state === 'failed' &&
+                item.latestTest.lastError
               "
               class="version-error"
             >
@@ -1709,10 +2158,76 @@ function dataPolicyLabel(value?: string) {
       </div>
     </div>
     <Transition name="modal-pop">
-      <div v-if="showCreateProduct" class="modal-backdrop" @click.self="showCreateProduct=false">
-        <section class="secret-dialog product-create-dialog" role="dialog" aria-modal="true" aria-labelledby="create-product-title">
-          <header><div><p class="eyebrow">应用目录</p><h2 id="create-product-title">创建产品</h2></div><button class="icon-action" type="button" @click="showCreateProduct=false"><X :size="18"/></button></header>
-          <form @invalid.capture="handleInvalid" @submit.prevent="createProduct"><p class="product-create-note">这里只建立产品目录。创建完成后会立即进入该产品的版本配置，不会停留在当前弹窗。</p><label>产品名称<input v-model="product.name" data-field="productName" :class="{ 'field-invalid': fieldError('productName') }" @input="clearFieldError('productName')" required maxlength="120" placeholder="SillyTavern"/><small v-if="fieldError('productName')" class="field-error">{{ fieldError('productName') }}</small></label><label>产品标识<input v-model="product.slug" data-field="productSlug" :class="{ 'field-invalid': fieldError('productSlug') }" @input="clearFieldError('productSlug')" @blur="product.slug = product.slug.trim().toLowerCase()" required maxlength="63" pattern="[a-z0-9][a-z0-9-]{0,62}" placeholder="sillytavern"/><small v-if="fieldError('productSlug')" class="field-error">{{ fieldError('productSlug') }}</small></label><div class="deploy-dialog-actions"><button type="button" class="secondary compact" @click="showCreateProduct=false">取消</button><button class="primary compact" :disabled="busy==='product'"><Save :size="16"/>创建并填写版本</button></div></form>
+      <div
+        v-if="showCreateProduct"
+        class="modal-backdrop"
+        @click.self="showCreateProduct = false"
+      >
+        <section
+          class="secret-dialog product-create-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="create-product-title"
+        >
+          <header>
+            <div>
+              <p class="eyebrow">应用目录</p>
+              <h2 id="create-product-title">创建产品</h2>
+            </div>
+            <button
+              class="icon-action"
+              type="button"
+              @click="showCreateProduct = false"
+            >
+              <X :size="18" />
+            </button>
+          </header>
+          <form
+            @invalid.capture="handleInvalid"
+            @submit.prevent="createProduct"
+          >
+            <p class="product-create-note">
+              这里只建立产品目录。创建完成后会立即进入该产品的版本配置，不会停留在当前弹窗。
+            </p>
+            <label
+              >产品名称<input
+                v-model="product.name"
+                data-field="productName"
+                :class="{ 'field-invalid': fieldError('productName') }"
+                @input="clearFieldError('productName')"
+                required
+                maxlength="120"
+                placeholder="SillyTavern"
+              /><small v-if="fieldError('productName')" class="field-error">{{
+                fieldError("productName")
+              }}</small></label
+            ><label
+              >产品标识<input
+                v-model="product.slug"
+                data-field="productSlug"
+                :class="{ 'field-invalid': fieldError('productSlug') }"
+                @input="clearFieldError('productSlug')"
+                @blur="product.slug = product.slug.trim().toLowerCase()"
+                required
+                maxlength="63"
+                pattern="[a-z0-9][a-z0-9-]{0,62}"
+                placeholder="sillytavern"
+              /><small v-if="fieldError('productSlug')" class="field-error">{{
+                fieldError("productSlug")
+              }}</small></label
+            >
+            <div class="deploy-dialog-actions">
+              <button
+                type="button"
+                class="secondary compact"
+                @click="showCreateProduct = false"
+              >
+                取消</button
+              ><button class="primary compact" :disabled="busy === 'product'">
+                <Save :size="16" />创建并填写版本
+              </button>
+            </div>
+          </form>
         </section>
       </div>
     </Transition>
@@ -1824,7 +2339,16 @@ function dataPolicyLabel(value?: string) {
         <label
           >产品名称<input v-model="editName" required maxlength="120"
         /></label>
-        <label>产品图标 URL<input v-model.trim="editIconURL" type="url" maxlength="2048" placeholder="https://example.com/icon.png" /><small>建议使用正方形 PNG、WebP 或 SVG；留空使用默认应用图标</small></label>
+        <label
+          >产品图标 URL<input
+            v-model.trim="editIconURL"
+            type="url"
+            maxlength="2048"
+            placeholder="https://example.com/icon.png"
+          /><small
+            >建议使用正方形 PNG、WebP 或 SVG；留空使用默认应用图标</small
+          ></label
+        >
         <label
           >产品标识<input :value="editingProduct.slug" disabled /><small
             >标识用于应用路径和历史引用，创建后保持不变</small
@@ -1917,11 +2441,29 @@ function dataPolicyLabel(value?: string) {
       </div>
     </section>
   </div>
-  <div v-if="showTemplateExample" class="modal-backdrop" @click.self="showTemplateExample = false">
+  <div
+    v-if="showTemplateExample"
+    class="modal-backdrop"
+    @click.self="showTemplateExample = false"
+  >
     <section class="modal template-example-modal">
-      <header><div><p class="eyebrow">产品模板</p><h2>完整示例</h2></div><button class="icon-action" @click="showTemplateExample = false"><X :size="18" /></button></header>
+      <header>
+        <div>
+          <p class="eyebrow">产品模板</p>
+          <h2>完整示例</h2>
+        </div>
+        <button class="icon-action" @click="showTemplateExample = false">
+          <X :size="18" />
+        </button>
+      </header>
       <pre>{{ templateExampleWithIcon }}</pre>
-      <div class="builder-actions"><button class="secondary compact" @click="downloadTemplateExample">下载 JSON</button><button class="primary compact" @click="copyTemplateExample">复制示例</button></div>
+      <div class="builder-actions">
+        <button class="secondary compact" @click="downloadTemplateExample">
+          下载 JSON</button
+        ><button class="primary compact" @click="copyTemplateExample">
+          复制示例
+        </button>
+      </div>
     </section>
   </div>
 </template>

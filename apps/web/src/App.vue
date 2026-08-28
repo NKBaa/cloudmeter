@@ -1,5 +1,12 @@
 <script setup lang="ts">
-import { RouterView } from 'vue-router'
+import { onMounted } from "vue";
+import { RouterView } from "vue-router";
+import { useSiteConfig } from "./site-config";
+
+const { fetchSiteConfig } = useSiteConfig();
+onMounted(() => {
+  fetchSiteConfig();
+});
 </script>
 <template>
   <RouterView v-slot="{ Component, route }">

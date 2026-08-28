@@ -5,7 +5,10 @@
 .tools
 node_modules
 apps/web/node_modules
-apps/web/dist
 apps/web/*.tsbuildinfo
 references
 *.log
+_shots
+_wsl_backup*
+artifacts
+tmp

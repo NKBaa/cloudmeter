@@ -56,7 +56,7 @@ docker run --rm -v "${Root}:/work" -w /work node:24-alpine npx --yes '@redocly/c
 if ($LASTEXITCODE -ne 0) { throw "OpenAPI schema validation failed" }
 & $Compose[0] $Compose[1..($Compose.Length-1)] restart api worker egress-proxy app-router web gateway
 if ($LASTEXITCODE -ne 0) { throw "service restart failed" }
-foreach ($service in @("api", "app-router", "egress-proxy")) {
+foreach ($service in @("api", "app-router", "egress-proxy", "web", "gateway")) {
     $containerID = (& $Compose[0] $Compose[1..($Compose.Length-1)] ps -q $service).Trim()
     if (-not $containerID) { throw "$service container is not running" }
     $serviceHealth = ""
