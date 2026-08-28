@@ -5,6 +5,16 @@ info:
 servers:
   - url: /api
 paths:
+  /system/settings:
+    get:
+      operationId: getSystemSettingsPublic
+      responses:
+        '200': {description: Public platform branding, content, server address, and application domain settings}
+  /pricing:
+    get:
+      operationId: getPricingPublic
+      responses:
+        '200': {description: Current public unit prices keyed by usage code}
   /faqs:
     get:
       operationId: listFAQs
@@ -243,6 +253,12 @@ paths:
       responses:
         '200': {description: Cursor-paginated immutable audit records}
         '403': {description: Super administrator required}
+  /admin/audit-logs/clear:
+    post:
+      operationId: clearAuditLogs
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: Audit log records cleared by a super administrator}
   /billing/summary:
     get:
       operationId: billingSummary
@@ -261,6 +277,12 @@ paths:
       security: [{bearerAuth: []}]
       responses:
         '200': {description: Usage windows with billing status; windows without a price are sealed as unpriced and are never charged retroactively}
+  /billing/daily-bills:
+    get:
+      operationId: billingDailyBills
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: Daily usage charges grouped for the current user}
   /billing/bills:
     get:
       operationId: listBillingStatements
@@ -791,6 +813,18 @@ paths:
         '200': {description: Registration policy updated}
         '400': {description: Email domain whitelist contains an invalid domain}
         '409': {description: Email verification requires a saved and enabled SMTP configuration}
+  /admin/settings/system:
+    get:
+      operationId: getSystemSettings
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: Complete platform settings for administrators}
+    put:
+      operationId: updateSystemSettings
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: Platform settings saved and application public routes synchronized}
+        '400': {description: Invalid platform URL, application domain, or system name}
   /admin/settings/turnstile:
     get:
       operationId: getTurnstileSettings
@@ -825,6 +859,24 @@ paths:
       security: [{bearerAuth: []}]
       responses:
         '200': {description: "Updated runtime log retention policy"}
+  /admin/settings/ai-support:
+    get:
+      operationId: getAISupportSettings
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: AI support settings with the API key redacted}
+    put:
+      operationId: updateAISupportSettings
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: AI support settings updated}
+  /admin/settings/ai-support/test:
+    post:
+      operationId: testAISupportSettings
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: AI model connection test succeeded}
+        '400': {description: AI model connection test failed}
   /admin/logs/clear:
     post:
       operationId: clearRuntimeLogs
@@ -998,22 +1050,6 @@ paths:
       responses:
         '200': {description: Daily check-in settings updated}
         '400': {description: Invalid reward range}
-  /admin/settings/homepage:
-    put:
-      operationId: updateHomepage
-      security: [{bearerAuth: []}]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [contentHtml]
-              properties:
-                contentHtml: {type: string, maxLength: 100000}
-      responses:
-        '200': {description: Homepage content updated}
-        '400': {description: Invalid homepage content}
   /admin/settings/payments/{provider}:
     put:
       operationId: updatePaymentSettings
@@ -1209,6 +1245,15 @@ paths:
       responses:
         '200': {description: Ticket closed by its owner}
         '404': {description: "Ticket not found, not owned, or already closed"}
+  /tickets/{ticketID}/escalate:
+    post:
+      operationId: escalateTicket
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: ticketID, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200': {description: Ticket escalated from AI support to a human agent}
+        '404': {description: Ticket not found or not owned by the current user}
   /admin/settings/docker:
     get:
       operationId: getDockerSettings

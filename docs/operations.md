@@ -2,7 +2,7 @@
 
 ## 首次部署
 
-复制 `configs/.env.example` 为根目录 `.env`，替换密码和令牌。`PUBLIC_BASE_URL` 必须设置为用户实际访问平台的 HTTP(S) 源地址，例如 `https://cloud.example.com`；它只允许协议、主机和可选端口，不能包含路径、查询或片段。`PLATFORM_ALLOWED_HOST` 填同一地址的纯主机名 `cloud.example.com`，不能带协议、端口或路径。`GATEWAY_TRUSTED_PROXY_CIDRS` 是允许向平台入口提供 `X-Forwarded-*` 的外部 OpenResty 源网段；同机 Docker 发布端口通常可从 `172.16.0.0/12` 起步并根据实际 bridge 地址收窄。`API_TRUSTED_PROXY_CIDRS` 仅覆盖内部 Caddy 网络。执行 `docker compose --env-file .env -f deploy/compose.yaml up -d --build`，然后打开 `/setup`，仅填写管理员姓名、邮箱和密码来创建唯一超级管理员。初始化成功后页面会直接进入已登录的管理后台。
+复制 `configs/.env.example` 为根目录 `.env`，替换密码和令牌。`PUBLIC_BASE_URL` 必须设置为用户实际访问平台的 HTTP(S) 源地址，例如 `https://cloud.example.com`；它只允许协议、主机和可选端口，不能包含路径、查询或片段。`PLATFORM_ALLOWED_HOST` 填同一地址的纯主机名 `cloud.example.com`，不能带协议、端口或路径。应用泛子域名是独立配置：初始化后在“系统设置”中填写例如 `apps.example.com`，并将 `*.apps.example.com` 泛解析到网关；它不需要与主系统 Host 相同。`GATEWAY_TRUSTED_PROXY_CIDRS` 是允许向平台入口提供 `X-Forwarded-*` 的外部 OpenResty 源网段；同机 Docker 发布端口通常可从 `172.16.0.0/12` 起步并根据实际 bridge 地址收窄。`API_TRUSTED_PROXY_CIDRS` 仅覆盖内部 Caddy 网络。执行 `docker compose --env-file .env -f deploy/compose.yaml up -d --build`，然后打开 `/setup`，仅填写管理员姓名、邮箱和密码来创建唯一超级管理员。初始化成功后页面会直接进入已登录的管理后台。
 
 需要实际创建用户应用时，将 `DOCKER_EXECUTOR_ENABLED=true`，并确认 `DOCKER_SOCKET_PATH` 指向 Docker Engine Socket；Socket 只挂载到 Worker，API、Web、Router 和用户容器不会获得该权限。
 

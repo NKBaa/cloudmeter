@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"crypto/sha256"
 	"net/http"
 	"strings"
 	"time"
@@ -9,9 +10,9 @@ import (
 )
 
 const appAccessCookie = "cloudmeter_app_access"
+const appAccessGrantTTL = 15 * time.Minute
 
 // createAppAccess lets a browser navigation authenticate to the application
-// gateway without exposing the bearer token to the proxied user container.
 func (s *Server) createAppAccess(w http.ResponseWriter, r *http.Request) {
 	p, _ := r.Context().Value(principalKey).(principal)
 	appID := r.PathValue("appID")
@@ -26,6 +27,38 @@ func (s *Server) createAppAccess(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, err)
 		return
 	}
+	if strings.HasPrefix(publicPath, "//") {
+		grant, err := randomToken(32)
+		if err != nil {
+			s.internalError(w, err)
+			return
+		}
+		grantHash := sha256.Sum256([]byte(grant))
+		expiresAt := time.Now().Add(appAccessGrantTTL)
+		tx, err := s.db.Begin(r.Context())
+		if err != nil {
+			s.internalError(w, err)
+			return
+		}
+		defer tx.Rollback(r.Context())
+		if _, err = tx.Exec(r.Context(), "DELETE FROM app_access_grants WHERE expires_at<=now()"); err != nil {
+			s.internalError(w, err)
+			return
+		}
+		if _, err = tx.Exec(r.Context(), `INSERT INTO app_access_grants(token_hash,user_id,user_app_id,expires_at) VALUES($1,$2,$3,$4)`, grantHash[:], p.ID, appID, expiresAt); err != nil {
+			s.internalError(w, err)
+			return
+		}
+		if err = tx.Commit(r.Context()); err != nil {
+			s.internalError(w, err)
+			return
+		}
+		launchURL := strings.TrimSuffix(publicPath, "/") + "/.cloudmeter/access?grant=" + grant
+		w.Header().Set("Cache-Control", "no-store")
+		writeJSON(w, http.StatusOK, map[string]any{"publicPath": launchURL, "expiresInSeconds": int(appAccessGrantTTL.Seconds())})
+		return
+	}
+
 	auth := strings.TrimSpace(r.Header.Get("Authorization"))
 	token := strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
 	if token == "" {
@@ -33,7 +66,7 @@ func (s *Server) createAppAccess(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	secure := strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https")
-	http.SetCookie(w, &http.Cookie{Name: appAccessCookie, Value: token, Path: "/apps/", HttpOnly: true, Secure: secure, SameSite: http.SameSiteLaxMode, MaxAge: 900, Expires: time.Now().Add(15 * time.Minute)})
+	http.SetCookie(w, &http.Cookie{Name: appAccessCookie, Value: token, Path: "/apps/", HttpOnly: true, Secure: secure, SameSite: http.SameSiteLaxMode, MaxAge: int(appAccessGrantTTL.Seconds()), Expires: time.Now().Add(appAccessGrantTTL)})
 	w.Header().Set("Cache-Control", "no-store")
-	writeJSON(w, http.StatusOK, map[string]any{"publicPath": publicPath, "expiresInSeconds": 900})
+	writeJSON(w, http.StatusOK, map[string]any{"publicPath": publicPath, "expiresInSeconds": int(appAccessGrantTTL.Seconds())})
 }

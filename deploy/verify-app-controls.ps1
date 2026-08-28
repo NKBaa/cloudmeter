@@ -144,6 +144,50 @@ function Wait-HttpStatus([string]$Uri, [int]$Expected, [int]$Seconds = 45) {
     throw "timed out waiting for HTTP $Expected at $Uri; last status was $lastStatus"
 }
 
+$script:AppWebSession = New-Object Microsoft.PowerShell.Commands.WebRequestSession
+$script:AppHost = ''
+
+function Initialize-AppAccess([string]$AppID, [hashtable]$Headers) {
+    $access = Invoke-Json POST "$Api/apps/$AppID/access" $Headers '{}'
+    if ($access.StatusCode -ne 200 -or -not $access.Body.publicPath) { throw 'application access grant failed' }
+    $launch = [string]$access.Body.publicPath
+    if ($launch.StartsWith('//')) {
+        $target = [Uri]("http:$launch")
+        $script:AppHost = $target.Host
+        Invoke-WebRequest -UseBasicParsing -Uri "$BaseUrl$($target.PathAndQuery)" -Headers @{ Host = $script:AppHost } -WebSession $script:AppWebSession | Out-Null
+        return
+    }
+    $script:AppHost = ''
+    Invoke-WebRequest -UseBasicParsing -Method POST -Uri "$Api/apps/$AppID/access" -Headers $Headers -ContentType 'application/json' -Body '{}' -WebSession $script:AppWebSession | Out-Null
+}
+
+function Get-AppHttpStatus([string]$PublicPath) {
+    $uri = "$BaseUrl$PublicPath"
+    $headers = $null
+    if ($PublicPath.StartsWith('//')) {
+        $target = [Uri]("http:$PublicPath")
+        $uri = "$BaseUrl$($target.PathAndQuery)"
+        $headers = @{ Host = $target.Host }
+    }
+    try {
+        return [int](Invoke-WebRequest -UseBasicParsing -Uri $uri -Headers $headers -WebSession $script:AppWebSession).StatusCode
+    } catch {
+        if (-not $_.Exception.Response) { throw }
+        return [int]$_.Exception.Response.StatusCode
+    }
+}
+
+function Wait-AppHttpStatus([string]$PublicPath, [int]$Expected, [int]$Seconds = 45) {
+    $deadline = (Get-Date).AddSeconds($Seconds)
+    $lastStatus = 0
+    do {
+        $lastStatus = Get-AppHttpStatus $PublicPath
+        if ($lastStatus -eq $Expected) { return }
+        Start-Sleep -Milliseconds 500
+    } while ((Get-Date) -lt $deadline)
+    throw "timed out waiting for HTTP $Expected at $PublicPath; last status was $lastStatus"
+}
+
 function Stop-Worker {
     if (-not $script:WorkerStopped) {
         & $Compose[0] $Compose[1..($Compose.Length - 1)] stop worker | Out-Null
@@ -226,9 +270,19 @@ $volume = ''
 $backupID = ''
 $backupStorageKey = ''
 $restoreID = ''
+$originalSystemSettingsBody = ''
 $script:WorkerStopped = $false
 
 try {
+    $systemSettings = Invoke-Json GET "$Api/admin/settings/system" $adminHeaders
+    if ($systemSettings.StatusCode -ne 200) { throw 'system settings lookup failed' }
+    $systemSettings.Body.PSObject.Properties.Remove('updatedAt')
+    $originalSystemSettingsBody = $systemSettings.Body | ConvertTo-Json -Depth 5 -Compress
+    $systemSettings.Body.serverUrl = $BaseUrl
+    $systemSettings.Body.appBaseDomain = 'apps.cloudmeter.test'
+    $systemSettingsUpdate = Invoke-Json PUT "$Api/admin/settings/system" $adminHeaders ($systemSettings.Body | ConvertTo-Json -Depth 5 -Compress)
+    if ($systemSettingsUpdate.StatusCode -ne 200) { throw 'system route settings update failed' }
+
     $product = (Invoke-Json POST "$Api/admin/products" $adminHeaders (@{ slug = "verify-control-$marker"; name = "Application control $marker" } | ConvertTo-Json -Compress))
     if ($product.StatusCode -ne 201) { throw "product creation failed: $($product.StatusCode) $($product.ErrorCode)" }
     $productID = $product.Body.id
@@ -302,7 +356,8 @@ try {
     $container = Invoke-Db "SELECT upstream_container FROM app_routes WHERE user_app_id='$appID'"
     $publicPath = Invoke-Db "SELECT public_path FROM app_routes WHERE user_app_id='$appID'"
     if (-not $container -or -not (Test-DockerObjectExists @('container', 'inspect', $container))) { throw "runtime container was not created: [$container]" }
-    if ((Invoke-Json GET "$BaseUrl$publicPath").StatusCode -ne 200) { throw 'running application route is unavailable' }
+    Initialize-AppAccess $appID $userHeaders
+    if ((Get-AppHttpStatus $publicPath) -ne 200) { throw 'running application route is unavailable' }
     Assert-DbRejected "UPDATE users SET slug=slug || '-changed' WHERE id='$userID'" 'user public identity is immutable'
     Assert-DbRejected "UPDATE user_apps SET slug=slug || '-changed' WHERE id='$appID'" 'user application identity is immutable'
     Assert-DbRejected "INSERT INTO users(email,password_hash,display_name,slug) VALUES('invalid-slug-$marker@example.invalid','invalid','Invalid slug','INVALID_$marker')" 'users_slug_format_check'
@@ -315,7 +370,7 @@ try {
     Assert-DbRejected "UPDATE app_routes SET upstream_container='cm-00000000000-$appID-$sourceRelease' WHERE user_app_id='$appID'" 'application route container does not match instance and release identity'
     & $Compose[0] $Compose[1..($Compose.Length - 1)] up -d --no-build --force-recreate --no-deps app-router | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'failed to recreate the application router' }
-    Wait-HttpStatus "$BaseUrl$publicPath" 200
+    Wait-AppHttpStatus $publicPath 200
     $volume = Get-AppVolumeName $RuntimeOwner $appID 'data'
     if (-not (Test-DockerObjectExists @('volume', 'inspect', $volume))) { throw 'persistent application volume was not created' }
     $volumeOwner = ((& docker volume inspect --format '{{json .Labels}}' $volume) | ConvertFrom-Json).'cloudmeter.owner'
@@ -365,7 +420,7 @@ try {
     if ($stop.StatusCode -ne 202 -or $stop.Body.status -ne 'stopping') { throw 'stop request was not accepted' }
     if ((Invoke-Db "SELECT status FROM user_apps WHERE id='$appID'") -ne 'stopping') { throw 'application did not enter stopping state' }
     if ((Invoke-Db "SELECT count(*) FROM app_routes WHERE user_app_id='$appID'") -ne '0') { throw 'public route was not removed atomically' }
-    if ((Invoke-Json GET "$BaseUrl$publicPath").StatusCode -ne 404) { throw 'stopped application route did not return 404 immediately' }
+    if ((Get-AppHttpStatus $publicPath) -ne 404) { throw 'stopped application route did not return 404 immediately' }
     if (-not (Test-DockerObjectExists @('container', 'inspect', $container))) { throw 'container disappeared before the queued stop task ran' }
     $stopReplay = Invoke-Json POST "$Api/apps/$appID/stop" $userHeaders (@{ idempotencyKey = $stopKey } | ConvertTo-Json -Compress)
     if ($stopReplay.StatusCode -ne 200 -or $stopReplay.Body.stopJobId -ne $stop.Body.stopJobId) { throw 'stop idempotency replay failed' }
@@ -376,11 +431,6 @@ try {
     Wait-Db "SELECT status FROM app_stop_jobs WHERE id='$($stop.Body.stopJobId)'" 'succeeded'
     if (Test-DockerObjectExists @('container', 'inspect', $container)) { throw 'stopped application container still exists' }
     if (-not (Test-DockerObjectExists @('volume', 'inspect', $volume))) { throw 'persistent volume was removed while stopping' }
-
-    $updateWhileStopped = Invoke-Json POST "$Api/apps/$appID/releases" $userHeaders (@{ versionId = $versionID; idempotencyKey = "control-stopped-update/$marker" } | ConvertTo-Json -Compress)
-    if ($updateWhileStopped.StatusCode -ne 409 -or $updateWhileStopped.ErrorCode -ne 'app_not_running') { throw 'stopped application accepted an update' }
-    $rollbackWhileStopped = Invoke-Json POST "$Api/apps/$appID/rollback" $userHeaders (@{ releaseId = $sourceRelease; idempotencyKey = "control-stopped-rollback/$marker" } | ConvertTo-Json -Compress)
-    if ($rollbackWhileStopped.StatusCode -ne 409 -or $rollbackWhileStopped.ErrorCode -ne 'app_not_running') { throw 'stopped application accepted a rollback' }
 
     $startKey = "control-start/$marker"
     $start = Invoke-Json POST "$Api/apps/$appID/start" $userHeaders (@{ idempotencyKey = $startKey } | ConvertTo-Json -Compress)
@@ -396,7 +446,7 @@ try {
     if (-not $newContainer -or $newContainer -eq $container -or -not (Test-DockerObjectExists @('container', 'inspect', $newContainer))) { throw 'start did not create a new runtime container' }
     $storedMarker = ((& docker exec $newContainer cat /data/lifecycle-marker) -as [string]).Trim()
     if ($storedMarker -ne $marker) { throw 'persistent volume contents were not preserved across stop and start' }
-    if ((Invoke-Json GET "$BaseUrl$publicPath").StatusCode -ne 200) { throw 'application route was not restored after start' }
+    if ((Get-AppHttpStatus $publicPath) -ne 200) { throw 'application route was not restored after start' }
     $startReplay = Invoke-Json POST "$Api/apps/$appID/start" $userHeaders (@{ idempotencyKey = $startKey } | ConvertTo-Json -Compress)
     if ($startReplay.StatusCode -ne 200 -or $startReplay.Body.jobId -ne $start.Body.jobId) { throw 'start idempotency replay failed' }
 
@@ -418,6 +468,9 @@ try {
     Write-Host 'Application backup/restore history integrity, immutable Release and Secret history, owner-scoped storage, helper cleanup, stop/start route removal, idempotency, persistent volume retention, lifecycle guards and no-charge restart verification passed'
 } finally {
     try { Start-Worker } catch { }
+    if ($originalSystemSettingsBody) {
+        try { Invoke-Json PUT "$Api/admin/settings/system" $adminHeaders $originalSystemSettingsBody | Out-Null } catch { }
+    }
     if ($backupStorageKey -and $BackupVolume) {
         try { & docker run --rm -v "${BackupVolume}:/backup" $Image sh -c "rm -f -- /backup/$backupStorageKey" *> $null } catch { }
     }

@@ -1745,7 +1745,7 @@ func processOne(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
 		// host port path through the default bridge.
 		if healthy && executor != nil && state == domain.DeploymentChecking {
 			var routeSpec struct {
-				Route map[string]any `json:"route_spec"`
+				Route  map[string]any `json:"route_spec"`
 				Health map[string]any `json:"health_spec"`
 			}
 			if json.Unmarshal(snapshot, &routeSpec) == nil && routePortMappingAvailableWorker(routeSpec.Route) {
@@ -1754,20 +1754,22 @@ func processOne(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
 				var hostPort int
 				_ = tx.QueryRow(ctx, `SELECT coalesce(host_port,0) FROM app_releases WHERE id=$1 AND user_app_id=$2`, releaseID, appID).Scan(&hostPort)
 				if portMappingOn && hostPort >= 1 && hostPort <= 65535 {
-					gateway, gwErr := executor.NetworkGateway(ctx, "bridge")
-					if gwErr != nil || gateway == "" {
-						healthy = false
-						healthFailure = "public port check failed: could not resolve host gateway"
-					} else {
-						publicTarget := fmt.Sprintf("http://%s:%d%s", gateway, hostPort, healthPathOrRoot(routeSpec.Health))
-						probeName := healthProbeName(id) + "-pub"
-						probeCtx, cancel := context.WithTimeout(ctx, time.Duration(healthTimeout(routeSpec.Health)+5)*time.Second)
-						probeErr := executor.ProbeHTTP(probeCtx, probeName, backupHelperImage, "bridge", publicTarget, healthTimeout(routeSpec.Health), healthAcceptedStatusCodes(routeSpec.Health))
-						cancel()
-						if probeErr != nil {
+					if path, ok := healthPath(routeSpec.Health); ok {
+						gateway, gwErr := executor.NetworkGateway(ctx, "bridge")
+						if gwErr != nil || gateway == "" {
 							healthy = false
-							healthFailure = "public port check failed: " + probeErr.Error()
-							logger.Warn("release public port probe failed", "job", id, "target", publicTarget, "error", probeErr)
+							healthFailure = "public port check failed: could not resolve host gateway"
+						} else {
+							publicTarget := fmt.Sprintf("http://%s:%d%s", gateway, hostPort, path)
+							probeName := healthProbeName(id) + "-pub"
+							probeCtx, cancel := context.WithTimeout(ctx, time.Duration(healthTimeout(routeSpec.Health)+5)*time.Second)
+							probeErr := executor.ProbeHTTP(probeCtx, probeName, backupHelperImage, "bridge", publicTarget, healthTimeout(routeSpec.Health), healthAcceptedStatusCodes(routeSpec.Health))
+							cancel()
+							if probeErr != nil {
+								healthy = false
+								healthFailure = "public port check failed: " + probeErr.Error()
+								logger.Warn("release public port probe failed", "job", id, "target", publicTarget, "error", probeErr)
+							}
 						}
 					}
 				}
@@ -1870,7 +1872,14 @@ func processOne(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
 			networkName = runtimepolicy.UserNetworkName(runtimeOwner, userID)
 		}
 		hostPortColumn := "NULL"
-		routeArgs := []any{appID, instanceID, releaseID, `/apps/` + userSlug + `/` + slug, releaseAlias(releaseID), port, containerName(instanceID, releaseID), networkName, releaseContainerID}
+		var cloudDomain string
+		_ = tx.QueryRow(ctx, "SELECT app_base_domain FROM system_settings WHERE singleton").Scan(&cloudDomain)
+		cloudDomain = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(cloudDomain)), ".")
+		publicPath := "/apps/" + userSlug + "/" + slug
+		if cloudDomain != "" {
+			publicPath = "//" + slug + "-" + userSlug + "." + cloudDomain + "/"
+		}
+		routeArgs := []any{appID, instanceID, releaseID, publicPath, releaseAlias(releaseID), port, containerName(instanceID, releaseID), networkName, releaseContainerID}
 		if routeHostPort >= 1 && routeHostPort <= 65535 {
 			hostPortColumn = "$10"
 			routeArgs = append(routeArgs, routeHostPort)

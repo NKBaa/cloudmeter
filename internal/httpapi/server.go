@@ -176,6 +176,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/healthz", s.health)
 	s.mux.HandleFunc("GET /api/setup/status", s.setupStatus)
 	s.mux.HandleFunc("GET /api/system/settings", s.getSystemSettingsPublic)
+	s.mux.HandleFunc("GET /api/pricing", s.getPricingPublic)
 	s.mux.HandleFunc("GET /api/homepage", s.getHomepage)
 	s.mux.HandleFunc("POST /api/setup/initialize", s.initialize)
 	s.mux.HandleFunc("POST /api/auth/login", s.login)
@@ -262,7 +263,6 @@ func (s *Server) routes() {
 	s.mux.Handle("DELETE /api/admin/docker/images/{imageID}", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.deleteDockerImage))))
 	s.mux.Handle("GET /api/admin/settings/system", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.getSystemSettings))))
 	s.mux.Handle("PUT /api/admin/settings/system", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.updateSystemSettings))))
-	s.mux.Handle("PUT /api/admin/settings/homepage", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.updateHomepage))))
 	s.mux.Handle("PUT /api/admin/settings/checkin", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.updateCheckinSettings))))
 	s.mux.Handle("PUT /api/admin/settings/payments/{provider}", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.updatePaymentSettings))))
 	s.mux.Handle("GET /api/admin/pricing", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.adminPricing))))
@@ -315,6 +315,7 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/admin/settings/logs", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.getLogRetentionSettings))))
 	s.mux.Handle("PUT /api/admin/settings/logs", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.updateLogRetentionSettings))))
 	s.mux.Handle("GET /api/admin/settings/ai-support", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.getAISupportSettings))))
+	s.mux.Handle("POST /api/admin/settings/ai-support/test", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.testAISupportSettings))))
 	s.mux.Handle("PUT /api/admin/settings/ai-support", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.updateAISupportSettings))))
 	s.mux.Handle("POST /api/admin/logs/clear", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.clearRuntimeLogs))))
 	s.mux.Handle("POST /api/admin/audit-logs/clear", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.clearAuditLogs))))
@@ -763,11 +764,11 @@ func (s *Server) listProducts(w http.ResponseWriter, r *http.Request) {
 		MissingDependencies []string       `json:"missingDependencies"`
 	}
 	type productItem struct {
-		ID       string         `json:"id"`
-		Slug     string         `json:"slug"`
-		Name     string         `json:"name"`
-		IconURL  string         `json:"iconUrl"`
-		Versions []versionItem  `json:"versions"`
+		ID       string        `json:"id"`
+		Slug     string        `json:"slug"`
+		Name     string        `json:"name"`
+		IconURL  string        `json:"iconUrl"`
+		Versions []versionItem `json:"versions"`
 	}
 	order := make([]string, 0)
 	groups := make(map[string]*productItem)
@@ -822,14 +823,14 @@ type createAppRequest struct {
 }
 
 type selectedResources struct {
-	CPUCores          *float64             `json:"cpuCores"`
-	MemoryMiB         *float64             `json:"memoryMiB"`
-	DataVolumeGiB     *float64             `json:"dataVolumeGiB"`
-	VolumeSizes       map[string]float64   `json:"volumeSizes"`
-	Command           []string             `json:"command"`
-	Environment       map[string]string    `json:"environment"`
-	Dependencies      []selectedDependency `json:"dependencies"`
-	PortMappingEnabled *bool               `json:"portMappingEnabled"`
+	CPUCores           *float64             `json:"cpuCores"`
+	MemoryMiB          *float64             `json:"memoryMiB"`
+	DataVolumeGiB      *float64             `json:"dataVolumeGiB"`
+	VolumeSizes        map[string]float64   `json:"volumeSizes"`
+	Command            []string             `json:"command"`
+	Environment        map[string]string    `json:"environment"`
+	Dependencies       []selectedDependency `json:"dependencies"`
+	PortMappingEnabled *bool                `json:"portMappingEnabled"`
 }
 
 func editableRuntimeOption(spec map[string]any, key string, legacyDefault bool) bool {
@@ -1357,8 +1358,10 @@ func (s *Server) billingLedger(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) billingUsage(w http.ResponseWriter, r *http.Request) {
 	p, _ := r.Context().Value(principalKey).(principal)
-	rows, err := s.db.Query(r.Context(), `SELECT a.usage_code,a.unit,a.window_start,a.window_end,a.quantity::text,a.sealed_at,a.billing_disposition,c.amount_cents,c.pricing_version_id
+	rows, err := s.db.Query(r.Context(), `SELECT a.user_app_id::text,app.slug,a.usage_code,a.unit,a.window_start,a.window_end,a.quantity::text,a.sealed_at,a.billing_disposition,c.amount_cents,coalesce(c.pricing_version_id,a.price_version_id)::text,price.unit_price_micros
 		FROM usage_aggregates a LEFT JOIN usage_charges c ON c.user_id=a.user_id AND c.user_app_id IS NOT DISTINCT FROM a.user_app_id AND c.usage_code=a.usage_code AND c.window_start=a.window_start AND c.window_end=a.window_end AND (a.user_app_id IS NULL OR c.pricing_version_id IS NOT DISTINCT FROM a.price_version_id)
+		LEFT JOIN user_apps app ON app.id=a.user_app_id
+		LEFT JOIN pricing_versions price ON price.id=coalesce(c.pricing_version_id,a.price_version_id)
         WHERE a.user_id=$1 ORDER BY a.window_start DESC LIMIT 100`, p.ID)
 	if err != nil {
 		s.internalError(w, err)
@@ -1368,17 +1371,18 @@ func (s *Server) billingUsage(w http.ResponseWriter, r *http.Request) {
 	items := []map[string]any{}
 	for rows.Next() {
 		var code, unit string
+		var appID, appSlug *string
 		var start, end time.Time
 		var quantity string
 		var sealed *time.Time
 		var disposition string
-		var amount *int64
+		var amount, unitPriceMicros *int64
 		var pricingVersionID *string
-		if err := rows.Scan(&code, &unit, &start, &end, &quantity, &sealed, &disposition, &amount, &pricingVersionID); err != nil {
+		if err := rows.Scan(&appID, &appSlug, &code, &unit, &start, &end, &quantity, &sealed, &disposition, &amount, &pricingVersionID, &unitPriceMicros); err != nil {
 			s.internalError(w, err)
 			return
 		}
-		items = append(items, map[string]any{"usageCode": code, "unit": unit, "windowStart": start, "windowEnd": end, "quantity": quantity, "sealedAt": sealed, "billingDisposition": disposition, "amountCents": amount, "pricingVersionId": pricingVersionID})
+		items = append(items, map[string]any{"appId": appID, "appSlug": appSlug, "usageCode": code, "unit": unit, "windowStart": start, "windowEnd": end, "quantity": quantity, "sealedAt": sealed, "billingDisposition": disposition, "amountCents": amount, "pricingVersionId": pricingVersionID, "unitPriceMicros": unitPriceMicros})
 	}
 	writeJSON(w, 200, map[string]any{"usage": items})
 }

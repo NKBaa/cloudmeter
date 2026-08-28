@@ -20,6 +20,27 @@ type pricingVersionResponse struct {
 	CreatedAt       time.Time `json:"createdAt"`
 }
 
+func (s *Server) getPricingPublic(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.db.Query(r.Context(), `SELECT i.code, v.unit_price_micros FROM pricing_items i JOIN LATERAL (SELECT unit_price_micros FROM pricing_versions WHERE pricing_item_id = i.id AND effective_at <= now() ORDER BY effective_at DESC, version DESC LIMIT 1) v ON true`)
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	defer rows.Close()
+
+	pricing := make(map[string]int64)
+	for rows.Next() {
+		var code string
+		var price int64
+		if err := rows.Scan(&code, &price); err != nil {
+			s.internalError(w, err)
+			return
+		}
+		pricing[code] = price
+	}
+	writeJSON(w, http.StatusOK, pricing)
+}
+
 func (s *Server) adminPricing(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.db.Query(r.Context(), `SELECT i.id,i.code,i.unit,i.created_at,v.id,v.version,v.unit_price_micros,v.precision_scale,v.rounding_mode,v.minimum_quantity::text,v.free_quantity::text,v.effective_at,v.created_at FROM pricing_items i LEFT JOIN pricing_versions v ON v.pricing_item_id=i.id WHERE i.code <> 'storage.system.gib_days' ORDER BY i.code,v.version DESC`)
 	if err != nil {

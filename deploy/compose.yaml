@@ -88,6 +88,7 @@ services:
     environment:
       DATABASE_URL: postgres://cloudmeter:${POSTGRES_PASSWORD}@postgres:5432/cloudmeter?sslmode=disable
       ROUTER_INTERNAL_TOKEN: ${ROUTER_INTERNAL_TOKEN:?ROUTER_INTERNAL_TOKEN is required}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
     expose: ["8082"]
     depends_on:
       migrate: {condition: service_completed_successfully}

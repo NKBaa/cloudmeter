@@ -25,6 +25,29 @@ func TestRequireRouterToken(t *testing.T) {
 	}
 }
 
+func TestRequestHostname(t *testing.T) {
+	for input, want := range map[string]string{
+		"Demo-User.Apps.Example.COM:8080": "demo-user.apps.example.com",
+		"demo-user.apps.example.com.":     "demo-user.apps.example.com",
+		"[::1]:8080":                      "::1",
+	} {
+		if got := requestHostname(input); got != want {
+			t.Fatalf("requestHostname(%q)=%q want %q", input, got, want)
+		}
+	}
+}
+
+func TestNewAccessToken(t *testing.T) {
+	first, err := newAccessToken()
+	if err != nil || first == "" {
+		t.Fatalf("first token=%q err=%v", first, err)
+	}
+	second, err := newAccessToken()
+	if err != nil || second == "" || second == first {
+		t.Fatalf("second token=%q err=%v", second, err)
+	}
+}
+
 func TestRoutePathAndCookieHelpers(t *testing.T) {
 	if got := joinURLPath("/ui", "/api/items"); got != "/ui/api/items" {
 		t.Fatalf("path=%s", got)

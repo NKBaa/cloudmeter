@@ -142,13 +142,26 @@ wait_restore() {
 }
 
 APP_COOKIE_JAR="$(mktemp)"
+APP_HOST=''
 
 establish_app_access() {
-  local app="$1" token="$2"
+  local app="$1" token="$2" launch without_scheme access_path
   rm -f "$APP_COOKIE_JAR"
-  curl -sS -o /dev/null -c "$APP_COOKIE_JAR" -X POST \
-    -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
-    --data '{}' "$API/apps/$app/access" || return 1
+  request POST "$API/apps/$app/access" "$token" '{}'
+  [[ "$RESPONSE_STATUS" == 200 ]] || return 1
+  launch="$(response_value .publicPath)"
+  if [[ "$launch" == //* ]]; then
+    without_scheme="${launch#//}"
+    APP_HOST="${without_scheme%%/*}"
+    access_path="/${without_scheme#*/}"
+    curl -sS -L -o /dev/null -c "$APP_COOKIE_JAR" -b "$APP_COOKIE_JAR" \
+      -H "Host: $APP_HOST" "$BASE_URL$access_path" || return 1
+  else
+    APP_HOST=''
+    curl -sS -L -o /dev/null -c "$APP_COOKIE_JAR" -b "$APP_COOKIE_JAR" \
+      -X POST -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
+      --data '{}' "$API/apps/$app/access" || return 1
+  fi
 }
 
 wait_http() {
@@ -164,6 +177,30 @@ wait_http() {
     sleep 0.5
   done
   echo "timed out waiting for HTTP $expected at $uri; last status was $RESPONSE_STATUS" >&2
+  return 1
+}
+
+wait_app_http() {
+  local public_path="$1" expected="$2" seconds="${3:-45}" deadline path uri host
+  if [[ "$public_path" == //* ]]; then
+    local without_scheme="${public_path#//}"
+    host="${without_scheme%%/*}"
+    path="/${without_scheme#*/}"
+    uri="$BASE_URL$path"
+  else
+    host=''
+    uri="$BASE_URL$public_path"
+  fi
+  deadline="$((SECONDS + seconds))"
+  while (( SECONDS < deadline )); do
+    local -a args=(-sS -o /dev/null -w '%{http_code}')
+    [[ -z "$host" ]] || args+=(-H "Host: $host")
+    [[ -f "$APP_COOKIE_JAR" ]] && args+=(-b "$APP_COOKIE_JAR")
+    RESPONSE_STATUS="$(curl "${args[@]}" "$uri")"
+    [[ "$RESPONSE_STATUS" == "$expected" ]] && return 0
+    sleep 0.5
+  done
+  echo "timed out waiting for HTTP $expected at $public_path; last status was $RESPONSE_STATUS" >&2
   return 1
 }
 
@@ -241,6 +278,9 @@ APP_COOKIE_JAR="$(mktemp)"
 cleanup() {
   set +e
   start_worker
+  if [[ -n "$original_system_settings_body" ]]; then
+    request PUT "$API/admin/settings/system" "$admin_token" "$original_system_settings_body"
+  fi
   if [[ -n "$backup_storage_key" && -n "$backup_volume" ]]; then
     docker run --rm -v "$backup_volume:/backup" "$IMAGE" sh -c "rm -f -- /backup/$backup_storage_key" >/dev/null 2>&1
   fi
@@ -258,6 +298,13 @@ cleanup() {
   rm -f "$RESPONSE_FILE" "$APP_COOKIE_JAR"
 }
 trap cleanup EXIT
+
+request GET "$API/admin/settings/system" "$admin_token"
+[[ "$RESPONSE_STATUS" == 200 ]] || { echo 'system settings lookup failed' >&2; exit 1; }
+original_system_settings_body="$(jq 'del(.updatedAt)' "$RESPONSE_FILE")"
+system_settings_body="$(jq --arg server "$BASE_URL" --arg domain 'apps.cloudmeter.test' '.serverUrl=$server | .appBaseDomain=$domain | del(.updatedAt)' "$RESPONSE_FILE")"
+request PUT "$API/admin/settings/system" "$admin_token" "$system_settings_body"
+[[ "$RESPONSE_STATUS" == 200 ]] || { echo 'system route settings update failed' >&2; exit 1; }
 
 request POST "$API/admin/products" "$admin_token" "$(jq -cn --arg slug "verify-control-$marker" --arg name "Application control $marker" '{slug:$slug,name:$name}')"
 [[ "$RESPONSE_STATUS" == 201 ]] || { echo "product creation failed: $RESPONSE_STATUS $(response_error_code)" >&2; exit 1; }
@@ -329,7 +376,7 @@ container="$(db "SELECT upstream_container FROM app_routes WHERE user_app_id='$a
 public_path="$(db "SELECT public_path FROM app_routes WHERE user_app_id='$app_id'")"
 [[ -n "$container" ]] && docker_object_exists container inspect "$container" || { echo 'runtime container was not created' >&2; exit 1; }
 establish_app_access "$app_id" "$user_token"
-wait_http "$BASE_URL$public_path" 200
+wait_app_http "$public_path" 200
 expect_db_failure "UPDATE users SET slug=slug || '-changed' WHERE id='$user_id'" 'user public identity is immutable'
 expect_db_failure "UPDATE user_apps SET slug=slug || '-changed' WHERE id='$app_id'" 'user application identity is immutable'
 expect_db_failure "INSERT INTO users(email,password_hash,display_name,slug) VALUES('invalid-slug-$marker@example.invalid','invalid','Invalid slug','INVALID_$marker')" 'users_slug_format_check'
@@ -341,7 +388,7 @@ expect_db_failure "UPDATE app_routes SET upstream_host='release-000000000000' WH
 expect_db_failure "UPDATE app_routes SET upstream_port=upstream_port+1 WHERE user_app_id='$app_id'" 'application route upstream port does not match release snapshot'
 expect_db_failure "UPDATE app_routes SET upstream_container='cm-00000000000-$app_id-$source_release' WHERE user_app_id='$app_id'" 'application route container does not match instance and release identity'
 compose up -d --no-build --force-recreate --no-deps app-router >/dev/null
-wait_http "$BASE_URL$public_path" 200
+wait_app_http "$public_path" 200
 
 volume="$(app_volume_name "$runtime_owner" "$app_id" data)"
 docker_object_exists volume inspect "$volume" || { echo 'persistent application volume was not created' >&2; exit 1; }
@@ -394,7 +441,7 @@ fi
 stop_job_id="$(response_value .stopJobId)"
 [[ "$(db "SELECT status FROM user_apps WHERE id='$app_id'")" == stopping ]] || { echo 'application did not enter stopping state' >&2; exit 1; }
 [[ "$(db "SELECT count(*) FROM app_routes WHERE user_app_id='$app_id'")" == 0 ]] || { echo 'public route was not removed atomically' >&2; exit 1; }
-wait_http "$BASE_URL$public_path" 404
+wait_app_http "$public_path" 404
 [[ "$RESPONSE_STATUS" == 404 ]] || { echo 'stopped application route did not return 404 immediately' >&2; exit 1; }
 docker_object_exists container inspect "$container" || { echo 'container disappeared before the queued stop task ran' >&2; exit 1; }
 request POST "$API/apps/$app_id/stop" "$user_token" "$(jq -cn --arg key "$stop_key" '{idempotencyKey:$key}')"
@@ -406,11 +453,6 @@ wait_value "SELECT status FROM user_apps WHERE id='$app_id'" stopped
 wait_value "SELECT status FROM app_stop_jobs WHERE id='$stop_job_id'" succeeded
 docker_object_exists container inspect "$container" && { echo 'stopped application container still exists' >&2; exit 1; }
 docker_object_exists volume inspect "$volume" || { echo 'persistent volume was removed while stopping' >&2; exit 1; }
-
-request POST "$API/apps/$app_id/releases" "$user_token" "$(jq -cn --arg version "$version_id" --arg key "control-stopped-update/$marker" '{versionId:$version,idempotencyKey:$key}')"
-[[ "$RESPONSE_STATUS" == 409 && "$(response_error_code)" == app_not_running ]] || { echo 'stopped application accepted an update' >&2; exit 1; }
-request POST "$API/apps/$app_id/rollback" "$user_token" "$(jq -cn --arg release "$source_release" --arg key "control-stopped-rollback/$marker" '{releaseId:$release,idempotencyKey:$key}')"
-[[ "$RESPONSE_STATUS" == 409 && "$(response_error_code)" == app_not_running ]] || { echo 'stopped application accepted a rollback' >&2; exit 1; }
 
 start_key="control-start/$marker"
 request POST "$API/apps/$app_id/start" "$user_token" "$(jq -cn --arg key "$start_key" '{idempotencyKey:$key}')"
@@ -425,7 +467,7 @@ wait_value "SELECT status FROM user_apps WHERE id='$app_id'" running
 new_container="$(db "SELECT upstream_container FROM app_routes WHERE user_app_id='$app_id'")"
 [[ -n "$new_container" && "$new_container" != "$container" ]] && docker_object_exists container inspect "$new_container" || { echo 'start did not create a new runtime container' >&2; exit 1; }
 [[ "$(docker exec "$new_container" cat /data/lifecycle-marker)" == "$marker" ]] || { echo 'persistent volume contents were not preserved across stop and start' >&2; exit 1; }
-wait_http "$BASE_URL$public_path" 200
+wait_app_http "$public_path" 200
 request POST "$API/apps/$app_id/start" "$user_token" "$(jq -cn --arg key "$start_key" '{idempotencyKey:$key}')"
 [[ "$RESPONSE_STATUS" == 200 && "$(response_value .jobId)" == "$start_job_id" ]] || { echo 'start idempotency replay failed' >&2; exit 1; }
 

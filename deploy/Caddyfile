@@ -8,17 +8,38 @@
 }
 
 :8080 {
-    @unknown_host {
-        not host {$PLATFORM_ALLOWED_HOST}
-    }
-    handle @unknown_host {
-        respond "misdirected request" 421
-    }
     encode zstd gzip
-    handle /api/internal/* {
+
+    # Keep the platform host and application hosts independent. The Router
+    # validates non-platform hosts against system_settings.app_base_domain.
+    @legacy_app {
+        host {$PLATFORM_ALLOWED_HOST}
+        path /apps/*
+    }
+    handle @legacy_app {
+        reverse_proxy {
+            dynamic a app-router 8082 {
+                refresh 5s
+                versions ipv4
+            }
+            header_up X-Forwarded-For {http.request.client_ip}
+            header_up X-CloudMeter-Router-Token {$ROUTER_INTERNAL_TOKEN}
+            header_up X-CloudMeter-Route-Mode legacy
+        }
+    }
+
+    @internal_api {
+        host {$PLATFORM_ALLOWED_HOST}
+        path /api/internal/*
+    }
+    handle @internal_api {
         respond "not found" 404
     }
-    @api path /api/* /payments/*
+
+    @api {
+        host {$PLATFORM_ALLOWED_HOST}
+        path /api/* /payments/*
+    }
     handle @api {
         reverse_proxy {
             dynamic a api 8081 {
@@ -29,9 +50,21 @@
             flush_interval -1
         }
     }
-    handle /apps/* {
-        # Resolve the Router for every request so a stateless Router recreate
-        # does not leave the gateway pointing at a stale Docker IP.
+
+    @platform host {$PLATFORM_ALLOWED_HOST}
+    handle @platform {
+        reverse_proxy {
+            dynamic a web 8080 {
+                refresh 1s
+                versions ipv4
+            }
+            header_up X-Forwarded-For {http.request.client_ip}
+        }
+    }
+
+    # All other hosts are checked by the Router against the separately
+    # configured application wildcard domain. Invalid hosts receive 421.
+    handle {
         reverse_proxy {
             dynamic a app-router 8082 {
                 refresh 5s
@@ -39,15 +72,7 @@
             }
             header_up X-Forwarded-For {http.request.client_ip}
             header_up X-CloudMeter-Router-Token {$ROUTER_INTERNAL_TOKEN}
-        }
-    }
-    handle {
-        reverse_proxy {
-            dynamic a web 8080 {
-                refresh 1s
-                versions ipv4
-            }
-            header_up X-Forwarded-For {http.request.client_ip}
+            header_up X-CloudMeter-Route-Mode subdomain
         }
     }
 }

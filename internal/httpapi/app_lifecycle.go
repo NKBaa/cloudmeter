@@ -280,8 +280,8 @@ func (s *Server) createReleaseJob(w http.ResponseWriter, r *http.Request, actorI
 		writeError(w, http.StatusConflict, "app_suspended", "application is suspended by platform policy: "+suspensionReason)
 		return
 	}
-	if appStatus != "running" {
-		writeError(w, http.StatusConflict, "app_not_running", "only a running application can be updated or rolled back")
+	if appStatus != "running" && appStatus != "failed" && appStatus != "stopped" {
+		writeError(w, http.StatusConflict, "app_invalid_status", "application must be running, failed, or stopped to be updated or rolled back")
 		return
 	}
 	var activeJobID string

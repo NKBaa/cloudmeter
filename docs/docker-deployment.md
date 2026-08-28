@@ -138,6 +138,8 @@ openssl rand -base64 32 | tr -d '=\n'
 | `SECRETS_ENCRYPTION_KEY` | 静态加密主密钥（主加密密码，务必离线备份） | 32-Byte Base64 无填充 |
 | `PLATFORM_ALLOWED_HOST` | 平台访问 Host 名（仅主机名，无协议端口路径） | `cloud.example.com` 或 `127.0.0.1` |
 | `PUBLIC_BASE_URL` | 用户访问平台的完整 URL 根路径 | `https://cloud.example.com` |
+
+应用访问域名不复用 `PUBLIC_BASE_URL` 或 `PLATFORM_ALLOWED_HOST`。部署完成后由超级管理员在“系统设置”中分别填写主系统服务器地址和应用泛子域名，并为后者配置 DNS 泛解析，例如 `*.apps.example.com`。Caddy 会把主系统 Host 交给 Web/API，把其他 Host 交给应用 Router，再由 Router 按数据库配置校验应用域名。
 | `PLATFORM_PORT` | Gateway 对外映射端口（本机验证可直接改此端口） | `18085` |
 
 > **警告**：`SECRETS_ENCRYPTION_KEY` 用于加密保存平台的第三方凭据（如 SMTP 密码、OAuth Client Secret、支付通道密钥和用户应用敏感环境变量）。部署后请务必保存备份！一旦丢失，数据库内存存的加密字段将不可解密。

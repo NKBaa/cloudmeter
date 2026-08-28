@@ -66,3 +66,30 @@ func getAISupportSettingsConfig(ctx context.Context, s *Server) (aiSupportSettin
 		Scan(&q.Enabled, &q.Provider, &q.BaseURL, &q.APIKey, &q.ModelName, &q.SystemPrompt, &q.KnowledgeBase)
 	return q, err
 }
+
+func (s *Server) testAISupportSettings(w http.ResponseWriter, r *http.Request) {
+	var q aiSupportSettings
+	if err := decodeJSON(r, &q); err != nil {
+		writeError(w, 400, "invalid_request", err.Error())
+		return
+	}
+
+	if q.APIKey == "********" {
+		if err := s.db.QueryRow(r.Context(), "SELECT api_key FROM ai_support_settings WHERE singleton").Scan(&q.APIKey); err != nil {
+			s.internalError(w, err)
+			return
+		}
+	}
+
+	messages := []aiMessage{
+		{Role: "user", Content: "Hello! Please reply exactly with the word 'OK' to confirm you are online."},
+	}
+
+	resp, err := callAIModel(r.Context(), q, messages)
+	if err != nil {
+		writeError(w, 400, "test_failed", err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"message": "连接成功，模型回复: " + resp})
+}
