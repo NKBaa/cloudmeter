@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from "vue";
 import {
   Activity,
   AppWindow,
+  ArrowLeft,
   ArrowRight,
   CheckCircle2,
   CircleAlert,
@@ -10,6 +11,7 @@ import {
   Globe2,
   KeyRound,
   Link2,
+  ListChecks,
   LockKeyhole,
   Network,
   RefreshCw,
@@ -18,6 +20,7 @@ import {
   ShieldCheck,
   TerminalSquare,
   Upload,
+  X,
   Zap,
 } from "@lucide/vue";
 import { api } from "../api";
@@ -226,6 +229,76 @@ const automaticCertificateCount = computed(() => {
   if (form.value.tlsEnabled && form.value.appBaseDomain && form.value.appCertificateMode === "automatic") count += 1;
   return count;
 });
+const wizardOpen = ref(false);
+const wizardStep = ref(0);
+const wizardError = ref("");
+const wizardSteps = [
+  { label: "接入模式", detail: "确定控制台入口" },
+  { label: "域名", detail: "配置公开地址" },
+  { label: "HTTPS 与 DNS", detail: "配置自动证书" },
+  { label: "确认应用", detail: "检查并保存" },
+] as const;
+const needsAutomaticCertificate = computed(() => automaticCertificateCount.value > 0);
+const dnsProviderLabel = computed(() => activeDNSProvider.value?.label || "未选择");
+
+function openWizard() {
+  wizardStep.value = 0;
+  wizardError.value = "";
+  wizardOpen.value = true;
+}
+
+function closeWizard() {
+  if (saving.value) return;
+  wizardOpen.value = false;
+  wizardError.value = "";
+}
+
+function validateWizardStep(step = wizardStep.value) {
+  wizardError.value = "";
+  if (step === 1) {
+    try {
+      const url = new URL(form.value.serverUrl.trim());
+      if (!['http:', 'https:'].includes(url.protocol)) throw new Error();
+    } catch {
+      wizardError.value = "请输入包含 http:// 或 https:// 的有效控制台地址。";
+      return false;
+    }
+    const domain = form.value.appBaseDomain.trim().replace(/^\*\./, "");
+    if (!domain || domain.includes("/") || domain.includes("://") || !domain.includes(".")) {
+      wizardError.value = "请输入有效的应用泛子域名，例如 apps.example.com。";
+      return false;
+    }
+    form.value.appBaseDomain = domain;
+  }
+  if (step === 2 && needsAutomaticCertificate.value) {
+    if (!/^\S+@\S+\.\S+$/.test(form.value.acmeEmail.trim())) {
+      wizardError.value = "自动申请证书需要有效的 ACME 联系邮箱。";
+      return false;
+    }
+    if (!activeDNSProvider.value) {
+      wizardError.value = "请选择 DNS 服务商以完成 DNS-01 验证。";
+      return false;
+    }
+    const missingCredential = activeDNSProvider.value.fields.some(
+      (field) => !dnsCredentials.value[field.key]?.trim(),
+    );
+    if (!form.value.acmeDnsConfigured && missingCredential) {
+      wizardError.value = `请完整填写 ${activeDNSProvider.value.label} 的 DNS API 凭据。`;
+      return false;
+    }
+  }
+  return true;
+}
+
+function nextWizardStep() {
+  if (!validateWizardStep()) return;
+  wizardStep.value = Math.min(wizardStep.value + 1, wizardSteps.length - 1);
+}
+
+function previousWizardStep() {
+  wizardError.value = "";
+  wizardStep.value = Math.max(wizardStep.value - 1, 0);
+}
 
 function certificateState(target: "console" | "applications") {
   if (!form.value.tlsEnabled) return "HTTPS 未启用";
@@ -350,11 +423,18 @@ async function save() {
     window.setTimeout(() => {
       message.value = "";
     }, 3000);
+    return true;
   } catch (err: any) {
     error.value = err.message || "保存网站设置失败";
+    return false;
   } finally {
     saving.value = false;
   }
+}
+
+async function finishWizard() {
+  if (!validateWizardStep(1) || !validateWizardStep(2)) return;
+  if (await save()) wizardOpen.value = false;
 }
 
 function openCertificateImport(target: "console" | "applications") {
@@ -405,6 +485,9 @@ onMounted(refreshAll);
         <p class="quiet">管理控制台域名、应用泛子域名和 Caddy 反向代理入口。</p>
       </div>
       <div class="website-actions">
+        <button class="secondary compact" :disabled="loading || saving" @click="openWizard">
+          <ListChecks :size="16" />设置向导
+        </button>
         <button class="secondary compact" :disabled="loading || runtimeLoading || saving" @click="refreshAll">
           <RefreshCw :class="{ spin: runtimeLoading }" :size="16" />刷新状态
         </button>
@@ -932,6 +1015,92 @@ onMounted(refreshAll);
         </section>
       </div>
     </template>
+
+    <Teleport to="body">
+      <Transition name="dialog-fade">
+        <div v-if="wizardOpen" class="dialog-backdrop wizard-backdrop" @click.self="closeWizard">
+          <section class="dialog-panel setup-wizard" role="dialog" aria-modal="true" aria-labelledby="setup-wizard-title">
+            <header class="wizard-header">
+              <div>
+                <p class="eyebrow">SETUP · 逐步配置</p>
+                <h2 id="setup-wizard-title">网站设置向导</h2>
+                <p>按照顺序完成入口、域名和证书配置。</p>
+              </div>
+              <button class="wizard-close" type="button" aria-label="关闭设置向导" title="关闭" :disabled="saving" @click="closeWizard">
+                <X :size="18" />
+              </button>
+            </header>
+
+            <ol class="wizard-progress" aria-label="设置进度">
+              <li v-for="(step, index) in wizardSteps" :key="step.label" :class="{ active: wizardStep === index, complete: wizardStep > index }">
+                <span>{{ wizardStep > index ? "✓" : index + 1 }}</span>
+                <div><strong>{{ step.label }}</strong><small>{{ step.detail }}</small></div>
+              </li>
+            </ol>
+
+            <div class="wizard-body">
+              <section v-if="wizardStep === 0" class="wizard-step">
+                <div class="wizard-step-heading"><span>01</span><div><h3>选择接入模式</h3><p>决定控制台是否由内置 Caddy 直接接管。</p></div></div>
+                <div class="wizard-choice-grid">
+                  <button type="button" :class="{ selected: form.accessMode === 'all_caddy' }" :disabled="form.accessModeManagedByEnvironment" @click="form.accessMode = 'all_caddy'">
+                    <Network :size="20" /><strong>全站使用 Caddy</strong><small>控制台与应用统一通过 80 / 443 对外服务。</small>
+                  </button>
+                  <button type="button" :class="{ selected: form.accessMode === 'apps_only' }" :disabled="form.accessModeManagedByEnvironment" @click="form.accessMode = 'apps_only'">
+                    <Server :size="20" /><strong>仅应用使用 Caddy</strong><small>控制台由外部代理转发到端口 {{ form.standalonePort }}。</small>
+                  </button>
+                </div>
+                <p v-if="form.accessModeManagedByEnvironment" class="wizard-note"><CircleAlert :size="16" />当前模式由 GATEWAY_ACCESS_MODE 管理，向导中不可修改。</p>
+              </section>
+
+              <section v-else-if="wizardStep === 1" class="wizard-step">
+                <div class="wizard-step-heading"><span>02</span><div><h3>配置公开域名</h3><p>这些地址将用于控制台外链和应用专属入口。</p></div></div>
+                <div class="wizard-fields">
+                  <label><span>{{ form.accessMode === "all_caddy" ? "控制台主域名" : "服务器公开 URL" }}</span><input v-model="form.serverUrl" type="url" inputmode="url" placeholder="https://console.example.com" /><small>请输入完整 URL，包括 http:// 或 https://。</small></label>
+                  <label><span>应用泛子域名</span><div class="domain-input"><i>*.</i><input v-model="form.appBaseDomain" inputmode="url" placeholder="apps.example.com" /></div><small>为每个应用生成独立子域名，无需输入 *. 前缀。</small></label>
+                </div>
+              </section>
+
+              <section v-else-if="wizardStep === 2" class="wizard-step">
+                <div class="wizard-step-heading"><span>03</span><div><h3>配置 HTTPS 与 DNS</h3><p>自动证书通过 DNS-01 验证申请，并由 Caddy 续期。</p></div></div>
+                <div class="wizard-toggle"><div><strong>启用 Caddy HTTPS</strong><small>为 Caddy 管理的入口启用 TLS。</small></div><label class="switch"><input v-model="form.tlsEnabled" type="checkbox" /><span /></label></div>
+                <template v-if="form.tlsEnabled">
+                  <div class="wizard-inline-fields">
+                    <label><span>HTTP 策略</span><select v-model="form.httpPolicy"><option value="redirect">自动跳转 HTTPS</option><option value="allow">同时允许 HTTP 与 HTTPS</option><option value="https_only">拒绝 HTTP</option></select></label>
+                    <label><span>ACME 联系邮箱</span><input v-model="form.acmeEmail" type="email" placeholder="admin@example.com" /></label>
+                    <label><span>DNS 服务商</span><select v-model="form.acmeDnsProvider" @change="selectDNSProvider"><option value="">请选择</option><option v-for="provider in dnsProviderPresets" :key="provider.id" :value="provider.id">{{ provider.label }}</option></select></label>
+                  </div>
+                  <div v-if="activeDNSProvider" class="wizard-credentials">
+                    <div><strong>{{ activeDNSProvider.label }} API 凭据</strong><small>{{ activeDNSProvider.detail }}</small></div>
+                    <div class="wizard-inline-fields"><label v-for="field in activeDNSProvider.fields" :key="field.key"><span>{{ field.label }}</span><input v-model="dnsCredentials[field.key]" :type="field.secret ? 'password' : 'text'" :placeholder="form.acmeDnsConfigured ? '已配置，留空则保持不变' : field.placeholder" /></label></div>
+                    <p v-if="form.acmeDnsConfigured" class="wizard-configured"><CheckCircle2 :size="15" />服务器已有可用凭据，留空将保持不变。</p>
+                  </div>
+                </template>
+                <p v-else class="wizard-note"><CircleAlert :size="16" />HTTPS 已关闭，将不会申请或续期证书。</p>
+              </section>
+
+              <section v-else class="wizard-step">
+                <div class="wizard-step-heading"><span>04</span><div><h3>确认并应用</h3><p>保存后将校验配置并无中断重载 Caddy。</p></div></div>
+                <dl class="wizard-summary">
+                  <div><dt>接入模式</dt><dd>{{ modeLabel }}</dd></div><div><dt>控制台入口</dt><dd>{{ form.serverUrl || "未配置" }}</dd></div>
+                  <div><dt>应用入口</dt><dd>{{ appWildcard }}</dd></div><div><dt>HTTPS</dt><dd>{{ form.tlsEnabled ? "已启用" : "未启用" }}</dd></div>
+                  <div><dt>证书申请</dt><dd>{{ needsAutomaticCertificate ? "DNS-01 自动申请" : "无需自动申请" }}</dd></div><div><dt>DNS 服务商</dt><dd>{{ needsAutomaticCertificate ? dnsProviderLabel : "—" }}</dd></div>
+                </dl>
+                <p class="wizard-apply-note"><ShieldCheck :size="17" />应用失败时当前 Caddy 配置会继续运行，不会切换到无效配置。</p>
+              </section>
+              <p v-if="wizardError" class="wizard-error"><CircleAlert :size="16" />{{ wizardError }}</p>
+            </div>
+
+            <footer class="wizard-actions">
+              <button class="ghost compact" type="button" :disabled="saving" @click="closeWizard">取消</button>
+              <span />
+              <button v-if="wizardStep > 0" class="secondary compact" type="button" :disabled="saving" @click="previousWizardStep"><ArrowLeft :size="16" />上一步</button>
+              <button v-if="wizardStep < wizardSteps.length - 1" class="primary compact" type="button" @click="nextWizardStep">下一步<ArrowRight :size="16" /></button>
+              <button v-else class="primary compact" type="button" :disabled="saving" @click="finishWizard"><Save :size="16" />{{ saving ? "应用中..." : "保存并应用" }}</button>
+            </footer>
+          </section>
+        </div>
+      </Transition>
+    </Teleport>
   </main>
 </template>
 
@@ -1334,7 +1503,6 @@ onMounted(refreshAll);
 .dns-challenge-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .dns-challenge-heading strong { font-size: 12px; }
 .dns-challenge-heading p { max-width: 48ch; margin: 5px 0 0; color: var(--text-muted); font-size: 10px; line-height: 1.55; }
-.dns-challenge-heading > span { flex: 0 0 auto; padding: 4px 7px; color: var(--accent); background: var(--accent-soft); border-radius: 5px; font-size: 9px; font-weight: 700; }
 .dns-provider-select,
 .dns-credential-grid label { display: grid; align-content: start; gap: 7px; }
 .dns-provider-select > span,
@@ -1543,6 +1711,69 @@ onMounted(refreshAll);
 .lifecycle-note p { margin: 0; color: var(--text-soft); font-size: 11px; line-height: 1.5; }
 .lifecycle-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 15px 19px 19px; }
 .lifecycle-actions button { justify-content: center; }
+.wizard-backdrop { z-index: 1200; padding: 24px; }
+.setup-wizard {
+  width: min(920px, 100%);
+  max-width: 920px;
+  max-height: min(760px, calc(100vh - 48px));
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  padding: 0;
+  overflow: hidden;
+}
+.wizard-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; padding: 22px 24px 18px; border-bottom: 1px solid var(--line); }
+.wizard-header h2 { margin: 2px 0 0; font-size: 21px; }
+.wizard-header p:last-child { margin: 6px 0 0; color: var(--text-muted); font-size: 11px; }
+.wizard-close { width: 34px; height: 34px; flex: 0 0 auto; display: grid; place-items: center; padding: 0; color: var(--text-muted); background: var(--surface); border: 1px solid var(--line); border-radius: 7px; }
+.wizard-close:hover { color: var(--text); border-color: var(--line-strong); }
+.wizard-progress { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 0; padding: 14px 24px; list-style: none; background: var(--surface); border-bottom: 1px solid var(--line); }
+.wizard-progress li { min-width: 0; display: flex; align-items: center; gap: 9px; position: relative; color: var(--text-muted); }
+.wizard-progress li:not(:last-child)::after { content: ""; position: absolute; top: 13px; left: 36px; right: 10px; height: 1px; background: var(--line-strong); }
+.wizard-progress li > span { width: 26px; height: 26px; z-index: 1; flex: 0 0 auto; display: grid; place-items: center; background: var(--paper); border: 1px solid var(--line-strong); border-radius: 50%; font-family: var(--font-mono); font-size: 10px; font-weight: 750; }
+.wizard-progress li div { min-width: 0; z-index: 1; padding-right: 8px; background: var(--surface); }
+.wizard-progress strong, .wizard-progress small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wizard-progress strong { color: var(--text-soft); font-size: 11px; }
+.wizard-progress small { margin-top: 2px; font-size: 9px; }
+.wizard-progress li.active > span, .wizard-progress li.complete > span { color: white; background: var(--accent); border-color: var(--accent); }
+.wizard-progress li.active strong, .wizard-progress li.complete strong { color: var(--text); }
+.wizard-body { min-height: 390px; overflow-y: auto; padding: 25px 24px; }
+.wizard-step { display: grid; gap: 19px; }
+.wizard-step-heading { display: flex; align-items: flex-start; gap: 13px; }
+.wizard-step-heading > span { color: var(--accent); font-family: var(--font-mono); font-size: 10px; font-weight: 750; }
+.wizard-step-heading h3 { margin: 0; font-size: 17px; }
+.wizard-step-heading p { margin: 5px 0 0; color: var(--text-muted); font-size: 11px; }
+.wizard-choice-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.wizard-choice-grid button { min-height: 126px; display: grid; align-content: start; justify-items: start; gap: 8px; padding: 18px; text-align: left; color: var(--text-muted); background: var(--paper); border: 1px solid var(--line); border-radius: 8px; }
+.wizard-choice-grid button strong { color: var(--text); font-size: 13px; }
+.wizard-choice-grid button small { font-size: 11px; line-height: 1.55; }
+.wizard-choice-grid button.selected { color: var(--accent); background: var(--accent-soft); border-color: var(--accent); }
+.wizard-choice-grid button:disabled { cursor: not-allowed; }
+.wizard-fields, .wizard-inline-fields { display: grid; gap: 16px; }
+.wizard-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.wizard-inline-fields { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.wizard-fields label, .wizard-inline-fields label { min-width: 0; display: grid; align-content: start; gap: 7px; }
+.wizard-fields label > span, .wizard-inline-fields label > span { font-size: 11px; font-weight: 650; }
+.wizard-fields small, .wizard-credentials small { color: var(--text-muted); font-size: 10px; line-height: 1.5; }
+.wizard-fields input, .wizard-inline-fields input, .wizard-inline-fields select { width: 100%; min-width: 0; }
+.wizard-toggle { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 14px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; }
+.wizard-toggle strong, .wizard-toggle small { display: block; }
+.wizard-toggle strong { font-size: 12px; }
+.wizard-toggle small { margin-top: 4px; color: var(--text-muted); font-size: 10px; }
+.wizard-credentials { display: grid; gap: 14px; padding: 16px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; }
+.wizard-credentials > div:first-child { display: grid; gap: 3px; }
+.wizard-credentials > div:first-child strong { font-size: 12px; }
+.wizard-configured, .wizard-note, .wizard-apply-note, .wizard-error { display: flex; align-items: flex-start; gap: 8px; margin: 0; padding: 11px 12px; border-radius: 7px; font-size: 10px; line-height: 1.5; }
+.wizard-configured, .wizard-apply-note { color: var(--accent); background: var(--accent-soft); }
+.wizard-note { color: var(--text-muted); background: var(--surface); border: 1px solid var(--line); }
+.wizard-error { margin-top: 16px; color: #b42318; background: rgba(180, 35, 24, .08); border: 1px solid rgba(180, 35, 24, .18); }
+.wizard-summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 0; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.wizard-summary div { min-width: 0; display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 12px; padding: 13px 14px; border-bottom: 1px solid var(--line); }
+.wizard-summary div:nth-child(odd) { border-right: 1px solid var(--line); }
+.wizard-summary div:nth-last-child(-n+2) { border-bottom: 0; }
+.wizard-summary dt { color: var(--text-muted); font-size: 10px; }
+.wizard-summary dd { min-width: 0; margin: 0; overflow-wrap: anywhere; font-size: 11px; font-weight: 650; }
+.wizard-actions { display: grid; grid-template-columns: auto 1fr auto auto; gap: 8px; padding: 14px 24px; background: var(--surface); border-top: 1px solid var(--line); }
+.wizard-actions button { justify-content: center; }
 @media (max-width: 980px) {
   .certificate-import-form { grid-template-columns: 1fr 1fr; }
   .certificate-import-form > div:first-child { grid-column: 1 / -1; }
@@ -1559,6 +1790,7 @@ onMounted(refreshAll);
   .dns-challenge-settings { grid-template-columns: 1fr; }
   .dns-credential-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .policy-copy { grid-column: 1 / -1; }
+  .wizard-inline-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 680px) {
   .access-mode-switch,
@@ -1598,5 +1830,20 @@ onMounted(refreshAll);
   .certificate-disabled-note { align-items: flex-start; flex-wrap: wrap; }
   .standalone-listener { grid-template-columns: 1fr; }
   .standalone-listener small { grid-column: auto; }
+  .wizard-backdrop { padding: 0; }
+  .setup-wizard { width: 100%; max-height: 100vh; min-height: 100vh; border-radius: 0; }
+  .wizard-header { padding: 17px 16px 14px; }
+  .wizard-progress { grid-template-columns: repeat(4, 1fr); padding: 11px 16px; }
+  .wizard-progress li { justify-content: center; }
+  .wizard-progress li div { display: none; }
+  .wizard-progress li:not(:last-child)::after { left: calc(50% + 14px); right: calc(-50% + 14px); }
+  .wizard-body { min-height: 0; padding: 20px 16px; }
+  .wizard-choice-grid, .wizard-fields, .wizard-inline-fields, .wizard-summary { grid-template-columns: 1fr; }
+  .wizard-choice-grid button { min-height: 108px; }
+  .wizard-summary div, .wizard-summary div:nth-child(odd), .wizard-summary div:nth-last-child(-n+2) { border-right: 0; border-bottom: 1px solid var(--line); }
+  .wizard-summary div:last-child { border-bottom: 0; }
+  .wizard-actions { grid-template-columns: auto 1fr auto; padding: 12px 16px; }
+  .wizard-actions > span { display: none; }
+  .wizard-actions .primary { grid-column: 3; }
 }
 </style>
