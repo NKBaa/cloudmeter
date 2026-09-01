@@ -2291,7 +2291,7 @@ func allocateConfiguredHostPort(ctx context.Context, tx pgx.Tx) (int, error) {
 		return 0, err
 	}
 	var port int
-	err := tx.QueryRow(ctx, `SELECT candidate FROM generate_series($1,$2) candidate
+	err := tx.QueryRow(ctx, `SELECT candidate FROM generate_series($1::int,$2::int) candidate
 		WHERE NOT EXISTS (SELECT 1 FROM app_routes WHERE host_port=candidate)
 		ORDER BY candidate LIMIT 1`, minPort, maxPort).Scan(&port)
 	if err == pgx.ErrNoRows {
