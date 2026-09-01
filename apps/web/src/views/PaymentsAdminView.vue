@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import {
   ArrowLeft,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   ChevronDown,
   ChevronUp,
   Clock3,
@@ -76,15 +78,81 @@ const busy = ref("");
 const refundTarget = ref<Order | null>(null);
 const refundReason = ref("管理员全额退款");
 const expandedRefunds = ref<string[]>([]);
+const pageSize = 10;
+const orderPage = ref(1);
+const refundPage = ref(1);
+const orderTotal = ref(0);
+const pendingOrderTotal = ref(0);
+const refundTotal = ref(0);
+
+function pageCount(total: number) {
+  return Math.max(1, Math.ceil(total / pageSize));
+}
+
+function pageNumbers(current: number, total: number) {
+  const pages = new Set([1, total, current - 1, current, current + 1]);
+  return [...pages]
+    .filter((page) => page >= 1 && page <= total)
+    .sort((left, right) => left - right);
+}
+
+const orderPageCount = computed(() => pageCount(orderTotal.value));
+const refundPageCount = computed(() => pageCount(refundTotal.value));
+const orderPageNumbers = computed(() =>
+  pageNumbers(orderPage.value, orderPageCount.value),
+);
+const refundPageNumbers = computed(() =>
+  pageNumbers(refundPage.value, refundPageCount.value),
+);
+
+type PageResponse<T> = {
+  total: number;
+  page: number;
+  pageSize: number;
+} & T;
+
+async function loadOrders(page = orderPage.value) {
+  const result = await api<PageResponse<{ orders: Order[]; pendingTotal: number }>>(
+    `/admin/payments/orders?page=${page}`,
+  );
+  orders.value = result.orders;
+  orderTotal.value = result.total;
+  pendingOrderTotal.value = result.pendingTotal;
+  orderPage.value = result.page;
+}
+
+async function loadRefunds(page = refundPage.value) {
+  const result = await api<PageResponse<{ refunds: Refund[] }>>(
+    `/admin/payments/refunds?page=${page}`,
+  );
+  refunds.value = result.refunds;
+  refundTotal.value = result.total;
+  refundPage.value = result.page;
+}
 
 async function load() {
   try {
-    const [orderResult, refundResult] = await Promise.all([
-      api<{ orders: Order[] }>("/admin/payments/orders"),
-      api<{ refunds: Refund[] }>("/admin/payments/refunds"),
-    ]);
-    orders.value = orderResult.orders;
-    refunds.value = refundResult.refunds;
+    await Promise.all([loadOrders(), loadRefunds()]);
+    error.value = "";
+  } catch (cause) {
+    error.value = (cause as Error).message;
+  }
+}
+
+async function changeOrderPage(page: number) {
+  if (page < 1 || page > orderPageCount.value || page === orderPage.value) return;
+  try {
+    await loadOrders(page);
+    error.value = "";
+  } catch (cause) {
+    error.value = (cause as Error).message;
+  }
+}
+
+async function changeRefundPage(page: number) {
+  if (page < 1 || page > refundPageCount.value || page === refundPage.value) return;
+  try {
+    await loadRefunds(page);
     error.value = "";
   } catch (cause) {
     error.value = (cause as Error).message;
@@ -100,6 +168,7 @@ async function markPaid(order: Order) {
       method: "POST",
     });
     order.status = "paid";
+    pendingOrderTotal.value = Math.max(0, pendingOrderTotal.value - 1);
     message.value = "订单已入账";
     error.value = "";
   } catch (cause) {
@@ -172,6 +241,7 @@ async function close(order: Order) {
       method: "POST",
     });
     order.status = "closed";
+    pendingOrderTotal.value = Math.max(0, pendingOrderTotal.value - 1);
     message.value = "订单已关闭";
     error.value = "";
   } catch (cause) {
@@ -247,7 +317,7 @@ function refundStatusLabel(status: string) {
         </div>
         <span
           >{{
-            orders.filter((value) => value.status === "pending").length
+            pendingOrderTotal
           }}
           待处理</span
         >
@@ -321,6 +391,26 @@ function refundStatusLabel(status: string) {
         </div>
       </article>
       <p v-if="!orders.length" class="quiet empty-copy">暂无充值订单</p>
+      <nav v-if="orderTotal > pageSize" class="record-pagination" aria-label="充值订单分页">
+        <span>第 {{ (orderPage - 1) * pageSize + 1 }}–{{ Math.min(orderPage * pageSize, orderTotal) }} 条，共 {{ orderTotal }} 条</span>
+        <div>
+          <button class="icon-action" title="上一页" :disabled="orderPage === 1" @click="changeOrderPage(orderPage - 1)">
+            <ChevronLeft :size="17" />
+          </button>
+          <template v-for="(number, index) in orderPageNumbers" :key="number">
+            <span v-if="index > 0 && number - orderPageNumbers[index - 1] > 1" class="pagination-gap">…</span>
+            <button
+              class="pagination-page"
+              :class="{ active: number === orderPage }"
+              :aria-current="number === orderPage ? 'page' : undefined"
+              @click="changeOrderPage(number)"
+            >{{ number }}</button>
+          </template>
+          <button class="icon-action" title="下一页" :disabled="orderPage === orderPageCount" @click="changeOrderPage(orderPage + 1)">
+            <ChevronRight :size="17" />
+          </button>
+        </div>
+      </nav>
     </section>
 
     <section class="payment-list refund-list">
@@ -329,7 +419,7 @@ function refundStatusLabel(status: string) {
           <p class="eyebrow">不可变记录</p>
           <h2>退款记录</h2>
         </div>
-        <span>{{ refunds.length }} 条记录</span>
+        <span>{{ refundTotal }} 条记录</span>
       </div>
       <article v-for="refund in refunds" :key="refund.id" class="refund-record">
         <div class="refund-record-summary">
@@ -394,6 +484,26 @@ function refundStatusLabel(status: string) {
         </div>
       </article>
       <p v-if="!refunds.length" class="quiet empty-copy">暂无退款记录</p>
+      <nav v-if="refundTotal > pageSize" class="record-pagination" aria-label="退款记录分页">
+        <span>第 {{ (refundPage - 1) * pageSize + 1 }}–{{ Math.min(refundPage * pageSize, refundTotal) }} 条，共 {{ refundTotal }} 条</span>
+        <div>
+          <button class="icon-action" title="上一页" :disabled="refundPage === 1" @click="changeRefundPage(refundPage - 1)">
+            <ChevronLeft :size="17" />
+          </button>
+          <template v-for="(number, index) in refundPageNumbers" :key="number">
+            <span v-if="index > 0 && number - refundPageNumbers[index - 1] > 1" class="pagination-gap">…</span>
+            <button
+              class="pagination-page"
+              :class="{ active: number === refundPage }"
+              :aria-current="number === refundPage ? 'page' : undefined"
+              @click="changeRefundPage(number)"
+            >{{ number }}</button>
+          </template>
+          <button class="icon-action" title="下一页" :disabled="refundPage === refundPageCount" @click="changeRefundPage(refundPage + 1)">
+            <ChevronRight :size="17" />
+          </button>
+        </div>
+      </nav>
     </section>
   </main>
 

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -20,6 +21,16 @@ type paymentMethod struct {
 }
 
 var paymentTypePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$`)
+
+const adminPaymentPageSize = 10
+
+func adminPaymentPage(r *http.Request) int {
+	page, err := strconv.Atoi(r.URL.Query().Get("page"))
+	if err != nil || page < 1 {
+		return 1
+	}
+	return page
+}
 
 func validatedPaymentMethods(methods []paymentMethod) ([]paymentMethod, error) {
 	if len(methods) == 0 || len(methods) > 20 {
@@ -241,9 +252,16 @@ func (s *Server) listPaymentOrders(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) adminPaymentOrders(w http.ResponseWriter, r *http.Request) {
+	var total, pendingTotal int
+	if err := s.db.QueryRow(r.Context(), `SELECT count(*),count(*) FILTER (WHERE status='pending') FROM payment_orders`).Scan(&total, &pendingTotal); err != nil {
+		s.internalError(w, err)
+		return
+	}
+	page := min(adminPaymentPage(r), max(1, (total+adminPaymentPageSize-1)/adminPaymentPageSize))
+	offset := (page - 1) * adminPaymentPageSize
 	rows, err := s.db.Query(r.Context(), `SELECT o.id,u.email,u.display_name,o.amount_cents,o.provider,o.status,o.created_at,o.paid_at,rf.id,rf.status,rf.completed_at
 		FROM payment_orders o JOIN users u ON u.id=o.user_id LEFT JOIN refunds rf ON rf.order_id=o.id
-		ORDER BY o.created_at DESC,o.id DESC LIMIT 100`)
+		ORDER BY o.created_at DESC,o.id DESC LIMIT $1 OFFSET $2`, adminPaymentPageSize, offset)
 	if err != nil {
 		s.internalError(w, err)
 		return
@@ -266,14 +284,21 @@ func (s *Server) adminPaymentOrders(w http.ResponseWriter, r *http.Request) {
 		}
 		items = append(items, item)
 	}
-	writeJSON(w, 200, map[string]any{"orders": items})
+	writeJSON(w, 200, map[string]any{"orders": items, "total": total, "pendingTotal": pendingTotal, "page": page, "pageSize": adminPaymentPageSize})
 }
 
 func (s *Server) adminRefunds(w http.ResponseWriter, r *http.Request) {
+	var total int
+	if err := s.db.QueryRow(r.Context(), `SELECT count(*) FROM refunds`).Scan(&total); err != nil {
+		s.internalError(w, err)
+		return
+	}
+	page := min(adminPaymentPage(r), max(1, (total+adminPaymentPageSize-1)/adminPaymentPageSize))
+	offset := (page - 1) * adminPaymentPageSize
 	rows, err := s.db.Query(r.Context(), `SELECT rf.id,rf.order_id,rf.user_id,u.email,u.display_name,rf.provider,rf.amount_cents,rf.status,rf.reason,
 		rf.ledger_entry_id,rf.requested_by,coalesce(actor.email,''),rf.request_id,rf.failure_message,rf.created_at,rf.completed_at
 		FROM refunds rf JOIN users u ON u.id=rf.user_id LEFT JOIN users actor ON actor.id=rf.requested_by
-		ORDER BY rf.created_at DESC,rf.id DESC LIMIT 100`)
+		ORDER BY rf.created_at DESC,rf.id DESC LIMIT $1 OFFSET $2`, adminPaymentPageSize, offset)
 	if err != nil {
 		s.internalError(w, err)
 		return
@@ -308,13 +333,13 @@ func (s *Server) adminRefunds(w http.ResponseWriter, r *http.Request) {
 	}
 	rows.Close()
 	if len(items) == 0 {
-		writeJSON(w, 200, map[string]any{"refunds": items})
+		writeJSON(w, 200, map[string]any{"refunds": items, "total": total, "page": page, "pageSize": adminPaymentPageSize})
 		return
 	}
 
 	eventRows, err := s.db.Query(r.Context(), `SELECT e.refund_id,e.id,e.from_status,e.to_status,e.message,e.metadata,e.created_at
-		FROM refund_events e WHERE e.refund_id IN (SELECT id FROM refunds ORDER BY created_at DESC,id DESC LIMIT 100)
-		ORDER BY e.created_at,e.id`)
+		FROM refund_events e WHERE e.refund_id IN (SELECT id FROM refunds ORDER BY created_at DESC,id DESC LIMIT $1 OFFSET $2)
+		ORDER BY e.created_at,e.id`, adminPaymentPageSize, offset)
 	if err != nil {
 		s.internalError(w, err)
 		return
@@ -339,7 +364,7 @@ func (s *Server) adminRefunds(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"refunds": items})
+	writeJSON(w, 200, map[string]any{"refunds": items, "total": total, "page": page, "pageSize": adminPaymentPageSize})
 }
 
 func (s *Server) createPaymentOrder(w http.ResponseWriter, r *http.Request) {

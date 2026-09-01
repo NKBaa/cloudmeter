@@ -3415,6 +3415,54 @@ input.field-invalid, select.field-invalid, textarea.field-invalid {
   gap: 8px;
   flex-wrap: wrap;
 }
+.record-pagination {
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 18px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+}
+.record-pagination > div {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.record-pagination .icon-action,
+.pagination-page {
+  width: 34px;
+  height: 34px;
+  min-width: 34px;
+}
+.pagination-page {
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  cursor: pointer;
+}
+.pagination-page:hover {
+  border-color: var(--line-strong);
+  color: var(--ink);
+  background: var(--hover);
+}
+.pagination-page.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.pagination-gap {
+  width: 18px;
+  text-align: center;
+}
 .refund-reference {
   color: var(--accent-dark) !important;
 }
@@ -3490,6 +3538,10 @@ input.field-invalid, select.field-invalid, textarea.field-invalid {
 }
 
 @media (max-width: 700px) {
+  .record-pagination {
+    align-items: flex-start;
+    flex-direction: column;
+  }
   .payment-row {
     grid-template-columns: 1fr auto;
   }

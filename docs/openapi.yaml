@@ -856,8 +856,10 @@ paths:
     get:
       operationId: adminPaymentOrders
       security: [{bearerAuth: []}]
+      parameters:
+        - {name: page, in: query, required: false, description: One-based page number; each page contains 10 records, schema: {type: integer, minimum: 1, default: 1}}
       responses:
-        '200': {description: Payment orders for verification}
+        '200': {description: Ten payment orders with total, pendingTotal, page, and pageSize pagination metadata}
         '403': {description: Super administrator required}
   /admin/settings/auth:
     get:
@@ -1273,17 +1275,22 @@ paths:
   /admin/payments/refunds:
     get:
       operationId: adminRefunds
-      description: Returns immutable refund records and their append-only event timelines for financial operations.
+      description: Returns one page of immutable refund records and their append-only event timelines for financial operations.
       security: [{bearerAuth: []}]
+      parameters:
+        - {name: page, in: query, required: false, description: One-based page number; each page contains 10 records, schema: {type: integer, minimum: 1, default: 1}}
       responses:
         '200':
-          description: Most recent refund records
+          description: Ten refund records with total, page, and pageSize pagination metadata
           content:
             application/json:
               schema:
                 type: object
-                required: [refunds]
+                required: [refunds, total, page, pageSize]
                 properties:
+                  total: {type: integer, minimum: 0}
+                  page: {type: integer, minimum: 1}
+                  pageSize: {type: integer, enum: [10]}
                   refunds:
                     type: array
                     items: {$ref: '#/components/schemas/RefundRecord'}
