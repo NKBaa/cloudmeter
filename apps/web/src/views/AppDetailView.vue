@@ -478,24 +478,26 @@ onMounted(load);
         <article class="status-card">
           <span class="status-icon"><Rocket :size="18" /></span>
           <div>
-            <span class="status-label">公网入口</span
-            ><strong class="status-value"
-              ><button
+            <span class="status-label">公网入口</span>
+            <div class="status-access-actions">
+              <button
                 v-if="app.publicPath"
                 class="primary compact"
                 @click="visitApp"
               >
-                打开应用 <ExternalLink :size="14" /></button
-              ><span v-else class="status-muted">未启用</span></strong
-            ><a
-              v-if="app.hostPort"
-              class="direct-access"
-              :href="'http://' + windowHost + ':' + app.hostPort"
-              target="_blank"
-              rel="noopener"
-              @click.stop
-              >直连 :{{ app.hostPort }}<ExternalLink :size="12"
-            /></a>
+                打开应用 <ExternalLink :size="14" />
+              </button>
+              <span v-else class="status-muted">未启用</span>
+              <a
+                v-if="app.hostPort"
+                class="direct-access"
+                :href="'http://' + windowHost + ':' + app.hostPort"
+                target="_blank"
+                rel="noopener"
+                @click.stop
+                >直连 :{{ app.hostPort }}<ExternalLink :size="12"
+              /></a>
+            </div>
           </div>
         </article>
       </section>
@@ -881,11 +883,9 @@ onMounted(load);
   min-width: 0;
 }
 .status-card .direct-access {
-  justify-self: flex-start;
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  margin-top: 4px;
   font-size: 12px;
   font-weight: 700;
   color: var(--accent);
@@ -894,6 +894,13 @@ onMounted(load);
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.04);
   text-decoration: none;
+}
+.status-access-actions {
+  display: flex !important;
+  flex-flow: row wrap;
+  align-items: center;
+  gap: 8px !important;
+  margin-top: 2px;
 }
 .status-label {
   font-size: 12.5px;
