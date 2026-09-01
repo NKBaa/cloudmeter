@@ -3523,7 +3523,7 @@ input.field-invalid, select.field-invalid, textarea.field-invalid {
 .pricing-select-row {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 42px;
+  grid-template-columns: minmax(0, 1fr) 36px;
   align-items: stretch;
   border-top: 1px solid var(--line);
   background: var(--field);
@@ -3558,9 +3558,31 @@ input.field-invalid, select.field-invalid, textarea.field-invalid {
 .pricing-delete {
   align-self: center;
   justify-self: center;
+  width: 28px !important;
+  min-width: 0 !important;
+  height: 28px !important;
+  padding: 0 !important;
+  border: 1px solid transparent !important;
+  border-radius: 6px !important;
+  background: transparent !important;
   color: var(--muted);
+  opacity: .38;
+  box-shadow: none !important;
+  transition: color .16s ease, background .16s ease, border-color .16s ease, opacity .16s ease;
 }
-.pricing-delete:hover { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); }
+.pricing-select-row:hover .pricing-delete,
+.pricing-select-row.selected .pricing-delete { opacity: .72; }
+.pricing-delete:hover {
+  color: var(--danger) !important;
+  border-color: color-mix(in srgb, var(--danger) 24%, transparent) !important;
+  background: color-mix(in srgb, var(--danger) 9%, transparent) !important;
+  opacity: 1 !important;
+}
+.pricing-delete:focus-visible {
+  opacity: 1;
+  outline: 2px solid color-mix(in srgb, var(--danger) 42%, transparent);
+  outline-offset: 1px;
+}
 .pricing-select strong,
 .pricing-select small {
   display: block;
