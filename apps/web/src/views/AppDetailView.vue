@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import {
   ArrowLeft,
@@ -7,12 +7,10 @@ import {
   CircleAlert,
   Copy,
   ExternalLink,
-  FileText,
   RefreshCw,
   Rocket,
   Server,
   Trash2,
-  X,
   ChevronDown,
   ChevronRight,
 } from "@lucide/vue";
@@ -327,9 +325,7 @@ async function copyInstanceId() {
     /* ignore */
   }
 }
-const logOpen = ref(false),
-  logSection = ref<HTMLElement | null>(null),
-  logBusy = ref(false),
+const logBusy = ref(false),
   logData = ref<{
     logs: string;
     status: string;
@@ -390,28 +386,16 @@ async function refreshLogs() {
     logBusy.value = false;
   }
 }
-async function openLogs() {
-  if (!app.value) return;
-  logOpen.value = true;
-  logData.value = { logs: "", status: "" };
-  await nextTick();
-  logSection.value?.scrollIntoView({ behavior: "smooth", block: "start" });
+onBeforeUnmount(() => {
+  if (logTimer !== undefined) window.clearInterval(logTimer);
+});
+onMounted(async () => {
+  await load();
   await refreshLogs();
   logTimer = window.setInterval(() => {
     void loadLogs();
   }, 3000);
-}
-function closeLogs() {
-  logOpen.value = false;
-  if (logTimer !== undefined) {
-    window.clearInterval(logTimer);
-    logTimer = undefined;
-  }
-}
-onBeforeUnmount(() => {
-  if (logTimer !== undefined) window.clearInterval(logTimer);
 });
-onMounted(load);
 </script>
 
 <template>
@@ -442,9 +426,7 @@ onMounted(load);
         </div>
       </div>
       <div class="app-detail-actions">
-        <button class="secondary compact" :disabled="!app" @click="openLogs">
-          <FileText :size="15" />查看日志</button
-        ><button class="secondary compact" :disabled="loading" @click="load">
+        <button class="secondary compact" :disabled="loading" @click="load">
           <RefreshCw :class="{ spin: loading }" :size="15" />刷新
         </button>
       </div>
@@ -729,7 +711,7 @@ onMounted(load);
           <p>还没有发布记录</p>
         </div>
       </section>
-      <section v-if="logOpen" ref="logSection" class="log-section">
+      <section class="log-section">
         <header class="log-section-head">
           <div>
             <p class="eyebrow">{{ app.slug }}</p>
@@ -757,9 +739,6 @@ onMounted(load);
               @click="refreshLogs"
             >
               <RefreshCw :class="{ spin: logBusy }" :size="15" />立即刷新
-            </button>
-            <button class="icon-action" title="收起日志" @click="closeLogs">
-              <X :size="18" />
             </button>
           </div>
         </header>
