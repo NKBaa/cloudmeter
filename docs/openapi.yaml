@@ -848,6 +848,72 @@ paths:
       responses:
         '200': {description: Platform settings saved and application public routes synchronized}
         '400': {description: "Invalid platform URL, application domain, or system name"}
+  /admin/settings/llm-api-key:
+    get:
+      operationId: getLLMAPIKey
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: LLM API key status without secret material}
+        '403': {description: Super administrator required}
+    delete:
+      operationId: revokeLLMAPIKey
+      security: [{bearerAuth: []}]
+      responses:
+        '204': {description: Active LLM API key revoked}
+        '403': {description: Super administrator required}
+  /admin/settings/llm-api-key/rotate:
+    post:
+      operationId: rotateLLMAPIKey
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: {type: string, maxLength: 64}
+      responses:
+        '201': {description: LLM API key created or rotated; plaintext key is returned once}
+        '400': {description: Invalid key name}
+        '403': {description: Super administrator required}
+  /llm/v1/analysis:
+    get:
+      operationId: llmSystemAnalysis
+      security: [{llmApiKey: []}]
+      responses:
+        '200': {description: Sanitized platform settings and aggregate operational metrics for model analysis}
+        '401': {description: LLM API key is invalid or revoked}
+  /llm/v1/settings/system:
+    get:
+      operationId: llmGetSystemSettings
+      security: [{llmApiKey: []}]
+      responses:
+        '200': {description: Complete platform display settings}
+        '401': {description: LLM API key is invalid or revoked}
+    patch:
+      operationId: llmPatchSystemSettings
+      security: [{llmApiKey: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              additionalProperties: false
+              properties:
+                systemName: {type: string, minLength: 1, maxLength: 64}
+                logoUrl: {type: string}
+                footerText: {type: string}
+                aboutContent: {type: string}
+                homepageContent: {type: string}
+                termsOfService: {type: string}
+                privacyPolicy: {type: string}
+      responses:
+        '200': {description: Allowed platform display settings updated and audited}
+        '400': {description: Invalid or unsupported update}
+        '401': {description: LLM API key is invalid or revoked}
   /admin/caddy/overview:
     get:
       operationId: getCaddyOverview
@@ -1563,6 +1629,7 @@ paths:
 components:
   securitySchemes:
     bearerAuth: {type: http, scheme: bearer}
+    llmApiKey: {type: http, scheme: bearer, bearerFormat: CloudMeter LLM API key}
   schemas:
     TicketStatus:
       type: string

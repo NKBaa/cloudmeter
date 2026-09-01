@@ -1,0 +1,3 @@
+BEGIN;
+DROP TABLE IF EXISTS llm_api_keys;
+COMMIT;
