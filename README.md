@@ -36,7 +36,7 @@ cd cloudmeter
 cp configs/.env.example .env
 
 # 3. Generate cryptographic secrets and update .env
-# Replace passwords, tokens, SECRETS_ENCRYPTION_KEY, PLATFORM_ALLOWED_HOST, and PUBLIC_BASE_URL
+# Replace passwords, tokens, and SECRETS_ENCRYPTION_KEY
 ```
 
 Generate secure keys:
@@ -54,7 +54,7 @@ openssl rand -base64 32 | tr -d '=\n'
 docker compose --env-file .env -f deploy/compose.yaml up -d --build
 ```
 
-Access the setup wizard at `http://<PLATFORM_ALLOWED_HOST>:<PLATFORM_PORT>/setup` to create the super-administrator account.
+Access the setup wizard at `http://<server-ip>:<PLATFORM_PORT>/setup` to create the super-administrator account, then configure the public URL in Website Settings.
 
 For complete production guides, see [Docker Deployment Guide](docs/docker-deployment.md).
 
@@ -195,7 +195,7 @@ openssl rand -base64 32 | tr -d '=\n'
 docker compose --env-file .env -f deploy/compose.yaml up -d --build
 ```
 
-通过浏览器访问 `http://<PLATFORM_ALLOWED_HOST>:<PLATFORM_PORT>/setup` 完成超级管理员账号初始化。
+通过浏览器访问 `http://<服务器 IP>:<PLATFORM_PORT>/setup` 完成超级管理员账号初始化，然后在“网站设置”中配置服务器公开 URL。
 
 详细配置、域名反向代理设置及升级说明请参考 [Docker 部署指南](docs/docker-deployment.md)。
 

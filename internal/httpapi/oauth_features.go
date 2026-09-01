@@ -552,7 +552,7 @@ func (s *Server) configuredPublicBaseURL(ctx context.Context) string {
 			}
 		}
 	}
-	return strings.TrimRight(strings.TrimSpace(s.cfg.PublicBaseURL), "/")
+	return ""
 }
 
 func normalizePublicBaseURL(raw string) (string, error) {
@@ -562,7 +562,7 @@ func normalizePublicBaseURL(raw string) (string, error) {
 	}
 	parsed, err := url.Parse(value)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.Hostname() == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
-		return "", fmt.Errorf("PUBLIC_BASE_URL must be an HTTP(S) origin without a path, query or fragment")
+		return "", fmt.Errorf("server public URL must be an HTTP(S) origin without a path, query or fragment")
 	}
 	parsed.Path = ""
 	parsed.RawPath = ""

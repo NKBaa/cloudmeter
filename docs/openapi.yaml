@@ -1660,7 +1660,7 @@ paths:
         - {name: provider, in: path, required: true, schema: {type: string, enum: [github, linuxdo]}}
       responses:
         '200': {description: Encrypted OAuth settings and LinuxDo trust policy updated}
-        '409': {description: PUBLIC_BASE_URL is required before enabling OAuth}
+        '409': {description: Server public URL must be configured in Website Settings before enabling OAuth}
   /admin/tickets:
     get:
       operationId: adminListTickets

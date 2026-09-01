@@ -64,7 +64,6 @@ services:
       start_period: 5s
     environment:
       ROUTER_INTERNAL_TOKEN: ${ROUTER_INTERNAL_TOKEN:?ROUTER_INTERNAL_TOKEN is required}
-      PLATFORM_ALLOWED_HOST: ${PLATFORM_ALLOWED_HOST:?PLATFORM_ALLOWED_HOST is required}
       GATEWAY_TRUSTED_PROXY_CIDRS: ${GATEWAY_TRUSTED_PROXY_CIDRS:?GATEWAY_TRUSTED_PROXY_CIDRS is required}
     networks: [edge_network, platform_network]
     labels:
@@ -124,7 +123,6 @@ services:
     environment:
       DATABASE_URL: postgres://cloudmeter:${POSTGRES_PASSWORD}@postgres:5432/cloudmeter?sslmode=disable
       ROUTER_INTERNAL_TOKEN: ${ROUTER_INTERNAL_TOKEN:?ROUTER_INTERNAL_TOKEN is required}
-      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
     expose: ["8082"]
     depends_on:
       migrate: {condition: service_completed_successfully}
@@ -150,7 +148,6 @@ services:
       DATABASE_URL: postgres://cloudmeter:${POSTGRES_PASSWORD}@postgres:5432/cloudmeter?sslmode=disable
       SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-24}
       TRUSTED_PROXY_CIDRS: ${API_TRUSTED_PROXY_CIDRS:-172.16.0.0/12}
-      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
       SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY:?SECRETS_ENCRYPTION_KEY is required}
       EGRESS_INGEST_TOKEN: ${EGRESS_INGEST_TOKEN:?EGRESS_INGEST_TOKEN is required}
       RUNTIME_OWNER: ${COMPOSE_PROJECT_NAME:-cloudmeter}

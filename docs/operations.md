@@ -77,7 +77,7 @@ bash deploy/verify-product-dependencies.sh
 
 ## 重启验收
 
-在 WSL Ubuntu 执行 bash deploy/verify.sh；在 Windows Docker Desktop 执行 powershell -ExecutionPolicy Bypass -File deploy/verify.ps1。脚本只重启服务，不删除数据卷，并验证 Compose 配置、Caddyfile 实际解析、合法 Host 健康接口、未知 Host 返回 `421`、数据库迁移已达到仓库最新版本且不是 dirty 状态、OpenAPI 覆盖全部已注册后端路由、OpenAPI YAML 结构与引用有效、Docker Socket 仅由 Worker 持有和重启后的状态。OpenAPI 结构校验使用固定版本的 Redocly CLI，并通过临时 Node 容器运行，首次执行需要能够访问 npm registry。隔离栈通过 IP 验收时应同时导出 `PLATFORM_ALLOWED_HOST=127.0.0.1`，不要修改正式栈的域名白名单。
+在 WSL Ubuntu 执行 bash deploy/verify.sh；在 Windows Docker Desktop 执行 powershell -ExecutionPolicy Bypass -File deploy/verify.ps1。脚本只重启服务，不删除数据卷，并验证 Compose 配置、Caddyfile 实际解析、控制台健康接口、未知 Host 返回 `421`、数据库迁移已达到仓库最新版本且不是 dirty 状态、OpenAPI 覆盖全部已注册后端路由、OpenAPI YAML 结构与引用有效、Docker Socket 仅由 Worker 持有和重启后的状态。OpenAPI 结构校验使用固定版本的 Redocly CLI，并通过临时 Node 容器运行，首次执行需要能够访问 npm registry。
 Windows 与 WSL 共用 Docker Desktop Engine 时必须使用不同的 `COMPOSE_PROJECT_NAME` 和宿主机端口。Compose 项目名同时作为 `RUNTIME_OWNER` 注入 API 和 Worker；应用容器、产品测试容器、健康探针、辅助容器和托管网络会使用稳定的项目作用域名称并写入 `cloudmeter.owner` 标签。非正式 owner 的用户网络、应用数据卷和默认备份卷同样带作用域，避免克隆数据库后误挂载正式持久数据；正式 `cloudmeter` 保持历史 `user_net_*`、`cmv-*` 和 `cloudmeter_backup_data` 名称。Worker 只对账本项目的资源，避免正式、验收或灾备栈互相删除容器。升级前遗留的无标签资源仅由正式 owner 在当前数据库能证明归属时处理。
 
 ## 应用生命周期验收
@@ -202,7 +202,7 @@ bash deploy/verify-account-features.sh
 
 ## OAuth
 
-GitHub 和 LinuxDo OAuth 都使用 `PUBLIC_BASE_URL` 生成固定回调地址与登录结果页，绝不依据请求 `Host` 头拼接 URL。后台会显示并允许复制准确回调地址：`{PUBLIC_BASE_URL}/api/auth/oauth/github/callback` 和 `{PUBLIC_BASE_URL}/api/auth/oauth/linuxdo/callback`。必须先把对应地址登记到提供商，再填写 Client ID、Client Secret 和 Scopes；缺少有效 `PUBLIC_BASE_URL` 时后端拒绝启用。Client Secret 使用 `SECRETS_ENCRYPTION_KEY` 加密保存，读取接口不返回原文。
+GitHub 和 LinuxDo OAuth 都使用“网站设置”中的服务器公开 URL 生成固定回调地址与登录结果页，绝不依据请求 `Host` 头拼接 URL。后台会显示并允许复制准确回调地址：`{服务器公开 URL}/api/auth/oauth/github/callback` 和 `{服务器公开 URL}/api/auth/oauth/linuxdo/callback`。必须先把对应地址登记到提供商，再填写 Client ID、Client Secret 和 Scopes；缺少有效服务器公开 URL 时后端拒绝启用。Client Secret 使用 `SECRETS_ENCRYPTION_KEY` 加密保存，读取接口不返回原文。
 
 GitHub 登录只接受提供商确认过的邮箱；LinuxDo 登录拒绝未激活、已禁言或信任等级低于后台阈值的账户，阈值范围为 0 至 4。OAuth 绑定已有账户前会校验邮箱，创建新账户时仍受“允许用户自行注册”、域白名单和邮箱别名策略约束，并写入 `user.oauth_create` 审计记录。
 

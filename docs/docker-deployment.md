@@ -125,8 +125,6 @@ openssl rand -base64 32 | tr -d '=\n'
 | `ROUTER_INTERNAL_TOKEN` | Gateway 与 Router 通信令牌（最少 32 位） | 独立随机字符串 |
 | `EGRESS_INGEST_TOKEN` | Worker 与出口代理通信令牌 | 独立随机字符串 |
 | `SECRETS_ENCRYPTION_KEY` | 静态加密主密钥（主加密密码，务必离线备份） | 32-Byte Base64 无填充 |
-| `PLATFORM_ALLOWED_HOST` | 平台访问 Host 名（仅主机名，无协议端口路径） | `cloud.example.com` 或 `127.0.0.1` |
-| `PUBLIC_BASE_URL` | 用户访问平台的完整 URL 根路径 | `https://cloud.example.com` |
 | `CADDY_ADMIN_URL` | API 访问内部 Caddy Admin API 的地址，不得指向公网 | `http://gateway:2019` |
 | `CADDYFILE_PATH` | API 容器内托管 Caddyfile 路径 | `/etc/cloudmeter/runtime/Caddyfile` |
 | `PLATFORM_PORT` | 模式 2 的控制台独立端口 | `8080` |
@@ -146,8 +144,6 @@ Compose 只在内部 `platform_network` 开放 Caddy Admin API 的 `2019` 端口
 | 环境变量 | 实测值 | 说明 |
 | :--- | :--- | :--- |
 | `PLATFORM_PORT` | `18085` | 模式 2 控制台独立端口 |
-| `PLATFORM_ALLOWED_HOST` | `127.0.0.1` | WSL2 自动端口转发，Windows 宿主机直接访问 `http://127.0.0.1:18085` |
-| `PUBLIC_BASE_URL` | `http://127.0.0.1:18085` | 无域名时的完整访问根路径 |
 | `DOCKER_GID` | `$(stat -c '%g' /var/run/docker.sock)` 的实际结果 | 不要固定照抄；本次 Ubuntu 原生 Docker Engine 实测为 `108`，Docker Desktop/部分 WSL root 环境常见为 `0` |
 
 ---
@@ -232,7 +228,7 @@ docker compose --env-file .env -f deploy/compose.yaml logs -f --tail=100
 容器启动成功后，通过浏览器访问平台初始化页面：
 
 ```text
-http://<PLATFORM_ALLOWED_HOST>:<PLATFORM_PORT>/setup
+http://<服务器 IP>:<PLATFORM_PORT>/setup
 ```
 
 ### 初始化规则与并发锁
@@ -313,7 +309,7 @@ powershell -ExecutionPolicy Bypass -File deploy/verify.ps1
    若冲突的是模式 2 控制台端口，修改 `.env` 中的 `PLATFORM_PORT`；若冲突的是 Caddy 入口，则停止占用宿主机 80/443 的其他服务，或调整部署拓扑。
 
 2. **421 请求错误 (`421 Misdirected Request`)**
-   请求中的 HTTP `Host` 报头与 `.env` 中定义的 `PLATFORM_ALLOWED_HOST` 不一致。检查反向代理是否正确透传了原 Host 报头。
+   请求中的 HTTP `Host` 报头与“网站设置”中保存的控制台主域名或应用泛子域名不一致。检查公开 URL、应用域名及反向代理是否正确透传了原 Host 报头。
 
 3. **Worker 无法部署应用**
    检查宿主机 Docker Socket 路径与权限，确认 `.env` 中 `DOCKER_EXECUTOR_ENABLED=true` 且 `DOCKER_GID` 与宿主机 `stat -c '%g' /var/run/docker.sock` 一致。不要假设 WSL 一定返回 `0`；以当前机器命令输出为准。

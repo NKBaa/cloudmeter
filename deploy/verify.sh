@@ -28,9 +28,6 @@ PORT="${PORT%$'\r'}"
 PORT="${PORT:-8080}"
 BIND_IP="${PLATFORM_BIND_IP:-127.0.0.1}"
 GATEWAY_IP="${GATEWAY_BIND_IP:-127.0.0.1}"
-ALLOWED_HOST="${PLATFORM_ALLOWED_HOST:-$(awk -F= '$1=="PLATFORM_ALLOWED_HOST" {print $2}' .env | tail -n 1)}"
-ALLOWED_HOST="${ALLOWED_HOST%$'\r'}"
-[[ -n "$ALLOWED_HOST" ]] || { echo 'PLATFORM_ALLOWED_HOST is required' >&2; exit 1; }
 wait_for_healthy() {
   local service container_id status
   for service in api app-router egress-proxy web gateway; do
@@ -66,7 +63,7 @@ if "$DOCKER_BIN" inspect --format '{{range .Mounts}}{{println .Destination}}{{en
   echo 'API must never mount the Docker socket' >&2
   exit 1
 fi
-curl --fail --silent --show-error -H "Host: $ALLOWED_HOST" "http://${BIND_IP}:${PORT}/api/healthz" >/dev/null
+curl --fail --silent --show-error "http://${BIND_IP}:${PORT}/api/healthz" >/dev/null
 echo '[3/7] Docker socket isolation verified'
 echo '[4/7] checking migrations and API contracts'
 "${COMPOSE[@]}" run --rm migrate >/dev/null
@@ -82,7 +79,7 @@ if ! wait_for_healthy; then
   "${COMPOSE[@]}" ps >&2
   exit 1
 fi
-curl --fail --silent --show-error -H "Host: $ALLOWED_HOST" "http://${BIND_IP}:${PORT}/api/healthz" >/dev/null
+curl --fail --silent --show-error "http://${BIND_IP}:${PORT}/api/healthz" >/dev/null
 UNKNOWN_HOST_STATUS="$(curl --silent --show-error -o /dev/null -w '%{http_code}' -H 'Host: invalid-host.example.invalid' "http://${GATEWAY_IP}:80/api/healthz")"
 [[ "$UNKNOWN_HOST_STATUS" == 421 ]] || { echo "unknown Host returned $UNKNOWN_HOST_STATUS, expected 421" >&2; exit 1; }
 echo '[7/7] restart health verified'

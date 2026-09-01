@@ -10,7 +10,7 @@ const errorMessages: Record<string, string> = {
   registration_disabled: '当前暂未开放公开注册',
   email_policy_blocked: '该邮箱不符合当前注册策略',
   invalid_verification_code: '验证码无效或已过期，请重新获取',
-  oauth_public_base_url_required: '启用 OAuth 前需在部署环境配置有效的 PUBLIC_BASE_URL',
+  oauth_public_base_url_required: '启用 OAuth 前需在网站设置中配置有效的服务器公开 URL',
   app_stop_in_progress: '应用正在停止，请等待当前任务完成',
   app_suspended: '应用已被平台暂停，请先处理余额或套餐问题',
   app_not_running: '只有运行中的应用可以执行此操作',

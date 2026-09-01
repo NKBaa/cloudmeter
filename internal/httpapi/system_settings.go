@@ -35,9 +35,6 @@ func (s *Server) getSystemSettingsPublic(w http.ResponseWriter, r *http.Request)
 	} else if res.SystemName == "" {
 		res.SystemName = "CloudMeter"
 	}
-	if res.ServerURL == "" {
-		res.ServerURL = s.cfg.PublicBaseURL
-	}
 	writeJSON(w, http.StatusOK, res)
 }
 
@@ -52,9 +49,6 @@ func (s *Server) getSystemSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if res.SystemName == "" {
 		res.SystemName = "CloudMeter"
-	}
-	if res.ServerURL == "" {
-		res.ServerURL = s.cfg.PublicBaseURL
 	}
 	writeJSON(w, http.StatusOK, res)
 }

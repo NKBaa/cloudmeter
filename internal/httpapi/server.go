@@ -58,11 +58,6 @@ type contextKey string
 const principalKey contextKey = "principal"
 
 func New(ctx context.Context, db *pgxpool.Pool, cfg config.Config, logger *slog.Logger) (*Server, error) {
-	publicBaseURL, err := normalizePublicBaseURL(cfg.PublicBaseURL)
-	if err != nil {
-		return nil, err
-	}
-	cfg.PublicBaseURL = publicBaseURL
 	box, err := secretbox.New(cfg.SecretsKey)
 	if err != nil {
 		return nil, fmt.Errorf("configure credential encryption: %w", err)

@@ -37,12 +37,7 @@ $envLine = Get-Content .env | Where-Object { $_ -match "^PLATFORM_PORT=" } | Sel
 if (-not $env:PLATFORM_PORT -and $envLine) { $port = [int](($envLine -split "=",2)[1]) }
 $bindIP = if ($env:PLATFORM_BIND_IP) { $env:PLATFORM_BIND_IP } else { "127.0.0.1" }
 $gatewayIP = if ($env:GATEWAY_BIND_IP) { $env:GATEWAY_BIND_IP } else { "127.0.0.1" }
-$allowedHost = if ($env:PLATFORM_ALLOWED_HOST) { $env:PLATFORM_ALLOWED_HOST.Trim() } else {
-    $line = Get-Content .env | Where-Object { $_ -match "^PLATFORM_ALLOWED_HOST=" } | Select-Object -Last 1
-    if ($line) { (($line -split "=", 2)[1]).Trim() } else { "" }
-}
-if (-not $allowedHost) { throw "PLATFORM_ALLOWED_HOST is required" }
-$health = Invoke-RestMethod "http://${bindIP}:$port/api/healthz" -Headers @{ Host = $allowedHost }
+$health = Invoke-RestMethod "http://${bindIP}:$port/api/healthz"
 if ($health.status -ne "ok") { throw "health check failed" }
 & $Compose[0] $Compose[1..($Compose.Length-1)] run --rm migrate
 if ($LASTEXITCODE -ne 0) { throw "migration check failed" }
@@ -69,7 +64,7 @@ foreach ($service in @("api", "app-router", "egress-proxy", "web", "gateway")) {
     }
     if ($serviceHealth -ne "healthy") { throw "timed out waiting for $service health" }
 }
-$health = Invoke-RestMethod "http://${bindIP}:$port/api/healthz" -Headers @{ Host = $allowedHost }
+$health = Invoke-RestMethod "http://${bindIP}:$port/api/healthz"
 if ($health.status -ne "ok") { throw "post-restart health check failed" }
 $unknownHostStatus = 0
 try {

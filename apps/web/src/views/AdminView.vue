@@ -1155,13 +1155,13 @@ async function toggleAnnouncement(item: Announcement) {
           v-if="!github.publicBaseUrlConfigured"
           class="configuration-status blocked"
         >
-          <CircleAlert :size="16" />需先在部署环境配置 PUBLIC_BASE_URL
+          <CircleAlert :size="16" />需先在网站设置中配置服务器公开 URL
         </p>
         <form @submit.prevent="saveOAuth('github', github)">
           <div class="switch-setting">
             <div>
               <strong>启用 GitHub</strong
-              ><small>需先配置有效的 PUBLIC_BASE_URL</small>
+              ><small>需先在网站设置中配置有效的服务器公开 URL</small>
             </div>
             <label class="switch"
               ><input
@@ -1212,13 +1212,13 @@ async function toggleAnnouncement(item: Announcement) {
           v-if="!linuxdo.publicBaseUrlConfigured"
           class="configuration-status blocked"
         >
-          <CircleAlert :size="16" />需先在部署环境配置 PUBLIC_BASE_URL
+          <CircleAlert :size="16" />需先在网站设置中配置服务器公开 URL
         </p>
         <form @submit.prevent="saveOAuth('linuxdo', linuxdo)">
           <div class="switch-setting">
             <div>
               <strong>启用 LinuxDo</strong
-              ><small>需先配置有效的 PUBLIC_BASE_URL</small>
+              ><small>需先在网站设置中配置有效的服务器公开 URL</small>
             </div>
             <label class="switch"
               ><input

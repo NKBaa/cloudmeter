@@ -67,7 +67,7 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
-	mux.Handle("/", requireRouterToken(cfg.RouterToken, routeHandler(db, logger, cfg.PublicBaseURL)))
+	mux.Handle("/", requireRouterToken(cfg.RouterToken, routeHandler(db, logger)))
 	server := &http.Server{Addr: ":8082", Handler: mux, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
 	go func() {
 		logger.Info("app router listening", "addr", server.Addr)
@@ -93,7 +93,7 @@ func requireRouterToken(token string, next http.Handler) http.Handler {
 	})
 }
 
-func routeHandler(db *pgxpool.Pool, logger *slog.Logger, fallbackServerURL string) http.Handler {
+func routeHandler(db *pgxpool.Pool, logger *slog.Logger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		routeMode := strings.ToLower(strings.TrimSpace(r.Header.Get(routeModeHeader)))
 		if routeMode != routeModeLegacy && routeMode != routeModeSubdomain {
@@ -106,9 +106,6 @@ func routeHandler(db *pgxpool.Pool, logger *slog.Logger, fallbackServerURL strin
 			logger.Error("system route settings lookup failed", "error", err)
 			http.Error(w, "route settings unavailable", http.StatusBadGateway)
 			return
-		}
-		if strings.TrimSpace(serverURL) == "" {
-			serverURL = fallbackServerURL
 		}
 		appBaseDomain = normalizeHostname(appBaseDomain)
 		hostMatch := ""

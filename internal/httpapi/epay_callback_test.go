@@ -97,14 +97,6 @@ func TestRequestOriginOnlyTrustsForwardedProtoFromConfiguredProxy(t *testing.T) 
 	}
 }
 
-func TestRequestOriginUsesConfiguredPublicBaseURL(t *testing.T) {
-	s := &Server{cfg: config.Config{PublicBaseURL: "https://cloud.example.com/"}}
-	r := httptest.NewRequest(http.MethodGet, "http://internal.invalid", nil)
-	if got := s.requestOrigin(r); got != "https://cloud.example.com" {
-		t.Fatalf("origin=%q", got)
-	}
-}
-
 func TestAppSlugPattern(t *testing.T) {
 	for _, value := range []string{"demo", "ai-app-01", "a"} {
 		if !appSlugPattern.MatchString(value) {
