@@ -13,6 +13,7 @@ import (
 	"net/smtp"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 type smtpConnectionSettings struct {
@@ -294,6 +295,11 @@ func (s *Server) sendVerificationCode(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"sent": true, "required": true})
 }
 func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
+	username := strings.TrimSpace(r.URL.Query().Get("username"))
+	if utf8.RuneCountInString(username) > 80 {
+		writeError(w, http.StatusBadRequest, "validation_failed", "用户名搜索不能超过 80 个字符")
+		return
+	}
 	rows, err := s.db.Query(r.Context(), `SELECT u.id,u.email,u.display_name,u.status,u.created_at,
 		coalesce(array_agg(DISTINCT r.code) FILTER (WHERE r.code IS NOT NULL),'{}'),
 		coalesce(us.status,''),coalesce(p.name,''),us.ends_at,us.grace_ends_at,coalesce(w.balance_cents,0)
@@ -304,8 +310,9 @@ func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 		LEFT JOIN plan_versions pv ON pv.id=us.plan_version_id
 		LEFT JOIN plans p ON p.id=pv.plan_id
 		LEFT JOIN wallets w ON w.user_id=u.id
+		WHERE $1='' OR strpos(lower(u.display_name),lower($1))>0
 		GROUP BY u.id,us.status,p.name,us.ends_at,us.grace_ends_at,w.balance_cents
-		ORDER BY u.created_at DESC`)
+		ORDER BY u.created_at DESC`, username)
 	if err != nil {
 		s.internalError(w, err)
 		return

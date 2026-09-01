@@ -319,6 +319,17 @@ func (s *Server) createReleaseJob(w http.ResponseWriter, r *http.Request, actorI
 				writeError(w, http.StatusBadRequest, "invalid_deployment_configuration", err.Error())
 				return
 			}
+			if selected != nil {
+				routeSpec, err = selectedRouteSpec(routeSpec, *selected)
+				if err != nil {
+					writeError(w, http.StatusBadRequest, "invalid_deployment_configuration", err.Error())
+					return
+				}
+			}
+			if err = validateInternalRoutePort(runtimeSpec, routeSpec); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid_deployment_configuration", err.Error())
+				return
+			}
 			if err = s.applyReleaseSecretUpdates(r.Context(), tx, appID, runtimeSpec, providedSecrets); err != nil {
 				if validation, ok := err.(*secretValidationError); ok {
 					writeError(w, validation.Status, validation.Code, validation.Message)

@@ -1,78 +1,32 @@
 {
-    auto_https off
-    admin off
-    servers {
-        trusted_proxies static {$GATEWAY_TRUSTED_PROXY_CIDRS}
-        trusted_proxies_strict
-    }
+	auto_https off
+	# The admin API is reachable only from platform_network. It is never
+	# published on the host and is proxied through authenticated API handlers.
+	admin 0.0.0.0:2019
+	servers {
+		trusted_proxies static {$GATEWAY_TRUSTED_PROXY_CIDRS}
+		trusted_proxies_strict
+	}
 }
 
-:8080 {
-    encode zstd gzip
+:80 {
+	encode zstd gzip
+	log {
+		output stdout
+		format json
+	}
 
-    # Keep the platform host and application hosts independent. The Router
-    # validates non-platform hosts against system_settings.app_base_domain.
-    @legacy_app {
-        host {$PLATFORM_ALLOWED_HOST}
-        path /apps/*
-    }
-    handle @legacy_app {
-        reverse_proxy {
-            dynamic a app-router 8082 {
-                refresh 5s
-                versions ipv4
-            }
-            header_up X-Forwarded-For {http.request.client_ip}
-            header_up X-CloudMeter-Router-Token {$ROUTER_INTERNAL_TOKEN}
-            header_up X-CloudMeter-Route-Mode legacy
-        }
-    }
-
-    @internal_api {
-        host {$PLATFORM_ALLOWED_HOST}
-        path /api/internal/*
-    }
-    handle @internal_api {
-        respond "not found" 404
-    }
-
-    @api {
-        host {$PLATFORM_ALLOWED_HOST}
-        path /api/* /payments/*
-    }
-    handle @api {
-        reverse_proxy {
-            dynamic a api 8081 {
-                refresh 1s
-                versions ipv4
-            }
-            header_up X-Forwarded-For {http.request.client_ip}
-            flush_interval -1
-        }
-    }
-
-    @platform host {$PLATFORM_ALLOWED_HOST}
-    handle @platform {
-        reverse_proxy {
-            dynamic a web 8080 {
-                refresh 1s
-                versions ipv4
-            }
-            header_up X-Forwarded-For {http.request.client_ip}
-        }
-    }
-
-    # All other hosts are checked by the Router against the separately
-    # configured application wildcard domain. Invalid hosts receive 421.
-    handle {
-        reverse_proxy {
-            dynamic a app-router 8082 {
-                refresh 5s
-                versions ipv4
-            }
-            header_up X-Forwarded-For {http.request.client_ip}
-            header_up X-CloudMeter-Router-Token {$ROUTER_INTERNAL_TOKEN}
-            header_up X-CloudMeter-Route-Mode subdomain
-        }
-    }
+	# Bootstrap in applications-only mode. Saving Website Settings replaces
+	# this source through Caddy's Admin API and persists the active config.
+	handle {
+		reverse_proxy {
+			dynamic a app-router 8082 {
+				refresh 5s
+				versions ipv4
+			}
+			header_up X-Forwarded-For {http.request.client_ip}
+			header_up X-CloudMeter-Router-Token {$ROUTER_INTERNAL_TOKEN}
+			header_up X-CloudMeter-Route-Mode subdomain
+		}
+	}
 }

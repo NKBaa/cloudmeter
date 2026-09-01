@@ -6,8 +6,6 @@ import {
   ArchiveRestore,
   BadgeDollarSign,
   Boxes,
-  CalendarDays,
-  CalendarCheck,
   ChevronLeft,
   ChevronRight,
   Coins,
@@ -141,6 +139,10 @@ type App = {
   publicPath?: string;
   hostPort?: number;
   portMappingEnabled?: boolean;
+  routeHostLabel?: string;
+  domainRefreshDays?: number | null;
+  domainNextRefreshAt?: string;
+  containerPort?: number;
   cpuCores?: number;
   memoryMiB?: number;
   cpuUsageCores?: number;
@@ -337,8 +339,7 @@ const props = defineProps<{
     | "apps"
     | "billing"
     | "recharge"
-    | "usage"
-    | "checkin";
+    | "usage";
 }>();
 const router = useRouter();
 const page = computed(() => props.page || "overview");
@@ -352,7 +353,6 @@ const pageTitle = computed(
       billing: "余额与账单",
       recharge: "账户充值",
       usage: "用量明细",
-      checkin: "每日签到",
     })[page.value],
 );
 const pageEyebrow = computed(
@@ -364,7 +364,6 @@ const pageEyebrow = computed(
       billing: "财务结算",
       recharge: "资金管理",
       usage: "用量明细",
-      checkin: "每日福利",
     })[page.value] || "",
 );
 const pageDescription = computed(
@@ -376,7 +375,6 @@ const pageDescription = computed(
       billing: "查看账本变动流水、月度结算账单与赠送额度明细。",
       recharge: "支持多种支付渠道充值，余额即时到账。",
       usage: "按应用汇总资源用量，进入应用后查看各计费分类的单价与合计。",
-      checkin: "每日签到即可领取随机金额余额奖励。",
     })[page.value],
 );
 const products = ref<Product[]>([]),
@@ -445,6 +443,8 @@ const deployProduct = ref<Product | null>(null),
 const deployVolumeFloorGiB = ref(0);
 const deployCommand = ref("");
 const deployPort = ref(8080);
+const deployDomainPermanent = ref(true);
+const deployDomainRefreshDays = ref(30);
 const deployPortMapping = ref(false);
 const deployPortMappingAvailable = computed(
   () => deployProduct.value?.routeSpec?.portMapping?.available === true,
@@ -482,38 +482,9 @@ const deploySecretOptions = computed<SecretOption[]>(() => {
   }));
 });
 const pricing = ref<Record<string, number>>({});
-const checkin = ref<CheckinSummary | null>(null),
-  checkinMonth = ref(
-    new Date()
-      .toLocaleDateString("sv-SE", { timeZone: "Asia/Shanghai" })
-      .slice(0, 7),
-  );
-const calendarDays = computed(() => {
-  const [year, month] = checkinMonth.value.split("-").map(Number);
-  const count = new Date(year, month, 0).getDate();
-  const offset = (new Date(year, month - 1, 1).getDay() + 6) % 7;
-  return [
-    ...Array(offset).fill(null),
-    ...Array.from({ length: count }, (_, i) => i + 1),
-  ];
-});
-const todayShanghai = () =>
-  new Date().toLocaleDateString("sv-SE", { timeZone: "Asia/Shanghai" });
-const dateKey = (day: number) =>
-  `${checkinMonth.value}-${String(day).padStart(2, "0")}`;
-const isChecked = (day: number) =>
-  Boolean(checkin.value?.checkedDates.includes(dateKey(day)));
-const isToday = (day: number) => dateKey(day) === todayShanghai();
+const checkin = ref<CheckinSummary | null>(null);
 async function loadCheckin() {
-  checkin.value = await api<CheckinSummary>(
-    `/checkin?month=${checkinMonth.value}`,
-  );
-}
-async function changeCheckinMonth(offset: number) {
-  const [year, month] = checkinMonth.value.split("-").map(Number);
-  const next = new Date(year, month - 1 + offset, 1);
-  checkinMonth.value = `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, "0")}`;
-  await loadCheckin();
+  checkin.value = await api<CheckinSummary>("/checkin");
 }
 async function doCheckin() {
   try {
@@ -524,6 +495,11 @@ async function doCheckin() {
       { method: "POST" },
     );
     balance.value = result.balanceCents;
+    window.dispatchEvent(
+      new CustomEvent("cloudmeter:balance-changed", {
+        detail: { balanceCents: result.balanceCents },
+      }),
+    );
     message.value = `签到成功，获得 ¥${(result.rewardCents / 100).toFixed(2)}`;
     await Promise.all([loadCheckin(), load()]);
   } catch (e) {
@@ -847,6 +823,11 @@ async function load() {
     productCatalog.value = p.products;
     apps.value = a.apps;
     balance.value = b.balanceCents;
+    window.dispatchEvent(
+      new CustomEvent("cloudmeter:balance-changed", {
+        detail: { balanceCents: b.balanceCents },
+      }),
+    );
     usage.value = u.usage;
     ledger.value = l.entries;
     bills.value = statementData.bills;
@@ -982,7 +963,7 @@ onMounted(async () => {
   try {
     await load();
     await refreshRuntimeMetrics();
-    if (page.value === "checkin") await loadCheckin();
+    if (page.value === "overview") await loadCheckin();
   } catch (e) {
     error.value = (e as Error).message;
   }
@@ -1056,6 +1037,8 @@ function openDeploy(p: Product) {
   deployVolumeFloorGiB.value = deployDataVolumeGiB.value;
   deployCommand.value = (p.runtimeSpec?.command || []).join(" ");
   deployPort.value = p.routeSpec?.containerPort || 8080;
+  deployDomainPermanent.value = true;
+  deployDomainRefreshDays.value = 30;
   deployPortMapping.value = false;
   deployEnvironment.value = (p.runtimeSpec?.editableEnvKeys || []).map(
     (key) => ({ key, value: p.runtimeSpec?.env?.[key] || "" }),
@@ -1116,7 +1099,10 @@ async function openEditApp(app: App) {
       target.runtimeSpec?.command ||
       []
     ).join(" ");
-    deployPort.value = target.routeSpec?.containerPort || 8080;
+    deployPort.value =
+      configuration.current.routeSpec?.containerPort ||
+      target.routeSpec?.containerPort ||
+      8080;
     deployEnvironment.value = (target.runtimeSpec?.editableEnvKeys || []).map(
       (key) => ({
         key,
@@ -1145,6 +1131,8 @@ function closeDeploy() {
   deployDataVolumeGiB.value = 0;
   deployVolumeFloorGiB.value = 0;
   deployCommand.value = "";
+  deployDomainPermanent.value = true;
+  deployDomainRefreshDays.value = 30;
   deployEnvironment.value = [];
   deployDependencies.value = [];
 }
@@ -1160,6 +1148,18 @@ async function deploy() {
   if (!p) return;
   if (deployMode.value === "update" && missingDeploySecretKeys.value.length) {
     error.value = `新版本需要先配置 Secret：${missingDeploySecretKeys.value.join("、")}`;
+    return;
+  }
+  if (!Number.isInteger(deployPort.value) || deployPort.value < 1 || deployPort.value > 65535) {
+    error.value = "应用监听端口必须是 1 到 65535 之间的整数";
+    return;
+  }
+  if (
+    deployMode.value === "create" &&
+    !deployDomainPermanent.value &&
+    (!Number.isInteger(deployDomainRefreshDays.value) || deployDomainRefreshDays.value < 1)
+  ) {
+    error.value = "独立子域名刷新周期至少为 1 天";
     return;
   }
   try {
@@ -1196,6 +1196,7 @@ async function deploy() {
       portMappingEnabled: deployPortMappingAvailable.value
         ? deployPortMapping.value
         : undefined,
+      containerPort: deployPort.value,
     };
     const changedSecrets = Object.fromEntries(
       Object.entries(deploySecrets.value).filter(
@@ -1222,6 +1223,9 @@ async function deploy() {
           productId: p.id,
           versionId: p.versionId,
           slug: deploySlug.value.trim(),
+          domainRefreshDays: deployDomainPermanent.value
+            ? null
+            : deployDomainRefreshDays.value,
           idempotencyKey: crypto.randomUUID(),
           secrets: deploySecrets.value,
           resources,
@@ -1775,9 +1779,25 @@ async function exitImpersonation() {
             <small>当前可用余额</small>
             <strong>¥ {{ (balance / 100).toFixed(2) }}</strong>
           </div>
-          <RouterLink to="/console/recharge" class="primary w-full mt-4">
-            <CreditCard :size="15" /> 立即充值额度
-          </RouterLink>
+          <button
+            type="button"
+            class="primary w-full mt-4"
+            :disabled="
+              writeLocked ||
+              busy === 'checkin' ||
+              !checkin?.enabled ||
+              checkin?.checkedInToday
+            "
+            @click="doCheckin"
+          >
+            <Gift :size="15" />{{
+              !checkin?.enabled
+                ? "签到已暂停"
+                : checkin?.checkedInToday
+                  ? "今日已签到"
+                  : "签到"
+            }}
+          </button>
         </div>
 
         <!-- 快捷操作卡片 (NextDevTpl QuickActions) -->
@@ -2111,7 +2131,8 @@ async function exitImpersonation() {
               >{{ app.productSlug }} · {{ appState(app)
               }}<template v-if="app.hostPort">
                 · 直连 :{{ app.hostPort }}</template
-              ></small
+              ><template v-if="app.containerPort"> · 应用端口 {{ app.containerPort }}</template>
+              · 子域名{{ app.domainRefreshDays ? `每 ${app.domainRefreshDays} 天刷新` : "永久不变" }}</small
             >
           </div>
           <div class="product-row-main">
@@ -2584,100 +2605,6 @@ async function exitImpersonation() {
         </div>
       </section>
     </section>
-    <section v-if="page === 'checkin'" class="checkin-page">
-      <div class="checkin-hero">
-        <span class="checkin-icon"><CalendarCheck :size="28" /></span>
-        <div>
-          <p class="eyebrow">北京时间 · 每日一次</p>
-          <h2>签到领取余额奖励</h2>
-          <p>
-            每天获得 ¥{{
-              ((checkin?.minRewardCents || 0) / 100).toFixed(2)
-            }}–¥{{
-              ((checkin?.maxRewardCents || 0) / 100).toFixed(2)
-            }}，直接进入钱包余额。
-          </p>
-        </div>
-        <button
-          class="primary"
-          :disabled="
-            writeLocked ||
-            busy === 'checkin' ||
-            !checkin?.enabled ||
-            checkin?.checkedInToday
-          "
-          @click="doCheckin"
-        >
-          <Gift :size="18" />{{
-            !checkin?.enabled
-              ? "签到已暂停"
-              : checkin?.checkedInToday
-                ? "今日已签到"
-                : "立即签到"
-          }}
-        </button>
-      </div>
-      <div class="checkin-metrics">
-        <article>
-          <small>累计签到</small
-          ><strong>{{ checkin?.totalCheckins || 0 }}<em> 次</em></strong>
-        </article>
-        <article>
-          <small>本月获得</small
-          ><strong
-            >¥{{ ((checkin?.monthRewardCents || 0) / 100).toFixed(2) }}</strong
-          >
-        </article>
-        <article>
-          <small>累计获得</small
-          ><strong
-            >¥{{ ((checkin?.totalRewardCents || 0) / 100).toFixed(2) }}</strong
-          >
-        </article>
-      </div>
-      <div class="checkin-calendar">
-        <header>
-          <button
-            class="icon-action"
-            title="上个月"
-            @click="changeCheckinMonth(-1)"
-          >
-            <ChevronLeft :size="18" />
-          </button>
-          <div>
-            <strong>{{ checkinMonth.replace("-", " 年 ") }} 月</strong
-            ><small>黑色日期表示已签到</small>
-          </div>
-          <button
-            class="icon-action"
-            title="下个月"
-            @click="changeCheckinMonth(1)"
-          >
-            <ChevronRight :size="18" />
-          </button>
-        </header>
-        <div class="calendar-week">
-          <span
-            v-for="label in ['一', '二', '三', '四', '五', '六', '日']"
-            :key="label"
-            >{{ label }}</span
-          >
-        </div>
-        <div class="calendar-grid">
-          <span
-            v-for="(day, index) in calendarDays"
-            :key="index"
-            :class="{
-              blank: !day,
-              checked: day && isChecked(day),
-              today: day && isToday(day),
-            }"
-            ><template v-if="day"
-              >{{ day }}<Check v-if="isChecked(day)" :size="12" /></template
-          ></span>
-        </div>
-      </div>
-    </section>
   </main>
   <Transition name="modal-pop"
     ><div
@@ -2805,11 +2732,33 @@ async function exitImpersonation() {
               ></label
             >
             <label
-              >容器内网端口<input :value="deployPort" readonly /><small
-                >管理员按镜像实际监听端口固定；公网请求由 Gateway 转发到容器的
-                {{ deployPort }} 端口，用户调整
-                CPU、内存或数据卷不会改变它</small
+              >应用监听端口<input
+                v-model.number="deployPort"
+                type="number"
+                min="1"
+                max="65535"
+                step="1"
+                required
+              /><small
+                >选择容器内应用实际监听的端口；Gateway、健康检查和可选直连映射会同步使用该端口</small
               ></label
+            >
+            <label v-if="deployMode === 'create'"
+              >独立子域名刷新方式<select v-model="deployDomainPermanent">
+                <option :value="true">永久不变</option>
+                <option :value="false">按天自动刷新</option>
+              </select><small
+                >每个应用使用独立子域名；刷新后旧地址立即失效</small
+              ></label
+            >
+            <label v-if="deployMode === 'create' && !deployDomainPermanent"
+              >刷新周期（天）<input
+                v-model.number="deployDomainRefreshDays"
+                type="number"
+                min="1"
+                step="1"
+                required
+              /><small>最低 1 天；如需长期固定，请选择“永久不变”</small></label
             >
             <div
               v-if="deployPortMappingAvailable"

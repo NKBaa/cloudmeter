@@ -9,7 +9,7 @@ paths:
     get:
       operationId: getSystemSettingsPublic
       responses:
-        '200': {description: Public platform branding, content, server address, and application domain settings}
+        '200': {description: "Public platform branding, content, server address, and application domain settings"}
   /pricing:
     get:
       operationId: getPricingPublic
@@ -175,6 +175,23 @@ paths:
       responses:
         '202': {description: Accepted or idempotent duplicate}
         '403': {description: Collector authentication failed}
+  /internal/console-entry:
+    get:
+      operationId: consoleEntryGate
+      parameters:
+        - {name: X-CloudMeter-Entry, in: header, schema: {type: string, enum: [caddy]}}
+        - {name: X-CloudMeter-Entry-Token, in: header, schema: {type: string}}
+      responses:
+        '204': {description: Entry is enabled for the active access mode}
+        '404': {description: Entry is disabled}
+  /internal/caddy/allow-domain:
+    get:
+      operationId: allowCaddyDomain
+      parameters:
+        - {name: domain, in: query, required: true, schema: {type: string}}
+      responses:
+        '200': {description: Domain belongs to the console or an active application route}
+        '403': {description: Domain is not eligible for on-demand TLS}
   /me:
     get:
       operationId: me
@@ -381,6 +398,10 @@ paths:
                 productId: {type: string, format: uuid}
                 versionId: {type: string, format: uuid}
                 slug: {type: string, pattern: '^[a-z0-9][a-z0-9-]{0,62}$'}
+                domainRefreshDays:
+                  type: [integer, 'null']
+                  minimum: 1
+                  description: Per-application subdomain rotation interval in days. Null keeps the hostname permanently unchanged.
                 idempotencyKey: {type: string, minLength: 1, maxLength: 128}
                 secrets:
                   type: object
@@ -392,6 +413,8 @@ paths:
                   properties:
                     cpuCores: {type: number, minimum: 0.1, maximum: 64}
                     memoryMiB: {type: number, minimum: 64, maximum: 262144}
+                    containerPort: {type: integer, minimum: 1, maximum: 65535, description: Container application listening port used by health checks, gateway routing, and optional direct mapping.}
+                    portMappingEnabled: {type: boolean}
                     dataVolumeGiB: {type: number, minimum: 1, maximum: 16384, description: One capacity shared by every persistent mount in this application and billed once.}
                     command: {type: array, items: {type: string}}
                     environment: {type: object, additionalProperties: {type: string}}
@@ -824,7 +847,92 @@ paths:
       security: [{bearerAuth: []}]
       responses:
         '200': {description: Platform settings saved and application public routes synchronized}
-        '400': {description: Invalid platform URL, application domain, or system name}
+        '400': {description: "Invalid platform URL, application domain, or system name"}
+  /admin/caddy/overview:
+    get:
+      operationId: getCaddyOverview
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: "Sanitized Caddy runtime, route, listener, source, and upstream summary"}
+        '403': {description: Super administrator required}
+  /admin/caddy/settings:
+    get:
+      operationId: getGatewaySettings
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: "Access mode, TLS policy and certificate metadata"}
+    put:
+      operationId: updateGatewaySettings
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [accessMode, serverUrl, appBaseDomain, tlsEnabled, httpPolicy, hstsEnabled, http3Enabled, consoleCertificateMode, appCertificateMode, acmeEmail, acmeCa, acmeKeyType, renewIntervalMinutes]
+              properties:
+                accessMode: {type: string, enum: [all_caddy, apps_only]}
+                serverUrl: {type: string, format: uri, description: Public console origin used for OAuth callbacks, webhooks and external links; in apps_only mode an external reverse proxy owns public access}
+                appBaseDomain: {type: string}
+                tlsEnabled: {type: boolean}
+                httpPolicy: {type: string, enum: [redirect, allow, https_only]}
+                hstsEnabled: {type: boolean}
+                http3Enabled: {type: boolean}
+                consoleCertificateMode: {type: string, enum: [automatic, imported]}
+                appCertificateMode: {type: string, enum: [automatic, imported]}
+                acmeEmail: {type: string, format: email}
+                acmeCa: {type: string, format: uri}
+                acmeKeyType: {type: string, enum: [ed25519, p256, p384, rsa2048, rsa4096]}
+                renewIntervalMinutes: {type: integer, minimum: 1, maximum: 1440, description: How often Caddy scans managed certificates for renewal}
+                accessModeManagedByEnvironment: {type: boolean, readOnly: true, description: True when GATEWAY_ACCESS_MODE is authoritative}
+      responses:
+        '200': {description: Settings persisted and managed Caddyfile reloaded}
+        '400': {description: Invalid gateway settings}
+        '409': {description: Imported certificate is required before activation}
+        '502': {description: Settings saved but Caddy reload failed}
+  /admin/caddy/routes:
+    get:
+      operationId: listGatewayRoutes
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: Current console mode and per-application public route map}
+  /admin/caddy/certificates/import:
+    post:
+      operationId: importGatewayCertificate
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [target, certificatePem, privateKeyPem]
+              properties:
+                target: {type: string, enum: [console, applications]}
+                certificatePem: {type: string}
+                privateKeyPem: {type: string}
+      responses:
+        '201': {description: Matching PEM certificate and private key imported and encrypted}
+        '400': {description: Invalid PEM pair or certificate target}
+        '502': {description: Certificate saved but Caddy reload failed}
+  /admin/caddy/validate:
+    post:
+      operationId: validateCaddyConfig
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: Mounted Caddyfile adapted successfully without changing live configuration}
+        '422': {description: Caddyfile could not be adapted}
+        '503': {description: Caddyfile or internal Admin API unavailable}
+  /admin/caddy/reload:
+    post:
+      operationId: reloadCaddyConfig
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: Caddyfile validated and loaded without downtime}
+        '422': {description: Caddyfile could not be adapted}
+        '502': {description: Caddy rejected the reload}
+        '503': {description: Caddyfile or internal Admin API unavailable}
   /admin/settings/turnstile:
     get:
       operationId: getTurnstileSettings
@@ -1298,6 +1406,8 @@ paths:
     get:
       operationId: listUsers
       security: [{bearerAuth: []}]
+      parameters:
+        - {name: username, in: query, required: false, description: Case-insensitive partial match against the account display name, schema: {type: string, maxLength: 80}}
       responses: {'200': {description: Administration user list}}
     post:
       operationId: adminCreateUser

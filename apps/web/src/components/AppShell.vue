@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useRoute } from "vue-router";
 import {
   AppWindow,
@@ -7,7 +7,6 @@ import {
   BadgeCent,
   BadgeDollarSign,
   CreditCard,
-  CalendarCheck,
   FileClock,
   Gauge,
   KeyRound,
@@ -27,6 +26,7 @@ import {
   Moon,
   Sun,
   Bot,
+  Globe2,
 } from "@lucide/vue";
 import { logout } from "../api";
 import { toggleTheme, theme } from "../theme";
@@ -46,7 +46,26 @@ const isAdmin = computed(() =>
 );
 const isSuperAdmin = computed(() => roles.value.includes("super_admin"));
 
+async function refreshShellBalance() {
+  const token = localStorage.getItem("session_token");
+  if (!token) return;
+  const response = await fetch("/api/billing/summary", {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (response.ok) {
+    const summary = await response.json();
+    balanceCents.value = Number(summary.balanceCents) || 0;
+  }
+}
+
+function handleBalanceChanged(event: Event) {
+  const next = Number((event as CustomEvent<{ balanceCents?: number }>).detail?.balanceCents);
+  if (Number.isFinite(next)) balanceCents.value = next;
+}
+
 onMounted(async () => {
+  window.addEventListener("focus", refreshShellBalance);
+  window.addEventListener("cloudmeter:balance-changed", handleBalanceChanged);
   try {
     const token = localStorage.getItem("session_token");
     const response = await fetch("/api/me", {
@@ -57,13 +76,7 @@ onMounted(async () => {
       roles.value = me.Roles || [];
       user.value = me;
     }
-    const billingResponse = await fetch("/api/billing/summary", {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (billingResponse.ok) {
-      const summary = await billingResponse.json();
-      balanceCents.value = summary.balanceCents || 0;
-    }
+    await refreshShellBalance();
     const visibilityResponse = await fetch("/api/sidebar-visibility", {
       headers: { Authorization: "Bearer " + token },
     });
@@ -74,11 +87,19 @@ onMounted(async () => {
   }
 });
 
+onBeforeUnmount(() => {
+  window.removeEventListener("focus", refreshShellBalance);
+  window.removeEventListener("cloudmeter:balance-changed", handleBalanceChanged);
+});
+
 const balanceText = computed(() => {
   return `余额 ¥${(balanceCents.value / 100).toFixed(2)}`;
 });
+const userDisplayName = computed(
+  () => user.value?.DisplayName?.trim() || user.value?.Email || "账户",
+);
 const userInitial = computed(() =>
-  user.value?.Email ? user.value.Email[0].toUpperCase() : "?",
+  userDisplayName.value ? Array.from(userDisplayName.value)[0].toUpperCase() : "?",
 );
 </script>
 
@@ -193,12 +214,6 @@ const userInitial = computed(() =>
           >
           <RouterLink
             v-if="isSuperAdmin"
-            to="/admin/checkin-settings"
-            active-class="active"
-            ><CalendarCheck :size="17" />签到设置</RouterLink
-          >
-          <RouterLink
-            v-if="isSuperAdmin"
             to="/admin/quota-settings"
             active-class="active"
             ><Gift :size="17" />额度设置</RouterLink
@@ -230,13 +245,7 @@ const userInitial = computed(() =>
             v-if="isSuperAdmin"
             to="/admin/registration"
             active-class="active"
-            ><Settings2 :size="17" />注册策略</RouterLink
-          >
-          <RouterLink
-            v-if="isSuperAdmin"
-            to="/admin/oauth"
-            active-class="active"
-            ><KeyRound :size="17" />OAuth 认证</RouterLink
+            ><Settings2 :size="17" />注册与认证</RouterLink
           >
           <RouterLink v-if="isSuperAdmin" to="/admin/mail" active-class="active"
             ><Settings2 :size="17" />SMTP 邮件</RouterLink
@@ -252,13 +261,24 @@ const userInitial = computed(() =>
             基础设施
           </div>
           <RouterLink
+            v-if="isSuperAdmin"
+            to="/admin/website"
+            active-class="infrastructure-current"
+            class="infrastructure-nav-link"
+            ><Globe2 :size="17" />网站设置</RouterLink
+          >
+          <RouterLink
             v-if="isAdmin"
             to="/admin/docker"
-            active-class="active"
+            active-class="infrastructure-current"
             class="infrastructure-nav-link"
             ><Container :size="17" />Docker 与镜像源</RouterLink
           >
-          <RouterLink v-if="isAdmin" to="/admin/metrics" active-class="active"
+          <RouterLink
+            v-if="isAdmin"
+            to="/admin/metrics"
+            active-class="infrastructure-current"
+            class="infrastructure-nav-link"
             ><Gauge :size="17" />性能监控</RouterLink
           >
         </template>
@@ -281,14 +301,13 @@ const userInitial = computed(() =>
           >
             <Sun v-if="theme === 'dark'" :size="15" />
             <Moon v-else :size="15" />
-            <span>{{ theme === "dark" ? "浅色" : "深色" }}</span>
           </button>
         </div>
 
         <div v-if="user" class="sidebar-user-card">
           <div class="sidebar-user-avatar">{{ userInitial }}</div>
           <div class="sidebar-user-meta">
-            <span class="user-email-text">{{ user.Email }}</span>
+            <span class="user-email-text" :title="user.Email">{{ userDisplayName }}</span>
             <span class="user-role-badge">{{ isAdmin ? (isSuperAdmin ? '超级管理员' : '管理员') : '用户' }}</span>
           </div>
           <button class="logout-mini-btn" title="退出登录" @click="logout">

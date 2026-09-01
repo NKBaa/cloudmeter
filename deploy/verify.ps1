@@ -36,6 +36,7 @@ $port = if ($env:PLATFORM_PORT) { [int]$env:PLATFORM_PORT } else { 8080 }
 $envLine = Get-Content .env | Where-Object { $_ -match "^PLATFORM_PORT=" } | Select-Object -Last 1
 if (-not $env:PLATFORM_PORT -and $envLine) { $port = [int](($envLine -split "=",2)[1]) }
 $bindIP = if ($env:PLATFORM_BIND_IP) { $env:PLATFORM_BIND_IP } else { "127.0.0.1" }
+$gatewayIP = if ($env:GATEWAY_BIND_IP) { $env:GATEWAY_BIND_IP } else { "127.0.0.1" }
 $allowedHost = if ($env:PLATFORM_ALLOWED_HOST) { $env:PLATFORM_ALLOWED_HOST.Trim() } else {
     $line = Get-Content .env | Where-Object { $_ -match "^PLATFORM_ALLOWED_HOST=" } | Select-Object -Last 1
     if ($line) { (($line -split "=", 2)[1]).Trim() } else { "" }
@@ -48,7 +49,7 @@ if ($LASTEXITCODE -ne 0) { throw "migration check failed" }
 $migrationState = (& $Compose[0] $Compose[1..($Compose.Length-1)] exec -T postgres psql -U cloudmeter -d cloudmeter -Atc "SELECT version::text || '|' || CASE WHEN dirty THEN 'dirty' ELSE 'clean' END FROM schema_migrations").Trim()
 if ($LASTEXITCODE -ne 0) { throw "migration state query failed" }
 if ($migrationState -ne "$latestMigration|clean") { throw "migration state is $migrationState, expected $latestMigration|clean" }
-& $Compose[0] $Compose[1..($Compose.Length-1)] exec -T gateway caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+& $Compose[0] $Compose[1..($Compose.Length-1)] exec -T gateway caddy validate --config /etc/cloudmeter/runtime/Caddyfile --adapter caddyfile
 if ($LASTEXITCODE -ne 0) { throw "Caddy gateway configuration validation failed" }
 docker run --rm -v "${Root}:/src" -w /src golang:1.23-alpine sh -c "/usr/local/go/bin/go test ./internal/httpapi -run TestOpenAPICoversRegisteredRoutes -count=1"
 if ($LASTEXITCODE -ne 0) { throw "OpenAPI route contract check failed" }
@@ -72,7 +73,7 @@ $health = Invoke-RestMethod "http://${bindIP}:$port/api/healthz" -Headers @{ Hos
 if ($health.status -ne "ok") { throw "post-restart health check failed" }
 $unknownHostStatus = 0
 try {
-    $unknownResponse = Invoke-WebRequest "http://${bindIP}:$port/api/healthz" -Headers @{ Host = "invalid-host.example.invalid" } -UseBasicParsing
+    $unknownResponse = Invoke-WebRequest "http://${gatewayIP}:80/api/healthz" -Headers @{ Host = "invalid-host.example.invalid" } -UseBasicParsing
     $unknownHostStatus = [int]$unknownResponse.StatusCode
 } catch {
     if (-not $_.Exception.Response) { throw }

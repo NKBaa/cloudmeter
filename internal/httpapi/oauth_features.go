@@ -33,6 +33,7 @@ type linuxDoOAuthProfile struct {
 }
 
 func (s *Server) getOAuthSettings(w http.ResponseWriter, r *http.Request) {
+	publicBaseURL := s.configuredPublicBaseURL(r.Context())
 	rows, err := s.db.Query(r.Context(), "SELECT provider,enabled,client_id,scopes,(client_secret<>''),minimum_trust_level FROM oauth_settings ORDER BY provider")
 	if err != nil {
 		s.internalError(w, err)
@@ -49,13 +50,13 @@ func (s *Server) getOAuthSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		callbackURL := ""
-		if s.cfg.PublicBaseURL != "" {
-			callbackURL = s.cfg.PublicBaseURL + "/api/auth/oauth/" + provider + "/callback"
+		if publicBaseURL != "" {
+			callbackURL = publicBaseURL + "/api/auth/oauth/" + provider + "/callback"
 		}
 		items = append(items, map[string]any{
 			"provider": provider, "enabled": enabled, "clientId": clientID, "scopes": scopes,
 			"secretConfigured": configured, "minimumTrustLevel": minimumTrustLevel,
-			"publicBaseUrlConfigured": s.cfg.PublicBaseURL != "", "callbackUrl": callbackURL,
+			"publicBaseUrlConfigured": publicBaseURL != "", "callbackUrl": callbackURL,
 		})
 	}
 	writeJSON(w, 200, map[string]any{"providers": items})
@@ -88,8 +89,8 @@ func (s *Server) updateOAuthSettings(w http.ResponseWriter, r *http.Request) {
 	if provider != "linuxdo" {
 		q.MinimumTrustLevel = 0
 	}
-	if enabled && s.cfg.PublicBaseURL == "" {
-		writeError(w, 409, "oauth_public_base_url_required", "PUBLIC_BASE_URL must be configured before OAuth can be enabled")
+	if enabled && s.configuredPublicBaseURL(r.Context()) == "" {
+		writeError(w, 409, "oauth_public_base_url_required", "请先在网站设置中配置服务器公开 URL")
 		return
 	}
 	tx, err := s.db.BeginTx(r.Context(), pgx.TxOptions{IsoLevel: pgx.Serializable})
@@ -131,7 +132,7 @@ func (s *Server) updateOAuthSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) oauthProviders(w http.ResponseWriter, r *http.Request) {
-	if s.cfg.PublicBaseURL == "" {
+	if s.configuredPublicBaseURL(r.Context()) == "" {
 		writeJSON(w, 200, map[string]any{"providers": []string{}})
 		return
 	}
@@ -159,8 +160,9 @@ func (s *Server) oauthStart(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 404, "provider_not_found", "unsupported OAuth provider")
 		return
 	}
-	if s.cfg.PublicBaseURL == "" {
-		writeError(w, 503, "oauth_public_base_url_required", "PUBLIC_BASE_URL must be configured before OAuth can be used")
+	publicBaseURL := s.configuredPublicBaseURL(r.Context())
+	if publicBaseURL == "" {
+		writeError(w, 503, "oauth_public_base_url_required", "请先在网站设置中配置服务器公开 URL")
 		return
 	}
 	var enabled bool
@@ -183,7 +185,7 @@ func (s *Server) oauthStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	stateHash := sha256.Sum256([]byte(state))
-	redirectURI := s.cfg.PublicBaseURL + "/api/auth/oauth/" + provider + "/callback"
+	redirectURI := publicBaseURL + "/api/auth/oauth/" + provider + "/callback"
 	if _, err := s.db.Exec(r.Context(), "INSERT INTO oauth_flows(state_hash,provider,redirect_uri,expires_at) VALUES($1,$2,$3,$4)", stateHash[:], provider, redirectURI, time.Now().Add(10*time.Minute)); err != nil {
 		s.internalError(w, err)
 		return
@@ -229,7 +231,7 @@ func (s *Server) oauthCallback(w http.ResponseWriter, r *http.Request) {
 		s.oauthRedirectError(w, r, "无法创建登录会话")
 		return
 	}
-	http.Redirect(w, r, s.oauthFrontendRedirect(url.Values{"result": {result}}), http.StatusFound)
+	http.Redirect(w, r, s.oauthFrontendRedirect(r.Context(), url.Values{"result": {result}}), http.StatusFound)
 }
 
 func (s *Server) oauthExchange(w http.ResponseWriter, r *http.Request) {
@@ -525,7 +527,7 @@ func randomToken(n int) (string, error) {
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 func (s *Server) requestOrigin(r *http.Request) string {
-	if configured := strings.TrimRight(strings.TrimSpace(s.cfg.PublicBaseURL), "/"); configured != "" {
+	if configured := s.configuredPublicBaseURL(r.Context()); configured != "" {
 		return configured
 	}
 	scheme := "http"
@@ -539,6 +541,18 @@ func (s *Server) requestOrigin(r *http.Request) string {
 		}
 	}
 	return scheme + "://" + r.Host
+}
+
+func (s *Server) configuredPublicBaseURL(ctx context.Context) string {
+	if s.db != nil {
+		var configured string
+		if err := s.db.QueryRow(ctx, "SELECT server_url FROM system_settings WHERE singleton").Scan(&configured); err == nil {
+			if configured = strings.TrimRight(strings.TrimSpace(configured), "/"); configured != "" {
+				return configured
+			}
+		}
+	}
+	return strings.TrimRight(strings.TrimSpace(s.cfg.PublicBaseURL), "/")
 }
 
 func normalizePublicBaseURL(raw string) (string, error) {
@@ -596,13 +610,14 @@ func oauthAuthorizeURL(provider, clientID, scopes, redirectURI, state string) st
 	return endpoint + "?" + q.Encode()
 }
 func (s *Server) oauthRedirectError(w http.ResponseWriter, r *http.Request, message string) {
-	http.Redirect(w, r, s.oauthFrontendRedirect(url.Values{"error": {message}}), http.StatusFound)
+	http.Redirect(w, r, s.oauthFrontendRedirect(r.Context(), url.Values{"error": {message}}), http.StatusFound)
 }
 
-func (s *Server) oauthFrontendRedirect(values url.Values) string {
+func (s *Server) oauthFrontendRedirect(ctx context.Context, values url.Values) string {
 	path := "/oauth/callback?" + values.Encode()
-	if s.cfg.PublicBaseURL == "" {
+	publicBaseURL := s.configuredPublicBaseURL(ctx)
+	if publicBaseURL == "" {
 		return path
 	}
-	return s.cfg.PublicBaseURL + path
+	return publicBaseURL + path
 }

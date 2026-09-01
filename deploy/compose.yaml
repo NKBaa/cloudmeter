@@ -8,22 +8,53 @@ x-logging: &default-logging
 
 
 services:
+  caddy-runtime-init:
+    image: alpine:3.21
+    restart: "no"
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        if [ ! -s /runtime/Caddyfile ]; then
+          cp /bootstrap/Caddyfile /runtime/Caddyfile
+        fi
+        chown -R 65532:65532 /runtime
+        chmod 0750 /runtime
+        chmod 0640 /runtime/Caddyfile
+    volumes:
+      - ./Caddyfile:/bootstrap/Caddyfile:ro
+      - caddy_runtime:/runtime
+    networks: [platform_network]
+    security_opt: [no-new-privileges:true]
+
   gateway:
     logging: *default-logging
     image: caddy:2.9-alpine
     restart: unless-stopped
     ports:
-      - "${PLATFORM_BIND_IP:-0.0.0.0}:${PLATFORM_PORT:-8080}:8080"
+      - "${GATEWAY_BIND_IP:-0.0.0.0}:80:80"
+      - "${GATEWAY_BIND_IP:-0.0.0.0}:443:443"
+      - "${GATEWAY_BIND_IP:-0.0.0.0}:443:443/udp"
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        if [ -s /config/caddy/autosave.json ]; then
+          exec caddy run --resume
+        fi
+        exec caddy run --config /etc/cloudmeter/runtime/Caddyfile --adapter caddyfile
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_runtime:/etc/cloudmeter/runtime:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    expose: ["2019"]
     depends_on:
+      caddy-runtime-init: {condition: service_completed_successfully}
       api: {condition: service_healthy}
       web: {condition: service_healthy}
       app-router: {condition: service_healthy}
     healthcheck:
-      # Probe through the same public path clients use. The Host header is
-      # required because the gateway deliberately rejects unknown hosts.
-      test: ["CMD-SHELL", "wget -q -O /dev/null --header=Host:${PLATFORM_ALLOWED_HOST} http://127.0.0.1:8080/api/healthz"]
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:2019/config/"]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -43,10 +74,12 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile.web.prebuilt
     restart: unless-stopped
+    ports:
+      - "${PLATFORM_BIND_IP:-0.0.0.0}:${PLATFORM_PORT:-8080}:8080"
     expose: ["8080"]
-    networks: [platform_network]
+    networks: [console_edge_network, platform_network]
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/"]
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/healthz-static"]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -118,8 +151,17 @@ services:
       SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY:?SECRETS_ENCRYPTION_KEY is required}
       EGRESS_INGEST_TOKEN: ${EGRESS_INGEST_TOKEN:?EGRESS_INGEST_TOKEN is required}
       RUNTIME_OWNER: ${COMPOSE_PROJECT_NAME:-cloudmeter}
+      CADDY_ADMIN_URL: ${CADDY_ADMIN_URL:-http://gateway:2019}
+      CADDYFILE_PATH: ${CADDYFILE_PATH:-/etc/cloudmeter/runtime/Caddyfile}
+      PLATFORM_PORT: ${PLATFORM_PORT:-8080}
+      # Optional authoritative override. Empty keeps the Website Settings switch editable.
+      GATEWAY_ACCESS_MODE: ${GATEWAY_ACCESS_MODE:-}
+      ROUTER_INTERNAL_TOKEN: ${ROUTER_INTERNAL_TOKEN:?ROUTER_INTERNAL_TOKEN is required}
+    volumes:
+      - caddy_runtime:/etc/cloudmeter/runtime
     expose: ["8081"]
     depends_on:
+      caddy-runtime-init: {condition: service_completed_successfully}
       migrate: {condition: service_completed_successfully}
       redis: {condition: service_healthy}
     networks: [platform_network, data_network]
@@ -212,9 +254,13 @@ services:
 
 networks:
   edge_network: {}
+  console_edge_network: {}
   platform_network: {internal: true}
   data_network: {internal: true}
 
 volumes:
   postgres_data: {}
   redis_data: {}
+  caddy_data: {}
+  caddy_config: {}
+  caddy_runtime: {}

@@ -2,11 +2,13 @@
 
 ## 首次部署
 
-复制 `configs/.env.example` 为根目录 `.env`，替换密码和令牌。`PUBLIC_BASE_URL` 必须设置为用户实际访问平台的 HTTP(S) 源地址，例如 `https://cloud.example.com`；它只允许协议、主机和可选端口，不能包含路径、查询或片段。`PLATFORM_ALLOWED_HOST` 填同一地址的纯主机名 `cloud.example.com`，不能带协议、端口或路径。应用泛子域名是独立配置：初始化后在“系统设置”中填写例如 `apps.example.com`，并将 `*.apps.example.com` 泛解析到网关；它不需要与主系统 Host 相同。`GATEWAY_TRUSTED_PROXY_CIDRS` 是允许向平台入口提供 `X-Forwarded-*` 的外部 OpenResty 源网段；同机 Docker 发布端口通常可从 `172.16.0.0/12` 起步并根据实际 bridge 地址收窄。`API_TRUSTED_PROXY_CIDRS` 仅覆盖内部 Caddy 网络。执行 `docker compose --env-file .env -f deploy/compose.yaml up -d --build`，然后打开 `/setup`，仅填写管理员姓名、邮箱和密码来创建唯一超级管理员。初始化成功后页面会直接进入已登录的管理后台。
+复制 `configs/.env.example` 为根目录 `.env`，替换密码和令牌。`PLATFORM_PORT` 是模式 2 的独立控制台端口，默认 `8080`；Caddy 固定接收 TCP 80/443 与 UDP 443。首次初始化后在“基础设施 → 网站设置”中分别配置控制台主域名和应用泛子域名，例如 `console.example.com` 与 `apps.example.com`，二者互相独立。模式 1 由 Caddy 同时托管控制台与应用；模式 2 仅让应用走 Caddy，控制台直接使用 `http://服务器地址:PLATFORM_PORT`。执行 `docker compose --env-file .env -f deploy/compose.yaml up -d --build`，然后打开 `/setup` 创建唯一超级管理员。
+
+“网站设置”通过仅在 `platform_network` 内可达的 Caddy Admin API 展示活动路由、监听地址和实时上游状态，并生成托管 Caddyfile、先适配校验再无中断重载。Admin 端口 `2019` 不得映射到宿主机或公网。导入证书在数据库中加密保存，运行时证书文件与托管配置放在 `caddy_runtime` 持久卷；自动证书使用 Caddy ACME，应用站点只允许数据库中活动路由对应的域名按需申请。
 
 需要实际创建用户应用时，将 `DOCKER_EXECUTOR_ENABLED=true`，并确认 `DOCKER_SOCKET_PATH` 指向 Docker Engine Socket；Socket 只挂载到 Worker，API、Web、Router 和用户容器不会获得该权限。
 
-用户端“每日签到”按 `Asia/Shanghai` 自然日计算，每位用户每天最多一次。奖励使用加密安全随机数生成并作为 `checkin_reward` 追加到不可修改的钱包账本；重复请求只返回当日原奖励。超级管理员可在“签到设置”中开关功能并配置 1–10000 分的奖励范围，设置变更写入审计日志。
+用户端“每日签到”按 `Asia/Shanghai` 自然日计算，每位用户每天最多一次。奖励使用加密安全随机数生成并作为 `checkin_reward` 追加到不可修改的钱包账本；重复请求只返回当日原奖励。超级管理员在“额度设置”中统一管理签到开关、1–10000 分奖励范围、新用户初始额度和邀请奖励，设置变更写入审计日志。
 
 首次启动前必须生成一次 `SECRETS_ENCRYPTION_KEY`：
 
@@ -173,7 +175,7 @@ bash deploy/verify-subscription-purchases.sh
 
 ## 注册与邮箱策略
 
-首次部署始终由 `/setup` 创建超级管理员，公开注册默认关闭。管理员进入“注册策略”后可以独立控制是否允许自行注册；邮箱验证码选项只有在 SMTP 就绪时可开启。域白名单留空代表允许全部域，填写 `example.com` 时同时允许其子域（例如 `sub.example.com`），比较时忽略大小写并拒绝畸形域名。启用“阻止邮箱别名”后，只要邮箱本地部分包含 `+` 或 `.` 就会拒绝注册和验证码发送。
+首次部署始终由 `/setup` 创建超级管理员，公开注册默认关闭。管理员进入“注册与认证”后统一配置注册策略、密码规则、GitHub OAuth 与 LinuxDo OAuth；邮箱验证码选项只有在 SMTP 就绪时可开启。域白名单留空代表允许全部域，填写 `example.com` 时同时允许其子域（例如 `sub.example.com`），比较时忽略大小写并拒绝畸形域名。启用“阻止邮箱别名”后，只要邮箱本地部分包含 `+` 或 `.` 就会拒绝注册和验证码发送。
 
 账户、SMTP、注册策略和公告可在 Windows Docker Desktop 完整验收：
 

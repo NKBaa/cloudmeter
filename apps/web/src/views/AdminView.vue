@@ -7,9 +7,11 @@ import {
   reactive,
   ref,
 } from "vue";
+import { useRouter } from "vue-router";
 import {
   Activity,
   AppWindow,
+  ArrowLeft,
   ArrowRight,
   BadgeCent,
   BadgeDollarSign,
@@ -17,7 +19,6 @@ import {
   CircleAlert,
   CirclePause,
   CirclePlay,
-  Coins,
   Container,
   Copy,
   CreditCard,
@@ -31,6 +32,7 @@ import {
   Megaphone,
   MessageSquareText,
   Save,
+  Search,
   Settings2,
   ShieldPlus,
   Users,
@@ -75,18 +77,26 @@ type CurrentUser = {
 
 const props = defineProps<{
   page?:
-    "overview" | "users" | "announcements" | "registration" | "mail" | "oauth";
+    | "overview"
+    | "users"
+    | "user-create"
+    | "announcements"
+    | "registration"
+    | "mail"
+    | "oauth";
 }>();
+const router = useRouter();
 const page = computed(() => props.page || "overview");
 const pageTitle = computed(
   () =>
     ({
       overview: "平台总览",
       users: "用户管理",
+      "user-create": "手动注册账户",
       announcements: "公告管理",
-      registration: "注册策略",
+      registration: "注册与认证",
       mail: "SMTP 邮件",
-      oauth: "OAuth 认证",
+      oauth: "注册与认证",
     })[page.value],
 );
 const pageDescription = computed(
@@ -94,16 +104,20 @@ const pageDescription = computed(
     ({
       overview: "全平台用户、模板、部署实例和系统服务运行指标总览。",
       users: "集中管理平台账户、角色权限、钱包余额调整与赠送额度发放。",
+      "user-create": "填写账户身份信息并分配初始角色，注册完成后返回账户目录。",
       announcements: "发布或下线全站全局广播公告通知与紧急提醒。",
       registration:
-        "配置公开注册、密码策略、域名白名单、人机验证与前台侧栏显隐。",
+        "集中配置公开注册、密码策略、人机验证以及 GitHub、LINUX DO 第三方认证。",
       mail: "配置 SMTP 发信服务器与邮件验证码服务参数。",
-      oauth: "配置 GitHub 与 LINUX DO 第三方登录 OAuth 凭据与信任等级。",
+      oauth: "集中配置注册策略与第三方登录认证。",
     })[page.value],
 );
 
 const summary = ref({ users: 0, products: 0, activeDeployments: 0 });
 const users = ref<User[]>([]);
+const userQuery = ref("");
+const appliedUserQuery = ref("");
+const userSearchBusy = ref(false);
 const announcements = ref<Announcement[]>([]);
 const currentUser = ref<CurrentUser | null>(null);
 const error = ref("");
@@ -196,13 +210,6 @@ const notice = reactive({
   severity: "info",
   published: true,
 });
-const credit = reactive({
-  userId: "",
-  amountCents: 0,
-  businessRef: "",
-  note: "",
-  expiresAt: "",
-});
 const editingUser = ref<User | null>(null);
 const walletEdit = reactive({ targetBalanceYuan: 0, note: "" });
 const roleEdit = ref<"user" | "admin">("user");
@@ -249,17 +256,14 @@ async function load() {
 
     const [summaryData, userData, noticeData] = await Promise.all([
       api<typeof summary.value>("/admin/summary"),
-      api<{ users: User[] }>("/admin/users"),
+      api<{ users: User[] }>(
+        `/admin/users${appliedUserQuery.value ? `?username=${encodeURIComponent(appliedUserQuery.value)}` : ""}`,
+      ),
       api<{ announcements: Announcement[] }>("/admin/announcements"),
     ]);
     summary.value = summaryData;
     users.value = userData.users;
     announcements.value = noticeData.announcements;
-    if (!credit.userId && users.value.length)
-      credit.userId =
-        users.value.find((item) => item.roles.includes("user"))?.id ||
-        users.value[0].id;
-
     if (isSuperAdmin.value) {
       const [mailData, authData, oauthData, turnstileData, sidebarData] =
         await Promise.all([
@@ -285,6 +289,29 @@ async function load() {
   } catch (value) {
     failed(value);
   }
+}
+
+async function searchUsers() {
+  userSearchBusy.value = true;
+  error.value = "";
+  try {
+    const query = userQuery.value.trim();
+    const result = await api<{ users: User[] }>(
+      `/admin/users${query ? `?username=${encodeURIComponent(query)}` : ""}`,
+    );
+    users.value = result.users;
+    appliedUserQuery.value = query;
+  } catch (value) {
+    failed(value);
+  } finally {
+    userSearchBusy.value = false;
+  }
+}
+
+async function clearUserSearch() {
+  userQuery.value = "";
+  appliedUserQuery.value = "";
+  await searchUsers();
 }
 
 function scrollToCurrentSection() {
@@ -327,6 +354,7 @@ async function createUser() {
     });
     done("账户已创建");
     await load();
+    if (page.value === "user-create") await router.push("/admin/users");
   } catch (value) {
     failed(value);
   } finally {
@@ -452,7 +480,7 @@ async function saveAuth() {
       method: "PUT",
       body: JSON.stringify(auth),
     });
-    done("注册策略已保存");
+    done("注册与认证设置已保存");
   } catch (value) {
     failed(value);
   } finally {
@@ -603,37 +631,6 @@ async function toggleAnnouncement(item: Announcement) {
     busy.value = "";
   }
 }
-async function grantCredit() {
-  if (!credit.userId || credit.amountCents <= 0 || !credit.businessRef.trim()) {
-    error.value = "请选择账户并填写正整数额度和业务引用";
-    return;
-  }
-  try {
-    busy.value = "grant-credit";
-    await api("/admin/users/" + credit.userId + "/credits", {
-      method: "POST",
-      body: JSON.stringify({
-        ...credit,
-        amountCents: Math.trunc(credit.amountCents),
-        businessRef: credit.businessRef.trim(),
-        expiresAt: credit.expiresAt
-          ? new Date(credit.expiresAt).toISOString()
-          : null,
-      }),
-    });
-    Object.assign(credit, {
-      amountCents: 0,
-      businessRef: "",
-      note: "",
-      expiresAt: "",
-    });
-    done("赠送额度已发放");
-  } catch (value) {
-    failed(value);
-  } finally {
-    busy.value = "";
-  }
-}
 </script>
 
 <template>
@@ -701,43 +698,50 @@ async function grantCredit() {
       /></RouterLink>
     </section>
 
-    <section v-if="page === 'users'" class="admin-section">
+    <section v-if="page === 'users'" class="admin-section user-directory-section">
       <div class="section-heading">
         <div>
           <p class="eyebrow">身份与权限</p>
           <h2>{{ isSuperAdmin ? "账户管理" : "账户目录" }}</h2>
         </div>
-        <span>{{ users.length }} 个账户</span>
-      </div>
-      <div :class="['admin-split', { 'read-only': !isSuperAdmin }]">
-        <form
-          v-if="isSuperAdmin"
-          class="inline-form"
-          @submit.prevent="createUser"
-        >
-          <h3>创建账户</h3>
-          <label>姓名<input v-model="account.displayName" required /></label>
-          <label
-            >邮箱<input v-model="account.email" type="email" required
-          /></label>
-          <label
-            >初始密码<input
-              v-model="account.password"
-              type="password"
-              required
-          /></label>
-          <label
-            >角色<select v-model="account.role">
-              <option value="user">用户</option>
-              <option value="admin">管理员</option>
-            </select></label
+        <div class="section-heading-actions">
+          <span>{{ appliedUserQuery ? `${users.length} 个匹配账户` : `${users.length} 个账户` }}</span>
+          <RouterLink
+            v-if="isSuperAdmin"
+            class="primary compact manual-register-entry"
+            to="/admin/users/create"
           >
-          <button class="primary compact" :disabled="busy === 'create-user'">
-            <ShieldPlus :size="16" />创建账户
-          </button>
-        </form>
-        <div class="data-list">
-          <article v-for="user in users" :key="user.id" class="data-row">
+            <ShieldPlus :size="16" />手动注册
+          </RouterLink>
+        </div>
+      </div>
+      <form class="user-directory-search" role="search" @submit.prevent="searchUsers">
+        <label>
+          <Search :size="16" />
+          <input
+            v-model="userQuery"
+            type="search"
+            maxlength="80"
+            autocomplete="off"
+            placeholder="搜索用户名"
+            aria-label="搜索用户名"
+          />
+        </label>
+        <button
+          v-if="appliedUserQuery"
+          class="ghost compact"
+          type="button"
+          :disabled="userSearchBusy"
+          @click="clearUserSearch"
+        >
+          <X :size="15" />清除
+        </button>
+        <button class="secondary compact" type="submit" :disabled="userSearchBusy">
+          <Search :size="15" />{{ userSearchBusy ? "搜索中" : "搜索" }}
+        </button>
+      </form>
+      <div v-if="users.length" class="data-list">
+        <article v-for="user in users" :key="user.id" class="data-row">
             <div>
               <strong>{{ user.displayName }}</strong
               ><small>{{ user.email }} · {{ roleLabel(user) }}</small>
@@ -791,60 +795,86 @@ async function grantCredit() {
                 <Settings2 :size="16" />
               </button>
             </div>
-          </article>
+        </article>
+      </div>
+      <div v-else class="user-search-empty">
+        <CircleAlert :size="20" />
+        <div>
+          <strong>{{ appliedUserQuery ? "没有匹配的用户名" : "暂无用户账户" }}</strong>
+          <p>{{ appliedUserQuery ? `未找到包含“${appliedUserQuery}”的用户名，可以换一个关键词。` : "创建账户后会显示在这里。" }}</p>
         </div>
+        <button v-if="appliedUserQuery" class="ghost compact" type="button" @click="clearUserSearch">清除搜索</button>
       </div>
     </section>
 
     <section
-      v-if="page === 'users' && isSuperAdmin"
-      class="form-panel credit-admin"
+      v-if="page === 'user-create' && isSuperAdmin"
+      class="admin-section manual-registration-stage"
     >
-      <h2><Coins :size="19" />发放赠送额度</h2>
-      <form @submit.prevent="grantCredit">
-        <label
-          >目标账户<select v-model="credit.userId" required>
-            <option
-              v-for="user in users.filter((item) => item.status === 'active')"
-              :key="user.id"
-              :value="user.id"
-            >
-              {{ user.displayName }} · {{ user.email }}
-            </option>
-          </select></label
-        >
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">账户管理 / 手动注册</p>
+          <h2>填写注册信息</h2>
+        </div>
+        <RouterLink class="ghost compact manual-registration-back" to="/admin/users">
+          <ArrowLeft :size="16" />返回账户列表
+        </RouterLink>
+      </div>
+      <form class="manual-registration-form" @submit.prevent="createUser">
+        <div class="manual-registration-copy">
+          <strong>建立新的平台账户</strong>
+          <p>邮箱将作为登录凭据；初始密码请通过安全渠道交给用户。</p>
+        </div>
         <div class="field-row">
           <label
-            >额度（分）<input
-              v-model.number="credit.amountCents"
-              type="number"
-              min="1"
-              step="1"
-              required /></label
-          ><label
-            >到期时间<input v-model="credit.expiresAt" type="datetime-local"
+            >姓名<input
+              v-model.trim="account.displayName"
+              autocomplete="off"
+              maxlength="80"
+              required
+          /></label>
+          <label
+            >邮箱<input
+              v-model.trim="account.email"
+              type="email"
+              autocomplete="off"
+              maxlength="254"
+              required
           /></label>
         </div>
-        <label
-          >唯一业务引用<input
-            v-model="credit.businessRef"
-            maxlength="128"
-            placeholder="campaign-2026-08/user-001"
-            required
-        /></label>
-        <label>说明<input v-model="credit.note" maxlength="500" /></label>
-        <button class="primary compact" :disabled="busy === 'grant-credit'">
-          <Coins :size="16" />发放额度
-        </button>
+        <div class="field-row">
+          <label
+            >初始密码<input
+              v-model="account.password"
+              type="password"
+              autocomplete="new-password"
+              minlength="12"
+              maxlength="128"
+              required
+          /></label>
+          <label
+            >角色<select v-model="account.role">
+              <option value="user">用户</option>
+              <option value="admin">管理员</option>
+            </select></label
+          >
+        </div>
+        <div class="manual-registration-actions">
+          <RouterLink class="ghost compact" to="/admin/users">取消</RouterLink>
+          <button class="primary compact" :disabled="busy === 'create-user'">
+            <ShieldPlus :size="16" />
+            {{ busy === "create-user" ? "正在注册" : "确认注册" }}
+          </button>
+        </div>
       </form>
     </section>
 
     <div
-      v-if="isSuperAdmin && ['registration', 'mail', 'oauth'].includes(page)"
+      v-if="isSuperAdmin && ['registration', 'mail'].includes(page)"
       class="admin-grid"
     >
       <section v-if="page === 'registration'" class="form-panel">
-        <h2><Globe2 :size="19" />注册策略</h2>
+        <h2><Globe2 :size="19" />注册与密码策略</h2>
         <form @submit.prevent="saveAuth">
           <div class="switch-setting">
             <div>
@@ -1119,7 +1149,7 @@ async function grantCredit() {
         </div>
       </section>
 
-      <section v-if="page === 'oauth'" class="form-panel">
+      <section v-if="page === 'registration'" class="form-panel">
         <h2><KeyRound :size="19" />GitHub OAuth</h2>
         <p
           v-if="!github.publicBaseUrlConfigured"
@@ -1176,7 +1206,7 @@ async function grantCredit() {
         </form>
       </section>
 
-      <section v-if="page === 'oauth'" class="form-panel">
+      <section v-if="page === 'registration'" class="form-panel">
         <h2><KeyRound :size="19" />LinuxDo OAuth</h2>
         <p
           v-if="!linuxdo.publicBaseUrlConfigured"

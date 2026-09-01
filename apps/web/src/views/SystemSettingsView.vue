@@ -52,7 +52,14 @@ async function save() {
   error.value = "";
   message.value = "";
   try {
-    const payload = { ...form.value };
+    // Website ingress is edited on its own page. Read the current values before
+    // saving so an older System Settings tab cannot overwrite newer routing data.
+    const current = await api<SystemSettings>("/admin/settings/system");
+    const payload = {
+      ...form.value,
+      serverUrl: current.serverUrl,
+      appBaseDomain: current.appBaseDomain,
+    };
     delete payload.updatedAt;
     const res = await api<SystemSettings>("/admin/settings/system", {
       method: "PUT",
@@ -114,40 +121,15 @@ onMounted(() => {
         </div>
         <div class="card-divider"></div>
         <div class="p-6 flex flex-col">
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div class="log-field">
-              <label>系统名称</label>
-              <input v-model="form.systemName" placeholder="请输入系统名称" maxlength="64" />
-              <em>在整个应用程序中显示的名称</em>
-            </div>
-            <div class="log-field">
-              <label>服务器地址</label>
-              <input v-model="form.serverUrl" placeholder="例如：https://cloud.example.com" />
-              <em>主系统的公开访问地址，用于应用子域名安全返回控制台；不参与应用计费</em>
-            </div>
+          <div class="log-field">
+            <label>系统名称</label>
+            <input v-model="form.systemName" placeholder="请输入系统名称" maxlength="64" />
+            <em>在整个应用程序中显示的名称</em>
           </div>
           <div class="log-field mt-5">
             <label>徽标 URL</label>
             <input v-model="form.logoUrl" placeholder="您的徽标图片 URL（可选）" />
             <em>自定义您的平台展示 Logo</em>
-          </div>
-        </div>
-      </section>
-
-      <!-- 路由与代理设置 -->
-      <section class="nextdev-card p-0">
-        <div class="card-header-bar">
-          <div class="card-title-group">
-            <span class="eyebrow">NETWORK · 路由与网络</span>
-            <h3>反向代理服务设置</h3>
-          </div>
-        </div>
-        <div class="card-divider"></div>
-        <div class="p-6 flex flex-col">
-          <div class="log-field">
-            <label>应用泛子域名 (App Base Domain)</label>
-            <input v-model="form.appBaseDomain" placeholder="例如：apps.example.com" />
-            <em>独立于服务器地址，为每个应用分配专属子域名（例如 app-user.apps.example.com）。必须将 *.apps.example.com 泛解析到当前服务器；不参与应用计费。</em>
           </div>
         </div>
       </section>

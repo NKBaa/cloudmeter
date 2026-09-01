@@ -2,7 +2,7 @@ package httpapi
 
 import "testing"
 
-func TestSelectedRouteSpecKeepsInternalPortImmutable(t *testing.T) {
+func TestSelectedRouteSpecUsesDefaultOrSelectedInternalPort(t *testing.T) {
 	fixed := map[string]any{"containerPort": 8080.0}
 	selected, err := selectedRouteSpec(fixed, selectedResources{})
 	if err != nil {
@@ -14,6 +14,18 @@ func TestSelectedRouteSpecKeepsInternalPortImmutable(t *testing.T) {
 	runtime := map[string]any{"cpuCores": 1.0, "memoryMiB": 512.0, "systemDiskGiB": 5.0}
 	if err = validateInternalRoutePort(runtime, selected); err != nil {
 		t.Fatal(err)
+	}
+	override := 3000
+	selected, err = selectedRouteSpec(fixed, selectedResources{ContainerPort: &override})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected["containerPort"] != 3000.0 {
+		t.Fatalf("selected override=%v", selected)
+	}
+	invalid := 0
+	if _, err = selectedRouteSpec(fixed, selectedResources{ContainerPort: &invalid}); err == nil {
+		t.Fatal("invalid selected container port was accepted")
 	}
 }
 

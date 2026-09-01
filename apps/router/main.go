@@ -147,7 +147,7 @@ func routeHandler(db *pgxpool.Pool, logger *slog.Logger, fallbackServerURL strin
 				FROM app_access_grants grant
 				JOIN users ON users.id=grant.user_id AND users.status='active'
 				JOIN user_apps app ON app.id=grant.user_app_id AND app.user_id=grant.user_id AND app.deleted_at IS NULL
-				WHERE grant.token_hash=$1 AND grant.expires_at>now() AND app.slug||'-'||users.slug=$2`, tokenHash[:], hostMatch).Scan(&sessionUserID)
+				WHERE grant.token_hash=$1 AND grant.expires_at>now() AND app.route_host_label=$2`, tokenHash[:], hostMatch).Scan(&sessionUserID)
 		} else {
 			authErr = db.QueryRow(r.Context(), `SELECT session.user_id::text FROM sessions session
 				JOIN users ON users.id=session.user_id AND users.status='active'
@@ -173,14 +173,14 @@ func routeHandler(db *pgxpool.Pool, logger *slog.Logger, fallbackServerURL strin
 		err := db.QueryRow(r.Context(), `SELECT
 		'/apps/'||u.slug||'/'||a.slug,
 		'release-'||left(replace(rel.id::text,'-',''),12),
-		coalesce(nullif(rel.immutable_snapshot->'route_spec'->>'port','')::int,nullif(rel.immutable_snapshot->'route_spec'->>'containerPort','')::int,8080),
+		ar.upstream_port,
 		coalesce(rel.immutable_snapshot->'route_spec','{}'::jsonb)
 		FROM app_routes ar
 		JOIN user_apps a ON a.id=ar.user_app_id AND a.instance_id=ar.instance_id
 		JOIN users u ON u.id=a.user_id
 		JOIN app_releases rel ON rel.id=ar.release_id AND rel.user_app_id=a.id
 		WHERE a.user_id=$2 AND u.status='active' AND a.status IN ('running','updating') AND a.last_successful_release_id=rel.id AND rel.state='active'
-		  AND (($3='subdomain' AND $4<>'' AND $4=a.slug||'-'||u.slug)
+		  AND (($3='subdomain' AND $4<>'' AND $4=a.route_host_label)
 		       OR ($3='legacy' AND ($1='/apps/'||u.slug||'/'||a.slug OR $1 LIKE '/apps/'||u.slug||'/'||a.slug||'/%')))
 		ORDER BY length('/apps/'||u.slug||'/'||a.slug) DESC LIMIT 1`, r.URL.Path, sessionUserID, routeMode, hostMatch).Scan(&prefix, &host, &port, &routeSpec)
 		if err == pgx.ErrNoRows {
@@ -195,7 +195,7 @@ func routeHandler(db *pgxpool.Pool, logger *slog.Logger, fallbackServerURL strin
 					JOIN user_apps a ON a.id=ar.user_app_id AND a.instance_id=ar.instance_id
 					JOIN users u ON u.id=a.user_id
 					WHERE a.user_id=$2 AND a.deleted_at IS NULL AND u.status='active'
-					  AND (($3='subdomain' AND $4<>'' AND $4=a.slug||'-'||u.slug)
+					  AND (($3='subdomain' AND $4<>'' AND $4=a.route_host_label)
 					       OR ($3='legacy' AND ($1='/apps/'||u.slug||'/'||a.slug OR $1 LIKE '/apps/'||u.slug||'/'||a.slug||'/%')))
 					ORDER BY length('/apps/'||u.slug||'/'||a.slug) DESC LIMIT 1`, r.URL.Path, sessionUserID, routeMode, hostMatch).Scan(&instanceID); lookupErr == nil && instanceID != "" {
 					redirectToConsole(w, r, serverURL, "/console/apps/"+instanceID)
@@ -306,7 +306,7 @@ func redeemAppAccessGrant(db *pgxpool.Pool, logger *slog.Logger, w http.Response
 		JOIN users ON users.id=grant.user_id AND users.status='active'
 		JOIN user_apps app ON app.id=grant.user_app_id AND app.user_id=grant.user_id AND app.deleted_at IS NULL
 		WHERE grant.token_hash=$1 AND grant.expires_at>now() AND app.status IN ('running','updating')
-		  AND app.slug||'-'||users.slug=$2
+		  AND app.route_host_label=$2
 		FOR UPDATE OF grant`, grantHash[:], hostMatch).Scan(&expiresAt); err != nil {
 		if err == pgx.ErrNoRows {
 			http.Error(w, "application access grant is invalid or expired", http.StatusUnauthorized)

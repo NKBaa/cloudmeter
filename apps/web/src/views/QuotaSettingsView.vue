@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from "vue";
+import { computed, onMounted, reactive, ref } from "vue";
 import {
   BadgeDollarSign,
+  CalendarCheck,
+  Clock,
   Gem,
   Gift,
   Save,
@@ -11,15 +13,24 @@ import {
 } from "@lucide/vue";
 import { api } from "../api";
 const form = reactive({ initialGrantCents: 0, inviteRewardCents: 0 });
+const checkin = reactive({ enabled: true, minRewardCents: 1, maxRewardCents: 10 });
 const busy = ref(false),
   loading = ref(true),
   message = ref(""),
   error = ref("");
 const formatYuan = (cents: number) => `¥${(cents / 100).toFixed(2)}`;
+const checkinRange = computed(
+  () => `${formatYuan(checkin.minRewardCents)} ~ ${formatYuan(checkin.maxRewardCents)}`,
+);
 async function load() {
   loading.value = true;
   try {
-    Object.assign(form, await api("/admin/settings/quota"));
+    const [quota, checkinSettings] = await Promise.all([
+      api("/admin/settings/quota"),
+      api("/admin/settings/checkin"),
+    ]);
+    Object.assign(form, quota);
+    Object.assign(checkin, checkinSettings);
   } catch (e) {
     error.value = (e as Error).message;
   } finally {
@@ -31,10 +42,16 @@ async function save() {
   error.value = "";
   message.value = "";
   try {
-    await api("/admin/settings/quota", {
-      method: "PUT",
-      body: JSON.stringify(form),
-    });
+    await Promise.all([
+      api("/admin/settings/quota", {
+        method: "PUT",
+        body: JSON.stringify(form),
+      }),
+      api("/admin/settings/checkin", {
+        method: "PUT",
+        body: JSON.stringify(checkin),
+      }),
+    ]);
     message.value = "额度设置已保存";
   } catch (e) {
     error.value = (e as Error).message;
@@ -51,7 +68,7 @@ onMounted(load);
         <p class="eyebrow">资金与运营</p>
         <h1>额度设置</h1>
         <p class="quiet">
-          控制新账户进入平台时的初始赠送额度，以及邀请他人时发放给邀请者的奖励。支持仅修改远期规则，不追溯已有余额。
+          集中管理新用户、邀请和每日签到的赠送额度。修改只影响后续发放，不追溯已有余额。
         </p>
       </div>
       <div class="quota-header-actions">
@@ -82,6 +99,39 @@ onMounted(load);
         <RouterLink class="secondary compact" to="/admin/payments">
           <BadgeDollarSign :size="15" />支付订单
         </RouterLink>
+      </div>
+    </section>
+
+    <section class="checkin-quota-panel" v-if="!loading">
+      <div class="checkin-quota-heading">
+        <span class="quota-field-icon"><CalendarCheck :size="19" /></span>
+        <div>
+          <p class="eyebrow">每日签到额度</p>
+          <h2>签到开关与随机奖励区间</h2>
+          <p>每天北京时间零点重置，奖励直接进入不可变赠送账本。</p>
+        </div>
+        <div class="checkin-quota-status">
+          <Clock :size="15" />{{ checkin.enabled ? checkinRange : "已停用" }}
+        </div>
+      </div>
+      <div class="checkin-quota-toggle">
+        <div>
+          <strong>允许用户每日签到</strong>
+          <small>关闭后隐藏用户签到入口，历史奖励记录不受影响。</small>
+        </div>
+        <label class="switch"><input v-model="checkin.enabled" type="checkbox" /><span /></label>
+      </div>
+      <div class="checkin-quota-fields">
+        <label>
+          <span>最低奖励（分）</span>
+          <input v-model.number="checkin.minRewardCents" type="number" min="1" :max="checkin.maxRewardCents" step="1" required />
+          <small>每次至少 {{ formatYuan(checkin.minRewardCents) }}</small>
+        </label>
+        <label>
+          <span>最高奖励（分）</span>
+          <input v-model.number="checkin.maxRewardCents" type="number" :min="checkin.minRewardCents" max="10000" step="1" required />
+          <small>每次至多 {{ formatYuan(checkin.maxRewardCents) }}</small>
+        </label>
       </div>
     </section>
 
@@ -337,6 +387,51 @@ onMounted(load);
   gap: 14px;
 }
 
+.checkin-quota-panel {
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--paper);
+  box-shadow: var(--shadow-xs);
+}
+.checkin-quota-heading {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--line);
+}
+.checkin-quota-heading h2 { margin: 2px 0 4px; font-size: 16px; }
+.checkin-quota-heading p { margin: 0; color: var(--text-muted); font-size: 12px; }
+.checkin-quota-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 650;
+}
+.checkin-quota-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 18px 0;
+}
+.checkin-quota-toggle strong,
+.checkin-quota-toggle small { display: block; }
+.checkin-quota-toggle strong { font-size: 13px; }
+.checkin-quota-toggle small { margin-top: 4px; color: var(--text-muted); font-size: 12px; }
+.checkin-quota-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+.checkin-quota-fields label { display: grid; gap: 7px; font-size: 12px; font-weight: 650; }
+.checkin-quota-fields input { width: 100%; }
+.checkin-quota-fields small { color: var(--text-muted); font-weight: 400; }
+
 .quota-tips-item {
   display: flex;
   align-items: flex-start;
@@ -378,5 +473,8 @@ onMounted(load);
   .quota-tips {
     grid-template-columns: 1fr;
   }
+  .checkin-quota-fields { grid-template-columns: 1fr; }
+  .checkin-quota-heading { grid-template-columns: 38px minmax(0, 1fr); }
+  .checkin-quota-status { grid-column: 2; }
 }
 </style>

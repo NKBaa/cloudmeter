@@ -15,9 +15,9 @@ import PaymentSettingsView from './views/PaymentSettingsView.vue'
 import ReleasesView from './views/ReleasesView.vue'
 import BackupsView from './views/BackupsView.vue'
 import AuditAdminView from './views/AuditAdminView.vue'
-import CheckinSettingsView from './views/CheckinSettingsView.vue'
 import HomeView from './views/HomeView.vue'
 import SystemSettingsView from './views/SystemSettingsView.vue'
+import WebsiteSettingsView from './views/WebsiteSettingsView.vue'
 import AISupportSettingsView from './views/AISupportSettingsView.vue'
 import DockerSettingsView from './views/DockerSettingsView.vue'
 import TicketsView from './views/TicketsView.vue'
@@ -66,6 +66,7 @@ const router = createRouter({
         { path: 'console/billing', component: ConsoleView, props: { page: 'billing' } },
         { path: 'console/recharge', component: ConsoleView, props: { page: 'recharge' } },
         { path: 'console/usage', component: ConsoleView, props: { page: 'usage' } },
+        { path: 'console/checkin', redirect: '/console' },
         { path: 'console/releases', component: ReleasesView },
         { path: 'console/backups', component: BackupsView },
         { path: 'console/tickets', component: TicketsView, props: { admin: false } },
@@ -73,19 +74,21 @@ const router = createRouter({
         { path: 'console/balance-alert', component: BalanceAlertView },
         { path: 'admin', component: AdminView, props: { page: 'overview' }, meta: { admin: true } },
         { path: 'admin/users', component: AdminView, props: { page: 'users' }, meta: { admin: true } },
+        { path: 'admin/users/create', component: AdminView, props: { page: 'user-create' }, meta: { superAdmin: true } },
         { path: 'admin/announcements', component: AdminView, props: { page: 'announcements' }, meta: { admin: true } },
         { path: 'admin/registration', component: AdminView, props: { page: 'registration' }, meta: { superAdmin: true } },
         { path: 'admin/mail', component: AdminView, props: { page: 'mail' }, meta: { superAdmin: true } },
-        { path: 'admin/oauth', component: AdminView, props: { page: 'oauth' }, meta: { superAdmin: true } },
+        { path: 'admin/oauth', redirect: '/admin/registration' },
         { path: 'admin/products', component: ProductsAdminView, meta: { admin: true } },
         { path: 'admin/payments', component: PaymentsAdminView, meta: { superAdmin: true } },
         { path: 'admin/pricing', component: PricingAdminView, meta: { superAdmin: true } },
         { path: 'admin/payment-settings', component: PaymentSettingsView, meta: { superAdmin: true } },
-        { path: 'admin/checkin-settings', component: CheckinSettingsView, meta: { superAdmin: true } },
+        { path: 'admin/checkin-settings', redirect: '/admin/quota-settings' },
         { path: 'admin/quota-settings', component: QuotaSettingsView, meta: { superAdmin: true } },
         { path: 'admin/log-settings', component: LogSettingsView, meta: { superAdmin: true } },
         { path: 'admin/audit', component: AuditAdminView, meta: { superAdmin: true } },
         { path: 'admin/system', component: SystemSettingsView, meta: { superAdmin: true } },
+        { path: 'admin/website', component: WebsiteSettingsView, meta: { superAdmin: true } },
         { path: 'admin/ai-support', component: AISupportSettingsView, meta: { superAdmin: true } },
         { path: 'admin/tickets', component: TicketsView, props: { admin: true }, meta: { admin: true } },
         { path: 'admin/docker', component: DockerSettingsView, meta: { admin: true } },

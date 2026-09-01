@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/hmac"
+	cryptorand "crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -82,11 +83,16 @@ func main() {
 	lastDockerImageSync := time.Time{}
 	lastHostMetricSync := time.Time{}
 	lastLogPrune := time.Time{}
+	lastRouteRefresh := time.Time{}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			if time.Since(lastRouteRefresh) >= 60*time.Second {
+				processDomainRefreshOne(ctx, db, logger)
+				lastRouteRefresh = time.Now()
+			}
 			if time.Since(lastHostMetricSync) >= 5*time.Second {
 				syncHostMetrics(ctx, db, logger)
 				lastHostMetricSync = time.Now()
@@ -126,6 +132,81 @@ func main() {
 			billUsage(ctx, db, logger)
 		}
 	}
+}
+
+func rotatedRouteHostLabel(slug string) (string, error) {
+	base := strings.TrimRight(strings.ToLower(strings.TrimSpace(slug)), "-")
+	if len(base) > 50 {
+		base = strings.TrimRight(base[:50], "-")
+	}
+	raw := make([]byte, 6)
+	if _, err := cryptorand.Read(raw); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%s-%x", base, raw), nil
+}
+
+func processDomainRefreshOne(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		return
+	}
+	defer tx.Rollback(ctx)
+	var appID, slug, previousLabel, baseDomain string
+	var refreshDays int
+	err = tx.QueryRow(ctx, `SELECT app.id::text,app.slug,app.route_host_label,app.domain_refresh_days,settings.app_base_domain
+		FROM user_apps app CROSS JOIN system_settings settings
+		WHERE settings.singleton AND app.deleted_at IS NULL AND app.domain_next_refresh_at IS NOT NULL
+		  AND app.domain_next_refresh_at<=now()
+		ORDER BY app.domain_next_refresh_at FOR UPDATE OF app SKIP LOCKED LIMIT 1`).Scan(&appID, &slug, &previousLabel, &refreshDays, &baseDomain)
+	if err == pgx.ErrNoRows {
+		return
+	}
+	if err != nil {
+		logger.Warn("application domain refresh lookup failed", "error", err)
+		return
+	}
+	var nextLabel string
+	for attempt := 0; attempt < 32; attempt++ {
+		nextLabel, err = rotatedRouteHostLabel(slug)
+		if err != nil {
+			logger.Warn("application domain label generation failed", "app", appID, "error", err)
+			return
+		}
+		var taken bool
+		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM user_apps WHERE lower(route_host_label)=lower($1) AND id<>$2 AND deleted_at IS NULL)`, nextLabel, appID).Scan(&taken); err != nil {
+			return
+		}
+		if !taken {
+			break
+		}
+		nextLabel = ""
+	}
+	if nextLabel == "" {
+		logger.Warn("application domain label allocation exhausted", "app", appID)
+		return
+	}
+	if _, err = tx.Exec(ctx, `UPDATE user_apps SET route_host_label=$2,domain_refreshed_at=now(),domain_next_refresh_at=now()+make_interval(days=>$3) WHERE id=$1`, appID, nextLabel, refreshDays); err != nil {
+		logger.Warn("application domain refresh failed", "app", appID, "error", err)
+		return
+	}
+	baseDomain = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(baseDomain)), ".")
+	if _, err = tx.Exec(ctx, `UPDATE app_routes route SET public_path=CASE WHEN $2='' THEN '/apps/'||users.slug||'/'||app.slug ELSE '//'||app.route_host_label||'.'||$2||'/' END,updated_at=now()
+		FROM user_apps app JOIN users ON users.id=app.user_id WHERE route.user_app_id=app.id AND app.id=$1`, appID, baseDomain); err != nil {
+		logger.Warn("application route refresh failed", "app", appID, "error", err)
+		return
+	}
+	if _, err = tx.Exec(ctx, `DELETE FROM app_access_grants WHERE user_app_id=$1`, appID); err != nil {
+		return
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO audit_logs(action,resource_type,resource_id,metadata) VALUES('app.domain.refresh','user_app',$1,jsonb_build_object('previous_label',$2::text,'next_label',$3::text,'refresh_days',$4::integer))`, appID, previousLabel, nextLabel, refreshDays); err != nil {
+		return
+	}
+	if err = tx.Commit(ctx); err != nil {
+		logger.Warn("application domain refresh commit failed", "app", appID, "error", err)
+		return
+	}
+	logger.Info("application domain refreshed", "app", appID, "previous", previousLabel, "next", nextLabel, "days", refreshDays)
 }
 
 func syncHostMetrics(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
@@ -1845,8 +1926,8 @@ func processOne(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
 			logger.Error("public ingress usage insert failed", "error", err)
 			return
 		}
-		var slug, serviceSlug, userSlug, userID, releaseContainerID string
-		if err = tx.QueryRow(ctx, `SELECT u.slug,a.slug,a.service_slug,a.user_id::text FROM user_apps a JOIN users u ON u.id=a.user_id WHERE a.id=$1`, appID).Scan(&userSlug, &slug, &serviceSlug, &userID); err != nil {
+		var slug, serviceSlug, userSlug, routeHostLabel, userID, releaseContainerID string
+		if err = tx.QueryRow(ctx, `SELECT u.slug,a.slug,a.service_slug,a.route_host_label,a.user_id::text FROM user_apps a JOIN users u ON u.id=a.user_id WHERE a.id=$1`, appID).Scan(&userSlug, &slug, &serviceSlug, &routeHostLabel, &userID); err != nil {
 			logger.Error("route slug lookup failed", "error", err)
 			return
 		}
@@ -1877,7 +1958,7 @@ func processOne(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
 		cloudDomain = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(cloudDomain)), ".")
 		publicPath := "/apps/" + userSlug + "/" + slug
 		if cloudDomain != "" {
-			publicPath = "//" + slug + "-" + userSlug + "." + cloudDomain + "/"
+			publicPath = "//" + routeHostLabel + "." + cloudDomain + "/"
 		}
 		routeArgs := []any{appID, instanceID, releaseID, publicPath, releaseAlias(releaseID), port, containerName(instanceID, releaseID), networkName, releaseContainerID}
 		if routeHostPort >= 1 && routeHostPort <= 65535 {

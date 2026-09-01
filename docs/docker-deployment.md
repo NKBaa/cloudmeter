@@ -138,9 +138,15 @@ openssl rand -base64 32 | tr -d '=\n'
 | `SECRETS_ENCRYPTION_KEY` | 静态加密主密钥（主加密密码，务必离线备份） | 32-Byte Base64 无填充 |
 | `PLATFORM_ALLOWED_HOST` | 平台访问 Host 名（仅主机名，无协议端口路径） | `cloud.example.com` 或 `127.0.0.1` |
 | `PUBLIC_BASE_URL` | 用户访问平台的完整 URL 根路径 | `https://cloud.example.com` |
+| `CADDY_ADMIN_URL` | API 访问内部 Caddy Admin API 的地址，不得指向公网 | `http://gateway:2019` |
+| `CADDYFILE_PATH` | API 容器内托管 Caddyfile 路径 | `/etc/cloudmeter/runtime/Caddyfile` |
+| `PLATFORM_PORT` | 模式 2 的控制台独立端口 | `8080` |
+| `GATEWAY_BIND_IP` | Caddy 80/443 的宿主机监听地址 | `0.0.0.0` |
+| `GATEWAY_ACCESS_MODE` | 可选的访问模式强制值：`apps_only`（模式 2）或 `all_caddy`（模式 1）；留空时可在网站设置切换 | 留空，数据库默认 `apps_only` |
 
-应用访问域名不复用 `PUBLIC_BASE_URL` 或 `PLATFORM_ALLOWED_HOST`。部署完成后由超级管理员在“系统设置”中分别填写主系统服务器地址和应用泛子域名，并为后者配置 DNS 泛解析，例如 `*.apps.example.com`。Caddy 会把主系统 Host 交给 Web/API，把其他 Host 交给应用 Router，再由 Router 按数据库配置校验应用域名。
-| `PLATFORM_PORT` | Gateway 对外映射端口（本机验证可直接改此端口） | `18085` |
+应用访问域名不复用控制台地址。部署完成后由超级管理员在“基础设施 → 网站设置”中分别填写控制台主域名和应用泛子域名，并为后者配置 DNS 泛解析，例如 `*.apps.example.com`。模式 1 由 Caddy 同时代理控制台和应用；模式 2 的控制台直接监听 `PLATFORM_PORT`，Caddy 只代理应用。
+
+Compose 只在内部 `platform_network` 开放 Caddy Admin API 的 `2019` 端口。浏览器不能直接访问该端口；“网站设置”的运行状态、配置校验和重载操作全部经过平台 API 的超级管理员鉴权。不要给 gateway 增加 `2019:2019` 端口映射。
 
 > **警告**：`SECRETS_ENCRYPTION_KEY` 用于加密保存平台的第三方凭据（如 SMTP 密码、OAuth Client Secret、支付通道密钥和用户应用敏感环境变量）。部署后请务必保存备份！一旦丢失，数据库内存存的加密字段将不可解密。
 
@@ -148,7 +154,7 @@ openssl rand -base64 32 | tr -d '=\n'
 
 | 环境变量 | 实测值 | 说明 |
 | :--- | :--- | :--- |
-| `PLATFORM_PORT` | `18085` | 平台对外单一端口 |
+| `PLATFORM_PORT` | `18085` | 模式 2 控制台独立端口 |
 | `PLATFORM_ALLOWED_HOST` | `127.0.0.1` | WSL2 自动端口转发，Windows 宿主机直接访问 `http://127.0.0.1:18085` |
 | `PUBLIC_BASE_URL` | `http://127.0.0.1:18085` | 无域名时的完整访问根路径 |
 | `DOCKER_GID` | `$(stat -c '%g' /var/run/docker.sock)` 的实际结果 | 不要固定照抄；本次 Ubuntu 原生 Docker Engine 实测为 `108`，Docker Desktop/部分 WSL root 环境常见为 `0` |
@@ -251,20 +257,18 @@ http://<PLATFORM_ALLOWED_HOST>:<PLATFORM_PORT>/setup
 
 普通用户导航：概览、我的应用、版本历史、备份恢复、余额账单、用量、套餐订阅。
 
-管理员额外导航：平台总览、用户、产品、定价、套餐、支付、公告、OAuth、SMTP、审计。
+管理员额外导航：平台总览、用户、产品、定价、套餐、支付、公告、注册与认证、SMTP、审计、网站设置。
 
 ---
 
-## 6. 外层反向代理与 HTTPS
+## 6. 网站入口与 HTTPS
 
-在生产环境中，平台通常会部署在域名（如 `https://cloud.example.com`）之后，由外层的 Nginx / OpenResty / Caddy 或云厂商负载均衡器终止 TLS 并转发至平台的 `gateway` 端口。
+Caddy 是平台的公网入口，宿主机需放行 TCP 80/443；启用 HTTP/3 时还需放行 UDP 443。进入“基础设施 → 网站设置”选择访问模式：
 
-### 配置要求
-- 平台 `.env` 中 `PUBLIC_BASE_URL` 设置为 `https://cloud.example.com`。
-- `PLATFORM_ALLOWED_HOST` 设置为 `cloud.example.com`。
-- `GATEWAY_TRUSTED_PROXY_CIDRS` 设置为外层反向代理服务器所在的源 IP 网段（例如 `172.16.0.0/12` 或具体 IP）。
+- 模式 1：控制台主域名和应用泛子域名全部由 Caddy 管理，公网不需要开放 `PLATFORM_PORT`。
+- 模式 2：应用仍走 Caddy 80/443，控制台使用 `http://服务器地址:PLATFORM_PORT`，该端口需单独放行。
 
-相关反向代理配置范例请参考仓库中的 [`deploy/openresty.conf.example`](../deploy/openresty.conf.example)。
+HTTPS 可分别为控制台和应用选择自动证书或导入 PEM 证书与私钥。自动证书需要有效 ACME 邮箱、域名 DNS 已指向服务器并能从公网访问 80/443；应用自动证书采用受活动路由白名单保护的按需签发。导入应用证书应覆盖 `*.apps.example.com`。页面同时提供 HTTP 跳转策略、HSTS、HTTP/3、证书到期信息和当前每个应用的公开路由。
 
 ---
 
@@ -309,7 +313,7 @@ powershell -ExecutionPolicy Bypass -File deploy/verify.ps1
 ### 8.2 常见问题速查
 
 1. **端口冲突 (`port is already allocated`)**
-   修改 `.env` 中的 `PLATFORM_PORT`（例如改为 `18085` 或 `8088`），或停止占用该端口的宿主机其他进程。
+   若冲突的是模式 2 控制台端口，修改 `.env` 中的 `PLATFORM_PORT`；若冲突的是 Caddy 入口，则停止占用宿主机 80/443 的其他服务，或调整部署拓扑。
 
 2. **421 请求错误 (`421 Misdirected Request`)**
    请求中的 HTTP `Host` 报头与 `.env` 中定义的 `PLATFORM_ALLOWED_HOST` 不一致。检查反向代理是否正确透传了原 Host 报头。
@@ -328,13 +332,13 @@ powershell -ExecutionPolicy Bypass -File deploy/verify.ps1
 
 ### 应用端口说明
 
-CloudMeter 不会为每个用户应用创建宿主机 `-p` 映射，也不会假设所有镜像都支持 `PORT` 环境变量。产品版本中的“应用内部监听端口”必须与镜像实际监听端口一致，统一由平台 Gateway 通过 `/apps/{user_slug}/{app_slug}` 转发，因此宿主机始终只需开放 `PLATFORM_PORT`。
+CloudMeter 不会为每个用户应用创建宿主机 `-p` 映射，也不会假设所有镜像都支持 `PORT` 环境变量。产品版本中的“应用内部监听端口”必须与镜像实际监听端口一致，统一由 Caddy 与应用 Router 通过每个应用的专属子域名转发。宿主机对应用只开放 Caddy 的 80/443。
 
 该端口是不可由用户覆盖的容器内网路由元数据。平台不会向应用注入 `PORT`、`SERVER_PORT` 等端口环境变量，也不会为用户应用创建 Docker `ports` 映射。同一用户的依赖容器通过固定服务名和该内网端口互访；不同用户网络彼此隔离。
 
-生产入口应为 `Browser -> OpenResty -> SERVER_IP:PLATFORM_PORT -> gateway -> 平台 Web/API 或用户应用容器`。管理员只需准备一个二级域名（例如 `cloud.example.com`），由外部 OpenResty 负责 HTTPS、证书、DNS 和反向代理。OpenResty 必须透传 `Host`、`X-Forwarded-*`、WebSocket `Upgrade`，并为 SSE/流式响应关闭代理缓冲；可直接使用 [`deploy/openresty.conf.example`](../deploy/openresty.conf.example) 作为起点。
+生产入口为 `Browser -> Caddy:80/443 -> 平台 Web/API 或应用 Router -> 用户应用容器`。管理员需要准备一个控制台主域名和一个独立的应用泛子域名；证书、HTTP 跳转、HSTS、HTTP/3 与反向代理均在“网站设置”统一管理。
 
-Compose 中只有 `gateway` 使用 `ports`；PostgreSQL、Redis、API、Worker、应用路由器和用户应用容器均只在 Docker 内网可达。平台路由约定为 `/`、`/setup`、`/login`、`/register`、`/console/*`、`/admin/*`、`/api/*`、`/payments/*` 与 `/apps/{user_slug}/{app_slug}/*`。
+Compose 中 Caddy 固定发布 80/443，Web 仅额外发布模式 2 使用的 `PLATFORM_PORT`；PostgreSQL、Redis、API、Worker、应用路由器和用户应用容器均只在 Docker 内网可达。应用路由使用 `{app-slug}-{user-slug}.<应用泛子域名>`，具体 URL 与上游可在“网站设置”的应用路由表查看。
 
 7. **WSL 重启后容器未自动恢复**
    Windows 重启或 WSL 发行版被关闭后，容器不会自动拉起。可参照 [operations.md](operations.md) 中的 WSL 常驻保活方案（Windows 计划任务自动拉起），或手动恢复：

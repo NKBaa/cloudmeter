@@ -27,6 +27,7 @@ PORT="${PLATFORM_PORT:-$(awk -F= '$1=="PLATFORM_PORT" {print $2}' .env | tail -n
 PORT="${PORT%$'\r'}"
 PORT="${PORT:-8080}"
 BIND_IP="${PLATFORM_BIND_IP:-127.0.0.1}"
+GATEWAY_IP="${GATEWAY_BIND_IP:-127.0.0.1}"
 ALLOWED_HOST="${PLATFORM_ALLOWED_HOST:-$(awk -F= '$1=="PLATFORM_ALLOWED_HOST" {print $2}' .env | tail -n 1)}"
 ALLOWED_HOST="${ALLOWED_HOST%$'\r'}"
 [[ -n "$ALLOWED_HOST" ]] || { echo 'PLATFORM_ALLOWED_HOST is required' >&2; exit 1; }
@@ -71,7 +72,7 @@ echo '[4/7] checking migrations and API contracts'
 "${COMPOSE[@]}" run --rm migrate >/dev/null
 MIGRATION_STATE="$("${COMPOSE[@]}" exec -T postgres psql -U cloudmeter -d cloudmeter -Atc "SELECT version::text || '|' || CASE WHEN dirty THEN 'dirty' ELSE 'clean' END FROM schema_migrations")"
 [[ "$MIGRATION_STATE" == "${LATEST_MIGRATION}|clean" ]] || { echo "migration state is $MIGRATION_STATE, expected ${LATEST_MIGRATION}|clean" >&2; exit 1; }
-"${COMPOSE[@]}" exec -T gateway caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null
+"${COMPOSE[@]}" exec -T gateway caddy validate --config /etc/cloudmeter/runtime/Caddyfile --adapter caddyfile >/dev/null
 "$DOCKER_BIN" run --rm -e GOPROXY="${GOPROXY:-https://goproxy.cn,direct}" -v "$DOCKER_MOUNT_ROOT:/src" -w /src golang:1.23-alpine sh -c '/usr/local/go/bin/go test ./internal/httpapi -run TestOpenAPICoversRegisteredRoutes -count=1' >/dev/null
 echo '[5/7] validating OpenAPI schema'
 "$DOCKER_BIN" run --rm -e npm_config_registry="${NPM_REGISTRY:-https://registry.npmmirror.com}" -v "$DOCKER_MOUNT_ROOT:/work" -w /work node:24-alpine npx --yes '@redocly/cli@2.46.1' lint docs/openapi.yaml --config docs/redocly.yaml >/dev/null
@@ -82,7 +83,7 @@ if ! wait_for_healthy; then
   exit 1
 fi
 curl --fail --silent --show-error -H "Host: $ALLOWED_HOST" "http://${BIND_IP}:${PORT}/api/healthz" >/dev/null
-UNKNOWN_HOST_STATUS="$(curl --silent --show-error -o /dev/null -w '%{http_code}' -H 'Host: invalid-host.example.invalid' "http://${BIND_IP}:${PORT}/api/healthz")"
+UNKNOWN_HOST_STATUS="$(curl --silent --show-error -o /dev/null -w '%{http_code}' -H 'Host: invalid-host.example.invalid' "http://${GATEWAY_IP}:80/api/healthz")"
 [[ "$UNKNOWN_HOST_STATUS" == 421 ]] || { echo "unknown Host returned $UNKNOWN_HOST_STATUS, expected 421" >&2; exit 1; }
 echo '[7/7] restart health verified'
 "${COMPOSE[@]}" ps

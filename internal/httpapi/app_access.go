@@ -28,6 +28,16 @@ func (s *Server) createAppAccess(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if strings.HasPrefix(publicPath, "//") {
+		var tlsEnabled bool
+		if err := s.db.QueryRow(r.Context(), `SELECT tls_enabled FROM system_settings WHERE singleton`).Scan(&tlsEnabled); err != nil {
+			s.internalError(w, err)
+			return
+		}
+		if tlsEnabled {
+			publicPath = "https:" + publicPath
+		} else {
+			publicPath = "http:" + publicPath
+		}
 		grant, err := randomToken(32)
 		if err != nil {
 			s.internalError(w, err)

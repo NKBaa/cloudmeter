@@ -24,12 +24,20 @@ type Config struct {
 	SecretsKey        []byte
 	EgressIngestToken string
 	EgressProxy       string
+	CaddyAdminURL     string
+	CaddyfilePath     string
+	StandalonePort    int
+	GatewayAccessMode string
 }
 
 func Load() (Config, error) {
 	ttl, err := strconv.Atoi(env("SESSION_TTL_HOURS", "24"))
 	if err != nil || ttl < 1 {
 		return Config{}, fmt.Errorf("SESSION_TTL_HOURS must be a positive integer")
+	}
+	standalonePort, err := strconv.Atoi(env("PLATFORM_PORT", "8080"))
+	if err != nil || standalonePort < 1 || standalonePort > 65535 {
+		return Config{}, fmt.Errorf("PLATFORM_PORT must be an integer between 1 and 65535")
 	}
 	var key []byte
 	if rawKey := strings.TrimSpace(os.Getenv("SECRETS_ENCRYPTION_KEY")); rawKey != "" {
@@ -53,6 +61,13 @@ func Load() (Config, error) {
 		SecretsKey:        key,
 		EgressIngestToken: env("EGRESS_INGEST_TOKEN", ""),
 		EgressProxy:       env("EGRESS_PROXY_CONTAINER_NAME", "cloudmeter-egress-proxy"),
+		CaddyAdminURL:     strings.TrimRight(env("CADDY_ADMIN_URL", "http://gateway:2019"), "/"),
+		CaddyfilePath:     env("CADDYFILE_PATH", "/etc/cloudmeter/Caddyfile"),
+		StandalonePort:    standalonePort,
+		GatewayAccessMode: strings.TrimSpace(os.Getenv("GATEWAY_ACCESS_MODE")),
+	}
+	if cfg.GatewayAccessMode != "" && cfg.GatewayAccessMode != "apps_only" && cfg.GatewayAccessMode != "all_caddy" {
+		return Config{}, fmt.Errorf("GATEWAY_ACCESS_MODE must be empty, apps_only, or all_caddy")
 	}
 	if raw := strings.TrimSpace(os.Getenv("TRUSTED_PROXY_CIDRS")); raw != "" {
 		cfg.TrustedProxyCIDRs = strings.Split(raw, ",")

@@ -71,6 +71,12 @@ func New(ctx context.Context, db *pgxpool.Pool, cfg config.Config, logger *slog.
 	if err = s.migrateStoredCredentials(ctx); err != nil {
 		return nil, fmt.Errorf("migrate stored credentials: %w", err)
 	}
+	if err = s.restoreGatewayCertificates(ctx); err != nil {
+		return nil, fmt.Errorf("restore gateway certificates: %w", err)
+	}
+	if err = s.prepareGatewayAccessModeOverride(ctx); err != nil {
+		return nil, fmt.Errorf("apply gateway access mode override: %w", err)
+	}
 	s.routes()
 	return s, nil
 }
@@ -245,6 +251,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/payments/epay/callback", s.epayCallback)
 	s.mux.HandleFunc("GET /api/payments/epay/callback", s.epayCallback)
 	s.mux.HandleFunc("POST /api/internal/egress/{appID}", s.ingestEgressSample)
+	s.mux.HandleFunc("GET /api/internal/console-entry", s.consoleEntryGate)
+	s.mux.HandleFunc("GET /api/internal/caddy/allow-domain", s.allowCaddyDomain)
 	s.mux.Handle("POST /api/admin/payments/orders/{orderID}/mark-paid", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.markPaymentPaid))))
 	s.mux.Handle("POST /api/admin/payments/orders/{orderID}/refund", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.refundPayment))))
 	s.mux.Handle("GET /api/admin/payments/orders", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.adminPaymentOrders))))
@@ -263,6 +271,13 @@ func (s *Server) routes() {
 	s.mux.Handle("DELETE /api/admin/docker/images/{imageID}", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.deleteDockerImage))))
 	s.mux.Handle("GET /api/admin/settings/system", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.getSystemSettings))))
 	s.mux.Handle("PUT /api/admin/settings/system", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.updateSystemSettings))))
+	s.mux.Handle("GET /api/admin/caddy/overview", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.getCaddyOverview))))
+	s.mux.Handle("GET /api/admin/caddy/settings", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.getGatewaySettings))))
+	s.mux.Handle("PUT /api/admin/caddy/settings", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.updateGatewaySettings))))
+	s.mux.Handle("GET /api/admin/caddy/routes", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.listGatewayRoutes))))
+	s.mux.Handle("POST /api/admin/caddy/certificates/import", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.importGatewayCertificate))))
+	s.mux.Handle("POST /api/admin/caddy/validate", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.validateCaddyConfig))))
+	s.mux.Handle("POST /api/admin/caddy/reload", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.reloadCaddyConfig))))
 	s.mux.Handle("PUT /api/admin/settings/checkin", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.updateCheckinSettings))))
 	s.mux.Handle("PUT /api/admin/settings/payments/{provider}", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.updatePaymentSettings))))
 	s.mux.Handle("GET /api/admin/pricing", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.adminPricing))))
@@ -814,12 +829,13 @@ func (s *Server) listProducts(w http.ResponseWriter, r *http.Request) {
 }
 
 type createAppRequest struct {
-	ProductID      string            `json:"productId"`
-	VersionID      string            `json:"versionId"`
-	Slug           string            `json:"slug"`
-	IdempotencyKey string            `json:"idempotencyKey"`
-	Secrets        map[string]string `json:"secrets"`
-	Resources      selectedResources `json:"resources"`
+	ProductID         string            `json:"productId"`
+	VersionID         string            `json:"versionId"`
+	Slug              string            `json:"slug"`
+	DomainRefreshDays *int              `json:"domainRefreshDays"`
+	IdempotencyKey    string            `json:"idempotencyKey"`
+	Secrets           map[string]string `json:"secrets"`
+	Resources         selectedResources `json:"resources"`
 }
 
 type selectedResources struct {
@@ -831,6 +847,7 @@ type selectedResources struct {
 	Environment        map[string]string    `json:"environment"`
 	Dependencies       []selectedDependency `json:"dependencies"`
 	PortMappingEnabled *bool                `json:"portMappingEnabled"`
+	ContainerPort      *int                 `json:"containerPort"`
 }
 
 func editableRuntimeOption(spec map[string]any, key string, legacyDefault bool) bool {
@@ -981,6 +998,12 @@ func selectedRouteSpec(template map[string]any, selected selectedResources) (map
 	if err = json.Unmarshal(encoded, &result); err != nil {
 		return nil, err
 	}
+	if selected.ContainerPort != nil {
+		if *selected.ContainerPort < 1 || *selected.ContainerPort > 65535 {
+			return nil, fmt.Errorf("container port must be between 1 and 65535")
+		}
+		result["containerPort"] = float64(*selected.ContainerPort)
+	}
 	if err = normalizeRouteSpec(result); err != nil {
 		return nil, err
 	}
@@ -1076,7 +1099,7 @@ func (s *Server) estimatedMonthlyAppCents(ctx context.Context, userID, appID str
 func (s *Server) listApps(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	p, _ := r.Context().Value(principalKey).(principal)
-	rows, err := s.db.Query(r.Context(), "SELECT a.id,a.instance_id,a.slug,a.service_slug,a.status,coalesce(a.suspension_reason,''),p.slug,coalesce(a.last_successful_release_id::text,''),coalesce(prev.id::text,''),coalesce(j.id::text,''),coalesce(j.state::text,''),coalesce(j.last_error,''),coalesce(j.updated_at,a.created_at),coalesce(ar.public_path,''),coalesce(ar.host_port,0),a.port_mapping_enabled,coalesce(current_release.immutable_snapshot->'runtime_spec','{}'::jsonb) FROM user_apps a JOIN app_products p ON p.id=a.product_id LEFT JOIN app_releases current_release ON current_release.id=a.last_successful_release_id LEFT JOIN app_routes ar ON ar.user_app_id=a.id AND ar.release_id=a.last_successful_release_id LEFT JOIN LATERAL (SELECT id FROM app_releases WHERE user_app_id=a.id AND state IN ('active','superseded') AND release_number < coalesce(current_release.release_number,2147483647) ORDER BY release_number DESC LIMIT 1) prev ON true LEFT JOIN LATERAL (SELECT id,state,last_error,updated_at FROM deployment_jobs WHERE user_app_id=a.id ORDER BY created_at DESC LIMIT 1) j ON true WHERE a.user_id=$1 AND a.deleted_at IS NULL ORDER BY a.created_at DESC", p.ID)
+	rows, err := s.db.Query(r.Context(), "SELECT a.id,a.instance_id,a.slug,a.service_slug,a.status,coalesce(a.suspension_reason,''),p.slug,coalesce(a.last_successful_release_id::text,''),coalesce(prev.id::text,''),coalesce(j.id::text,''),coalesce(j.state::text,''),coalesce(j.last_error,''),coalesce(j.updated_at,a.created_at),coalesce(ar.public_path,''),coalesce(ar.host_port,0),a.port_mapping_enabled,a.route_host_label,a.domain_refresh_days,a.domain_next_refresh_at,coalesce(nullif(current_release.immutable_snapshot->'route_spec'->>'port','')::int,nullif(current_release.immutable_snapshot->'route_spec'->>'containerPort','')::int,8080),coalesce(current_release.immutable_snapshot->'runtime_spec','{}'::jsonb) FROM user_apps a JOIN app_products p ON p.id=a.product_id LEFT JOIN app_releases current_release ON current_release.id=a.last_successful_release_id LEFT JOIN app_routes ar ON ar.user_app_id=a.id AND ar.release_id=a.last_successful_release_id LEFT JOIN LATERAL (SELECT id FROM app_releases WHERE user_app_id=a.id AND state IN ('active','superseded') AND release_number < coalesce(current_release.release_number,2147483647) ORDER BY release_number DESC LIMIT 1) prev ON true LEFT JOIN LATERAL (SELECT id,state,last_error,updated_at FROM deployment_jobs WHERE user_app_id=a.id ORDER BY created_at DESC LIMIT 1) j ON true WHERE a.user_id=$1 AND a.deleted_at IS NULL ORDER BY a.created_at DESC", p.ID)
 	if err != nil {
 		s.internalError(w, err)
 		return
@@ -1099,6 +1122,10 @@ func (s *Server) listApps(w http.ResponseWriter, r *http.Request) {
 		PublicPath            string     `json:"publicPath,omitempty"`
 		HostPort              int        `json:"hostPort"`
 		PortMappingEnabled    bool       `json:"portMappingEnabled"`
+		RouteHostLabel        string     `json:"routeHostLabel"`
+		DomainRefreshDays     *int       `json:"domainRefreshDays"`
+		DomainNextRefreshAt   *time.Time `json:"domainNextRefreshAt,omitempty"`
+		ContainerPort         int        `json:"containerPort"`
 		CPUCores              float64    `json:"cpuCores"`
 		MemoryMiB             float64    `json:"memoryMiB"`
 		CPUUsageCores         float64    `json:"cpuUsageCores"`
@@ -1111,7 +1138,7 @@ func (s *Server) listApps(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var item appView
 		var runtimeSpec map[string]any
-		if err := rows.Scan(&item.ID, &item.InstanceID, &item.Slug, &item.ServiceSlug, &item.Status, &item.SuspensionReason, &item.ProductSlug, &item.LastReleaseID, &item.PreviousReleaseID, &item.JobID, &item.JobState, &item.JobLastError, &item.UpdatedAt, &item.PublicPath, &item.HostPort, &item.PortMappingEnabled, &runtimeSpec); err != nil {
+		if err := rows.Scan(&item.ID, &item.InstanceID, &item.Slug, &item.ServiceSlug, &item.Status, &item.SuspensionReason, &item.ProductSlug, &item.LastReleaseID, &item.PreviousReleaseID, &item.JobID, &item.JobState, &item.JobLastError, &item.UpdatedAt, &item.PublicPath, &item.HostPort, &item.PortMappingEnabled, &item.RouteHostLabel, &item.DomainRefreshDays, &item.DomainNextRefreshAt, &item.ContainerPort, &runtimeSpec); err != nil {
 			s.internalError(w, err)
 			return
 		}
@@ -1165,6 +1192,38 @@ func allocateUserAppSlug(ctx context.Context, tx pgx.Tx, userID, base string) (s
 	return "", fmt.Errorf("no available application slug for %q", base)
 }
 
+func allocateRouteHostLabel(ctx context.Context, tx pgx.Tx, appSlug, userSlug string) (string, error) {
+	base := strings.Trim(strings.ToLower(appSlug+"-"+userSlug), "-")
+	if len(base) <= 63 {
+		var taken bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM user_apps WHERE lower(route_host_label)=lower($1) AND deleted_at IS NULL)`, base).Scan(&taken); err != nil {
+			return "", err
+		}
+		if !taken {
+			return base, nil
+		}
+	}
+	base = strings.TrimRight(appSlug, "-")
+	if len(base) > 50 {
+		base = strings.TrimRight(base[:50], "-")
+	}
+	for attempt := 0; attempt < 32; attempt++ {
+		raw := make([]byte, 6)
+		if _, err := rand.Read(raw); err != nil {
+			return "", err
+		}
+		candidate := fmt.Sprintf("%s-%x", base, raw)
+		var taken bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM user_apps WHERE lower(route_host_label)=lower($1) AND deleted_at IS NULL)`, candidate).Scan(&taken); err != nil {
+			return "", err
+		}
+		if !taken {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("could not allocate application route hostname")
+}
+
 func (s *Server) createApp(w http.ResponseWriter, r *http.Request) {
 	p, _ := r.Context().Value(principalKey).(principal)
 	var req createAppRequest
@@ -1178,6 +1237,10 @@ func (s *Server) createApp(w http.ResponseWriter, r *http.Request) {
 	req.IdempotencyKey = strings.TrimSpace(req.IdempotencyKey)
 	if !validUUID(req.ProductID) || !validUUID(req.VersionID) || !appSlugPattern.MatchString(req.Slug) || req.IdempotencyKey == "" || len(req.IdempotencyKey) > 128 {
 		writeError(w, 400, "validation_failed", "product, version, slug and idempotency key are required")
+		return
+	}
+	if req.DomainRefreshDays != nil && *req.DomainRefreshDays < 1 {
+		writeError(w, 400, "validation_failed", "domain refresh days must be at least 1 or omitted for permanent")
 		return
 	}
 	tx, err := s.db.BeginTx(r.Context(), pgx.TxOptions{IsoLevel: pgx.Serializable})
@@ -1250,6 +1313,16 @@ func (s *Server) createApp(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, slugErr)
 		return
 	}
+	var userSlug string
+	if err = tx.QueryRow(r.Context(), `SELECT slug FROM users WHERE id=$1`, p.ID).Scan(&userSlug); err != nil {
+		s.internalError(w, err)
+		return
+	}
+	routeHostLabel, labelErr := allocateRouteHostLabel(r.Context(), tx, appSlug, userSlug)
+	if labelErr != nil {
+		s.internalError(w, labelErr)
+		return
+	}
 	portMappingEnabled := false
 	if req.Resources.PortMappingEnabled != nil {
 		portMappingEnabled = *req.Resources.PortMappingEnabled
@@ -1259,7 +1332,7 @@ func (s *Server) createApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var appID string
-	err = tx.QueryRow(r.Context(), `INSERT INTO user_apps(user_id,product_id,slug,service_slug,status,port_mapping_enabled) VALUES($1,$2,$3,$4,'deploying',$5) RETURNING id`, p.ID, req.ProductID, appSlug, appSlug, portMappingEnabled).Scan(&appID)
+	err = tx.QueryRow(r.Context(), `INSERT INTO user_apps(user_id,product_id,slug,service_slug,status,port_mapping_enabled,route_host_label,domain_refresh_days,domain_next_refresh_at) VALUES($1,$2,$3,$4,'deploying',$5,$6,$7,CASE WHEN $7::integer IS NULL THEN NULL ELSE now()+make_interval(days=>$7::integer) END) RETURNING id`, p.ID, req.ProductID, appSlug, appSlug, portMappingEnabled, routeHostLabel, req.DomainRefreshDays).Scan(&appID)
 	if err != nil {
 		if strings.Contains(err.Error(), "user_apps_user_id_slug_key") || strings.Contains(err.Error(), "user_apps_user_id_service_slug_key") {
 			writeError(w, 409, "slug_contention", "并发部署发生应用标识冲突，请重试")

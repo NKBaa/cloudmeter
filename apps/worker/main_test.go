@@ -4,6 +4,7 @@ import (
 	"cloudmeter/internal/domain"
 	"fmt"
 	"math"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -337,5 +338,22 @@ func TestPlatformRestartOrderExcludesStateAndUserServices(t *testing.T) {
 				t.Fatalf("stateful or self service %q entered pre-completion restart order", forbidden)
 			}
 		}
+	}
+}
+
+func TestRotatedRouteHostLabelIsDNSCompatible(t *testing.T) {
+	label, err := rotatedRouteHostLabel("very-long-application-name-that-needs-to-be-shortened-before-routing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(label) > 63 || !regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`).MatchString(label) {
+		t.Fatalf("invalid route label %q", label)
+	}
+	second, err := rotatedRouteHostLabel("app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second == label || !strings.HasPrefix(second, "app-") {
+		t.Fatalf("unexpected independent route label %q", second)
 	}
 }
