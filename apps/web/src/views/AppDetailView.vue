@@ -366,6 +366,18 @@ async function loadLogs() {
     logBusy.value = false;
   }
 }
+async function refreshAppSummary() {
+  if (!app.value) return;
+  try {
+    const result = await api<{ apps: App[] }>("/apps");
+    const current = result.apps.find(
+      (item) => item.instanceId === route.params.instanceId || item.id === route.params.instanceId,
+    );
+    if (current) app.value = current;
+  } catch {
+    // The regular page error state remains reserved for user-triggered actions.
+  }
+}
 async function refreshLogs() {
   if (!app.value) return;
   logBusy.value = true;
@@ -394,6 +406,7 @@ onMounted(async () => {
   await refreshLogs();
   logTimer = window.setInterval(() => {
     void loadLogs();
+    void refreshAppSummary();
   }, 3000);
 });
 </script>

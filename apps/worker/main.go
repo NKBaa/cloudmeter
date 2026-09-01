@@ -957,7 +957,49 @@ func processRestoreOne(ctx context.Context, db *pgxpool.Pool, logger *slog.Logge
 	if err == nil && !healthy {
 		err = fmt.Errorf("restored container did not become healthy")
 	}
+	if err == nil {
+		err = syncRestoredHostPort(ctx, db, appID, container)
+	}
 	finishRestore(ctx, db, id, appID, err, healthy, logger)
+}
+
+func syncRestoredHostPort(ctx context.Context, db *pgxpool.Pool, appID, container string) error {
+	var enabled bool
+	var routeSpec map[string]any
+	if err := db.QueryRow(ctx, `SELECT app.port_mapping_enabled,release.immutable_snapshot->'route_spec'
+		FROM user_apps app JOIN app_releases release ON release.id=app.last_successful_release_id
+		WHERE app.id=$1`, appID).Scan(&enabled, &routeSpec); err != nil {
+		return err
+	}
+	if !enabled || !routePortMappingAvailableWorker(routeSpec) {
+		return nil
+	}
+	hostPort, err := executor.PublishedPort(ctx, container, routePort(routeSpec))
+	if err != nil {
+		return fmt.Errorf("resolve restored host port: %w", err)
+	}
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	result, err := tx.Exec(ctx, `UPDATE app_releases release SET host_port=$2
+		FROM user_apps app WHERE app.id=$1 AND release.id=app.last_successful_release_id AND release.user_app_id=app.id`, appID, hostPort)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() != 1 {
+		return fmt.Errorf("active release not found while synchronizing restored host port")
+	}
+	result, err = tx.Exec(ctx, `UPDATE app_routes route SET host_port=$2,updated_at=now()
+		FROM user_apps app WHERE app.id=$1 AND route.user_app_id=app.id AND route.release_id=app.last_successful_release_id`, appID, hostPort)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() != 1 {
+		return fmt.Errorf("active route not found while synchronizing restored host port")
+	}
+	return tx.Commit(ctx)
 }
 
 func waitForHealthy(ctx context.Context, container string, timeout time.Duration) bool {
