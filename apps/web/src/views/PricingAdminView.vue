@@ -4,13 +4,10 @@ import {
   ArrowLeft,
   BadgeCent,
   CheckCircle2,
-  LogOut,
   Plus,
   RefreshCw,
-  Trash2,
 } from "@lucide/vue";
-import { api, logout } from "../api";
-import BrandMark from "../components/BrandMark.vue";
+import { api } from "../api";
 import { usageCodeLabel, usageUnitLabel } from "../billing-labels";
 type Version = {
   id: string;
@@ -30,25 +27,11 @@ type Item = {
   createdAt: string;
   versions: Version[];
 };
-type Target = { id: string; name: string };
-type Override = {
-  id: string;
-  pricingItemId: string;
-  pricingVersionId: string;
-  scope: string;
-  scopeId: string;
-  scopeName: string;
-  code: string;
-  version: number;
-};
 const items = ref<Item[]>([]),
   selected = ref(""),
   error = ref(""),
   message = ref(""),
-  busy = ref(""),
-  overrides = ref<Override[]>([]);
-const users = ref<Target[]>([]),
-  products = ref<Target[]>([]);
+  busy = ref("");
 const item = reactive({ code: "app.runtime.minutes", unit: "minute" });
 const version = reactive({
   unitPriceYuan: 0.01,
@@ -69,12 +52,6 @@ const pricingDrafts = new Map<
     effectiveAt: string;
   }
 >();
-type OverrideForm = {
-  pricingVersionId: string;
-  scope: string;
-  scopeId: string;
-};
-const overrideDrafts = new Map<string, OverrideForm>();
 const switchingPricing = ref(false);
 function defaultPricingVersion() {
   return {
@@ -86,25 +63,17 @@ function defaultPricingVersion() {
     effectiveAt: "",
   };
 }
-function defaultOverrideForm(): OverrideForm {
-  return { pricingVersionId: "", scope: "product", scopeId: "" };
-}
 function cloneDraft<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 function savePricingDraft() {
   if (!selected.value) return;
   pricingDrafts.set(selected.value, cloneDraft(version));
-  overrideDrafts.set(selected.value, cloneDraft(overrideForm));
 }
 function loadPricingDraft(id: string) {
   Object.assign(
     version,
     cloneDraft(pricingDrafts.get(id) || defaultPricingVersion()),
-  );
-  Object.assign(
-    overrideForm,
-    cloneDraft(overrideDrafts.get(id) || defaultOverrideForm()),
   );
 }
 async function selectPricing(id: string) {
@@ -116,28 +85,12 @@ async function selectPricing(id: string) {
   await nextTick();
   window.setTimeout(() => (switchingPricing.value = false), 180);
 }
-const overrideForm = reactive<OverrideForm>({
-  pricingVersionId: "",
-  scope: "product",
-  scopeId: "",
-});
 async function load() {
   try {
-    const [prices, os, us, ps] = await Promise.all([
-      api<{ items: Item[] }>("/admin/pricing"),
-      api<{ overrides: Override[] }>("/admin/pricing/overrides"),
-      api<{ users: any[] }>("/admin/users"),
-      api<{ products: any[] }>("/admin/products"),
-    ]);
+    const prices = await api<{ items: Item[] }>("/admin/pricing");
     items.value = prices.items.filter(
       (entry) => entry.code !== "storage.system.gib_days",
     );
-    overrides.value = os.overrides;
-    users.value = us.users.map((v) => ({
-      id: v.id,
-      name: v.displayName + " · " + v.email,
-    }));
-    products.value = ps.products.map((v) => ({ id: v.id, name: v.name }));
     if (!selected.value && items.value.length)
       await selectPricing(items.value[0].id);
     error.value = "";
@@ -159,7 +112,6 @@ async function createItem() {
       body: JSON.stringify(item),
     });
     pricingDrafts.set(result.id, defaultPricingVersion());
-    overrideDrafts.set(result.id, defaultOverrideForm());
     selected.value = result.id;
     loadPricingDraft(result.id);
     done("费用项已创建");
@@ -199,42 +151,6 @@ async function createVersion() {
     busy.value = "";
   }
 }
-function targets() {
-  return overrideForm.scope === "user" ? users.value : products.value;
-}
-async function saveOverride() {
-  if (
-    !selected.value ||
-    !overrideForm.pricingVersionId ||
-    !overrideForm.scopeId
-  )
-    return;
-  try {
-    busy.value = "override";
-    await api("/admin/pricing/overrides", {
-      method: "PUT",
-      body: JSON.stringify({ ...overrideForm, pricingItemId: selected.value }),
-    });
-    done("价格覆盖已保存");
-    await load();
-  } catch (e) {
-    error.value = (e as Error).message;
-  } finally {
-    busy.value = "";
-  }
-}
-async function removeOverride(id: string) {
-  try {
-    busy.value = id;
-    await api("/admin/pricing/overrides/" + id, { method: "DELETE" });
-    done("价格覆盖已删除");
-    await load();
-  } catch (e) {
-    error.value = (e as Error).message;
-  } finally {
-    busy.value = "";
-  }
-}
 function price(v: Version) {
   return (v.unitPriceMicros / 100000000)
     .toFixed(8)
@@ -248,7 +164,7 @@ function price(v: Version) {
       <div>
         <p class="eyebrow">计费中心</p>
         <h1>用量价格</h1>
-        <p class="quiet">统一管理独立计费项、发布不可变价格版本及单品/用户覆盖策略。</p>
+        <p class="quiet">统一管理全平台费用项，并发布不可变价格版本。</p>
       </div>
       <button class="secondary compact" @click="load">
         <RefreshCw :size="16" />刷新
@@ -330,86 +246,6 @@ function price(v: Version) {
                 <Plus :size="16" />发布新版本
               </button>
             </form>
-          </section>
-          <section v-if="selected" class="form-panel">
-            <h2><BadgeCent :size="19" />价格覆盖</h2>
-            <form @submit.prevent="saveOverride">
-              <div class="field-row">
-                <label
-                  >覆盖范围<select
-                    v-model="overrideForm.scope"
-                    @change="overrideForm.scopeId = ''"
-                  >
-                    <option value="product">产品</option>
-                    <option value="user">用户</option>
-                  </select></label
-                ><label
-                  >目标<select v-model="overrideForm.scopeId" required>
-                    <option value="" disabled>选择目标</option>
-                    <option
-                      v-for="target in targets()"
-                      :key="target.id"
-                      :value="target.id"
-                    >
-                      {{ target.name }}
-                    </option>
-                  </select></label
-                >
-              </div>
-              <label
-                >价格版本<select
-                  v-model="overrideForm.pricingVersionId"
-                  required
-                >
-                  <option value="" disabled>选择不可变版本</option>
-                  <option
-                    v-for="v in items.find((i) => i.id === selected)
-                      ?.versions || []"
-                    :key="v.id"
-                    :value="v.id"
-                  >
-                    v{{ v.version }} · ¥ {{ price(v) }}
-                  </option>
-                </select></label
-              ><button
-                class="secondary compact"
-                :disabled="busy === 'override'"
-              >
-                <Plus :size="16" />保存覆盖
-              </button>
-            </form>
-            <div class="override-list">
-              <article
-                v-for="entry in overrides.filter(
-                  (v) => v.pricingItemId === selected,
-                )"
-                :key="entry.id"
-                class="override-row"
-              >
-                <div>
-                  <strong>{{ entry.scopeName }}</strong
-                  ><small
-                    >{{ entry.scope === "user" ? "用户" : "产品" }} · v{{
-                      entry.version
-                    }}</small
-                  >
-                </div>
-                <button
-                  class="icon-action"
-                  title="删除覆盖"
-                  :disabled="busy === entry.id"
-                  @click="removeOverride(entry.id)"
-                >
-                  <Trash2 :size="17" />
-                </button>
-              </article>
-              <p
-                v-if="!overrides.some((v) => v.pricingItemId === selected)"
-                class="quiet empty-copy"
-              >
-                未配置覆盖，将使用平台默认价格
-              </p>
-            </div>
           </section>
           <section
             v-for="entry in items.filter((v) => v.id === selected)"

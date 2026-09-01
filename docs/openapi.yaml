@@ -5,6 +5,12 @@ info:
 servers:
   - url: /api
 paths:
+  /pricing/catalog:
+    get:
+      operationId: publicPricingCatalog
+      description: Returns every currently effective global price with its billing unit.
+      responses:
+        '200': {description: Current global pricing catalog}
   /system/settings:
     get:
       operationId: getSystemSettingsPublic
@@ -737,27 +743,6 @@ paths:
       responses:
         '201': {description: Immutable pricing version created}
         '404': {description: Pricing item not found}
-  /admin/pricing/overrides:
-    get:
-      operationId: adminPricingOverrides
-      security: [{bearerAuth: []}]
-      responses:
-        '200': {description: "User, product and plan pricing overrides"}
-    put:
-      operationId: upsertPricingOverride
-      security: [{bearerAuth: []}]
-      responses:
-        '200': {description: Pricing override created or replaced}
-        '404': {description: Pricing version or scope target not found}
-  /admin/pricing/overrides/{overrideID}:
-    delete:
-      operationId: deletePricingOverride
-      security: [{bearerAuth: []}]
-      parameters:
-        - {name: overrideID, in: path, required: true, schema: {type: string, format: uuid}}
-      responses:
-        '200': {description: Pricing override deleted}
-        '404': {description: Pricing override not found}
   /payments/orders:
     get:
       operationId: listPaymentOrders
@@ -1418,6 +1403,19 @@ paths:
         '202': {description: Isolated product-version test deployment queued}
         '400': {description: Required test secrets are missing or invalid}
         '409': {description: A test is already running or the version is already published}
+  /admin/products/{productID}/versions/{versionID}/tests/{testID}/cancel:
+    post:
+      operationId: cancelProductVersionTest
+      description: Requests forced termination of an active isolated test; the worker removes its container, health probe, and network.
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: productID, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: versionID, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: testID, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '202': {description: Forced-stop request accepted}
+        '200': {description: Test was already terminal}
+        '404': {description: Product version test not found}
   /tickets:
     get:
       operationId: listTickets

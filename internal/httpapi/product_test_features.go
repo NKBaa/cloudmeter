@@ -59,7 +59,7 @@ func (s *Server) startProductVersionTest(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	var activeTestID string
-	err = tx.QueryRow(r.Context(), `SELECT id FROM app_product_version_tests WHERE product_version_id=$1 AND state NOT IN ('succeeded','failed') ORDER BY created_at DESC LIMIT 1`, versionID).Scan(&activeTestID)
+	err = tx.QueryRow(r.Context(), `SELECT id FROM app_product_version_tests WHERE product_version_id=$1 AND state NOT IN ('succeeded','failed','cancelled') ORDER BY created_at DESC LIMIT 1`, versionID).Scan(&activeTestID)
 	if err == nil {
 		writeError(w, http.StatusConflict, "test_in_progress", "a test deployment is already in progress for this version")
 		return
@@ -104,4 +104,38 @@ func (s *Server) startProductVersionTest(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"testId": testID, "state": "queued"})
+}
+
+func (s *Server) cancelProductVersionTest(w http.ResponseWriter, r *http.Request) {
+	productID, versionID, testID := r.PathValue("productID"), r.PathValue("versionID"), r.PathValue("testID")
+	if !validUUID(productID) || !validUUID(versionID) || !validUUID(testID) {
+		writeError(w, http.StatusBadRequest, "validation_failed", "productID, versionID and testID must be UUIDs")
+		return
+	}
+	p, _ := r.Context().Value(principalKey).(principal)
+	var state string
+	err := s.db.QueryRow(r.Context(), `SELECT t.state FROM app_product_version_tests t JOIN app_product_versions v ON v.id=t.product_version_id WHERE t.id=$1 AND v.id=$2 AND v.product_id=$3`, testID, versionID, productID).Scan(&state)
+	if err == pgx.ErrNoRows {
+		writeError(w, http.StatusNotFound, "test_not_found", "product version test not found")
+		return
+	}
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	if state == "succeeded" || state == "failed" || state == "cancelled" {
+		writeJSON(w, http.StatusOK, map[string]any{"testId": testID, "state": state, "idempotent": true})
+		return
+	}
+	_, err = s.db.Exec(r.Context(), `INSERT INTO app_product_version_test_cancellations(test_id,requested_by) VALUES($1,$2) ON CONFLICT(test_id) DO NOTHING`, testID, p.ID)
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	_, err = s.db.Exec(r.Context(), `INSERT INTO audit_logs(actor_user_id,action,resource_type,resource_id,request_id,metadata) VALUES($1,'product.test.cancel.request','app_product_version_test',$2,$3,jsonb_build_object('product_id',$4::text,'version_id',$5::text))`, p.ID, testID, requestID(r.Context()), productID, versionID)
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"testId": testID, "state": "cancelling"})
 }

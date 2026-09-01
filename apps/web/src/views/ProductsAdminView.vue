@@ -30,6 +30,7 @@ import {
   RotateCcw,
   Save,
   Settings2,
+  Square,
   Terminal,
   Trash2,
   X,
@@ -1049,7 +1050,7 @@ async function loadVersionIntoEditor(item: Version) {
   });
   loadDraft(selected.value);
   await revealVersionEditor(false);
-  done("已载入已发布版本；修改后创建的是新版本，原版本保持不变");
+  done("已载入版本配置；修改后将创建新版本，原测试记录保持不变");
 }
 async function toggleVersion(item: Version) {
   const id = item.id;
@@ -1058,9 +1059,8 @@ async function toggleVersion(item: Version) {
   wasExpanded ? next.delete(id) : next.add(id);
   expandedVersions.value = next;
   if (
-    !wasExpanded &&
     editingVersion.value?.id !== item.id &&
-    item.publishedAt &&
+    (item.publishedAt || ["failed", "cancelled"].includes(item.latestTest?.state || "")) &&
     selectedProduct.value?.status !== "retired"
   )
     await loadVersionIntoEditor(item);
@@ -1138,6 +1138,9 @@ function isTestRunning(item: Version) {
     )
   );
 }
+function isTestCancelling(item: Version) {
+  return item.latestTest?.state === "cancelling";
+}
 function testStateLabel(item: Version) {
   if (item.publishedAt) return "已发布";
   const state = item.latestTest?.state;
@@ -1146,6 +1149,8 @@ function testStateLabel(item: Version) {
       {
         succeeded: "测试通过",
         failed: "测试失败",
+        cancelled: "已停止",
+        cancelling: "停止中",
         queued: "排队中",
         pulling: "拉取镜像",
         starting: "启动容器",
@@ -1157,8 +1162,8 @@ function testStateLabel(item: Version) {
 function testStateClass(item: Version) {
   if (item.publishedAt || item.latestTest?.state === "succeeded")
     return "active";
-  if (item.latestTest?.state === "failed") return "danger";
-  if (isTestRunning(item)) return "pending";
+  if (["failed", "cancelled"].includes(item.latestTest?.state || "")) return "danger";
+  if (isTestRunning(item) || isTestCancelling(item)) return "pending";
   return "suspended";
 }
 function openTest(item: Version) {
@@ -1183,6 +1188,19 @@ async function startTest() {
     closeTest();
     done("测试部署已排队，完成后才可发布");
     await load();
+  } catch (value) {
+    failed(value);
+  } finally {
+    busy.value = "";
+  }
+}
+async function cancelTest(item: Version) {
+  if (!selected.value || !item.latestTest || !window.confirm("强制停止当前测试部署？临时容器、健康探针和测试网络会被清理。")) return;
+  try {
+    busy.value = "cancel-test-" + item.id;
+    await api(`/admin/products/${selected.value}/versions/${item.id}/tests/${item.latestTest.id}/cancel`, { method: "POST", body: "{}" });
+    done("已提交强制停止请求，正在清理测试资源");
+    await load(true);
   } catch (value) {
     failed(value);
   } finally {
@@ -2037,7 +2055,7 @@ function dataPolicyLabel(value?: string) {
             :key="item.id"
             :class="[
               'version-row',
-              item.latestTest?.state === 'failed' && 'version-row-failed',
+              ['failed', 'cancelled'].includes(item.latestTest?.state || '') && 'version-row-failed',
               expandedVersions.has(item.id) && 'expanded',
               editingVersion?.id === item.id && 'editing-source',
             ]"
@@ -2063,7 +2081,7 @@ function dataPolicyLabel(value?: string) {
             </div>
             <div class="version-state">
               <LoaderCircle
-                v-if="isTestRunning(item)"
+                v-if="isTestRunning(item) || isTestCancelling(item)"
                 class="spin"
                 :size="16"
               />
@@ -2073,10 +2091,28 @@ function dataPolicyLabel(value?: string) {
             </div>
             <div class="version-actions" @click.stop>
               <button
+                v-if="isTestRunning(item)"
+                class="secondary compact stop-action"
+                type="button"
+                :disabled="busy === 'cancel-test-' + item.id"
+                @click="cancelTest(item)"
+              >
+                <Square :size="14" />强制停止
+              </button>
+              <button
+                v-else-if="isTestCancelling(item)"
+                class="secondary compact"
+                type="button"
+                disabled
+              >
+                <LoaderCircle class="spin" :size="15" />停止中
+              </button>
+              <button
                 v-if="
                   selectedProduct.status !== 'retired' &&
                   !item.publishedAt &&
                   !isTestRunning(item) &&
+                  !isTestCancelling(item) &&
                   item.latestTest?.state !== 'succeeded'
                 "
                 class="secondary compact"
@@ -2084,11 +2120,23 @@ function dataPolicyLabel(value?: string) {
                 @click="openTest(item)"
               >
                 <RotateCcw
-                  v-if="item.latestTest?.state === 'failed'"
+                  v-if="['failed', 'cancelled'].includes(item.latestTest?.state || '')"
                   :size="16"
                 /><Rocket v-else :size="16" />{{
-                  item.latestTest?.state === "failed" ? "重新测试" : "测试部署"
+                  ["failed", "cancelled"].includes(item.latestTest?.state || "") ? "重新测试" : "测试部署"
                 }}
+              </button>
+              <button
+                v-if="
+                  !item.publishedAt &&
+                  ['failed', 'cancelled'].includes(item.latestTest?.state || '') &&
+                  selectedProduct.status !== 'retired'
+                "
+                class="secondary compact"
+                type="button"
+                @click="loadVersionIntoEditor(item)"
+              >
+                <Pencil :size="15" />修改配置
               </button>
               <button
                 v-else-if="
@@ -2113,7 +2161,7 @@ function dataPolicyLabel(value?: string) {
                 <Pencil :size="15" />载入编辑
               </button>
               <button
-                v-if="!isTestRunning(item)"
+                v-if="!isTestRunning(item) && !isTestCancelling(item)"
                 class="icon-action stop-action"
                 type="button"
                 :disabled="busy === 'archive-' + item.id"
@@ -2143,12 +2191,12 @@ function dataPolicyLabel(value?: string) {
             <p
               v-if="
                 expandedVersions.has(item.id) &&
-                item.latestTest?.state === 'failed' &&
-                item.latestTest.lastError
+                ['failed', 'cancelled'].includes(item.latestTest?.state || '') &&
+                item.latestTest?.lastError
               "
               class="version-error"
             >
-              <CircleAlert :size="15" />{{ item.latestTest.lastError }}
+              <CircleAlert :size="15" />{{ item.latestTest?.lastError }}
             </p>
           </article>
           <p v-if="!selectedProduct.versions.length" class="quiet empty-copy">

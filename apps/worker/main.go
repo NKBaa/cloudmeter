@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -36,6 +37,7 @@ var egressProxyContainer string
 var egressToken string
 var runtimeScope string
 var runtimeOwner string
+var productTestOperations sync.Map
 
 const deploymentMaxHealthAttempts = 8
 
@@ -79,6 +81,7 @@ func main() {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 	logger.Info("worker started")
+	go runProductVersionTestCancellationWorker(ctx, db, logger)
 	lastDockerSettingsSync := time.Now()
 	lastDockerImageSync := time.Time{}
 	lastHostMetricSync := time.Time{}

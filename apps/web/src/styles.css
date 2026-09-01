@@ -1221,6 +1221,44 @@ nav a.active svg {
   flex-direction: column;
   gap: 20px;
 }
+.global-price-list {
+  display: grid;
+}
+.global-price-row {
+  min-height: 54px;
+  padding: 10px 18px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  border-top: 1px solid var(--border);
+}
+.global-price-row:first-child {
+  border-top: 0;
+}
+.global-price-row strong,
+.global-price-row small {
+  display: block;
+}
+.global-price-row strong {
+  font-size: 13px;
+  font-weight: 650;
+}
+.global-price-row small {
+  margin-top: 3px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.global-price-row > span {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.global-price-empty {
+  margin: 0;
+  padding: 18px;
+}
 .nextdev-card {
   border: 1px solid var(--border);
   border-radius: 14px;
@@ -3593,28 +3631,6 @@ input.field-invalid, select.field-invalid, textarea.field-invalid {
     display: none;
   }
 }
-.override-list {
-  margin-top: 18px;
-  border-top: 1px solid var(--line);
-}
-.override-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 36px;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 0;
-  border-bottom: 1px solid var(--line);
-}
-.override-row strong,
-.override-row small {
-  display: block;
-}
-.override-row small {
-  margin-top: 4px;
-  color: var(--muted);
-  font-size: 11px;
-}
-
 /* ── Payment settings ─────────────────────────────── */
 .payment-settings {
   max-width: 620px;

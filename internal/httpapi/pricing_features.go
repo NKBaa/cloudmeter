@@ -41,6 +41,30 @@ func (s *Server) getPricingPublic(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, pricing)
 }
 
+func (s *Server) getPricingCatalogPublic(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.db.Query(r.Context(), `SELECT i.code,i.unit,v.unit_price_micros
+		FROM pricing_items i
+		JOIN LATERAL (SELECT unit_price_micros FROM pricing_versions WHERE pricing_item_id=i.id AND effective_at<=now() ORDER BY effective_at DESC,version DESC LIMIT 1) v ON true
+		WHERE i.code <> 'storage.system.gib_days' ORDER BY i.code`)
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	defer rows.Close()
+
+	items := []map[string]any{}
+	for rows.Next() {
+		var code, unit string
+		var unitPriceMicros int64
+		if err := rows.Scan(&code, &unit, &unitPriceMicros); err != nil {
+			s.internalError(w, err)
+			return
+		}
+		items = append(items, map[string]any{"code": code, "unit": unit, "unitPriceMicros": unitPriceMicros})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
 func (s *Server) adminPricing(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.db.Query(r.Context(), `SELECT i.id,i.code,i.unit,i.created_at,v.id,v.version,v.unit_price_micros,v.precision_scale,v.rounding_mode,v.minimum_quantity::text,v.free_quantity::text,v.effective_at,v.created_at FROM pricing_items i LEFT JOIN pricing_versions v ON v.pricing_item_id=i.id WHERE i.code <> 'storage.system.gib_days' ORDER BY i.code,v.version DESC`)
 	if err != nil {
@@ -198,118 +222,4 @@ func (s *Server) createPricingVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 201, map[string]any{"id": id, "version": version})
-}
-
-func (s *Server) adminPricingOverrides(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.db.Query(r.Context(), `SELECT o.id,o.pricing_item_id,o.pricing_version_id,
-		CASE WHEN o.user_id IS NOT NULL THEN 'user' ELSE 'product' END,
-		coalesce(o.user_id,o.product_id)::text,
-		coalesce(u.display_name,p.name),i.code,pv.version,o.created_at
-		FROM pricing_overrides o
-		JOIN pricing_items i ON i.id=o.pricing_item_id
-		JOIN pricing_versions pv ON pv.id=o.pricing_version_id
-		LEFT JOIN users u ON u.id=o.user_id LEFT JOIN app_products p ON p.id=o.product_id
-		WHERE o.plan_id IS NULL AND i.code <> 'storage.system.gib_days'
-		ORDER BY i.code,4,6`)
-	if err != nil {
-		s.internalError(w, err)
-		return
-	}
-	defer rows.Close()
-	items := []map[string]any{}
-	for rows.Next() {
-		var id, itemID, versionID, scope, scopeID, scopeName, code string
-		var version int
-		var created time.Time
-		if err := rows.Scan(&id, &itemID, &versionID, &scope, &scopeID, &scopeName, &code, &version, &created); err != nil {
-			s.internalError(w, err)
-			return
-		}
-		items = append(items, map[string]any{"id": id, "pricingItemId": itemID, "pricingVersionId": versionID, "scope": scope, "scopeId": scopeID, "scopeName": scopeName, "code": code, "version": version, "createdAt": created})
-	}
-	writeJSON(w, 200, map[string]any{"overrides": items})
-}
-
-func (s *Server) upsertPricingOverride(w http.ResponseWriter, r *http.Request) {
-	p, _ := r.Context().Value(principalKey).(principal)
-	var q struct {
-		PricingItemID    string `json:"pricingItemId"`
-		PricingVersionID string `json:"pricingVersionId"`
-		Scope            string `json:"scope"`
-		ScopeID          string `json:"scopeId"`
-	}
-	if err := decodeJSON(r, &q); err != nil {
-		writeError(w, 400, "invalid_request", err.Error())
-		return
-	}
-	q.PricingItemID = strings.TrimSpace(q.PricingItemID)
-	q.PricingVersionID = strings.TrimSpace(q.PricingVersionID)
-	q.Scope = strings.TrimSpace(q.Scope)
-	q.ScopeID = strings.TrimSpace(q.ScopeID)
-	if q.PricingItemID == "" || q.PricingVersionID == "" || q.ScopeID == "" || (q.Scope != "user" && q.Scope != "product") {
-		writeError(w, 400, "validation_failed", "item, version and supported scope are required")
-		return
-	}
-	column := map[string]string{"user": "user_id", "product": "product_id"}[q.Scope]
-	tx, err := s.db.BeginTx(r.Context(), pgx.TxOptions{IsoLevel: pgx.Serializable})
-	if err != nil {
-		s.internalError(w, err)
-		return
-	}
-	defer tx.Rollback(r.Context())
-	var valid bool
-	query := `SELECT EXISTS(SELECT 1 FROM pricing_versions pv JOIN pricing_items pi ON pi.id=pv.pricing_item_id WHERE pv.id=$1 AND pv.pricing_item_id=$2 AND pi.code <> 'storage.system.gib_days'),EXISTS(SELECT 1 FROM ` + map[string]string{"user": "users", "product": "app_products"}[q.Scope] + ` WHERE id=$3)`
-	var scopeValid bool
-	if err = tx.QueryRow(r.Context(), query, q.PricingVersionID, q.PricingItemID, q.ScopeID).Scan(&valid, &scopeValid); err != nil {
-		s.internalError(w, err)
-		return
-	}
-	if !valid || !scopeValid {
-		writeError(w, 404, "pricing_override_reference_not_found", "pricing version or scope target not found")
-		return
-	}
-	var id string
-	sql := `INSERT INTO pricing_overrides(pricing_item_id,pricing_version_id,` + column + `) VALUES($1,$2,$3) ON CONFLICT(` + column + `,pricing_item_id) WHERE ` + column + ` IS NOT NULL DO UPDATE SET pricing_version_id=EXCLUDED.pricing_version_id,created_at=now() RETURNING id`
-	if err = tx.QueryRow(r.Context(), sql, q.PricingItemID, q.PricingVersionID, q.ScopeID).Scan(&id); err != nil {
-		s.internalError(w, err)
-		return
-	}
-	if _, err = tx.Exec(r.Context(), `INSERT INTO audit_logs(actor_user_id,action,resource_type,resource_id,request_id,metadata) VALUES($1,'pricing.override.upsert','pricing_override',$2,$3,jsonb_build_object('pricing_item_id',$4::text,'pricing_version_id',$5::text,'scope',$6::text,'scope_id',$7::text))`, p.ID, id, requestID(r.Context()), q.PricingItemID, q.PricingVersionID, q.Scope, q.ScopeID); err != nil {
-		s.internalError(w, err)
-		return
-	}
-	if err = tx.Commit(r.Context()); err != nil {
-		s.internalError(w, err)
-		return
-	}
-	writeJSON(w, 200, map[string]any{"id": id, "scope": q.Scope, "scopeId": q.ScopeID, "pricingVersionId": q.PricingVersionID})
-}
-
-func (s *Server) deletePricingOverride(w http.ResponseWriter, r *http.Request) {
-	p, _ := r.Context().Value(principalKey).(principal)
-	tx, err := s.db.BeginTx(r.Context(), pgx.TxOptions{})
-	if err != nil {
-		s.internalError(w, err)
-		return
-	}
-	defer tx.Rollback(r.Context())
-	var itemID, versionID, scope, scopeID string
-	err = tx.QueryRow(r.Context(), `DELETE FROM pricing_overrides WHERE id=$1 RETURNING pricing_item_id,pricing_version_id,CASE WHEN user_id IS NOT NULL THEN 'user' WHEN product_id IS NOT NULL THEN 'product' ELSE 'plan' END,coalesce(user_id,product_id,plan_id)`, r.PathValue("overrideID")).Scan(&itemID, &versionID, &scope, &scopeID)
-	if err == pgx.ErrNoRows {
-		writeError(w, 404, "pricing_override_not_found", "pricing override not found")
-		return
-	}
-	if err != nil {
-		s.internalError(w, err)
-		return
-	}
-	if _, err = tx.Exec(r.Context(), `INSERT INTO audit_logs(actor_user_id,action,resource_type,resource_id,request_id,metadata) VALUES($1,'pricing.override.delete','pricing_override',$2,$3,jsonb_build_object('pricing_item_id',$4::text,'pricing_version_id',$5::text,'scope',$6::text,'scope_id',$7::text))`, p.ID, r.PathValue("overrideID"), requestID(r.Context()), itemID, versionID, scope, scopeID); err != nil {
-		s.internalError(w, err)
-		return
-	}
-	if err = tx.Commit(r.Context()); err != nil {
-		s.internalError(w, err)
-		return
-	}
-	writeJSON(w, 200, map[string]any{"deleted": true})
 }

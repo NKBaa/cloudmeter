@@ -482,6 +482,13 @@ const deploySecretOptions = computed<SecretOption[]>(() => {
   }));
 });
 const pricing = ref<Record<string, number>>({});
+const globalPriceItems = ref<{ code: string; unit: string; unitPriceMicros: number }[]>([]);
+function formatGlobalPrice(unitPriceMicros: number) {
+  return (unitPriceMicros / 100000000)
+    .toFixed(8)
+    .replace(/0+$/, "")
+    .replace(/\.$/, "");
+}
 const checkin = ref<CheckinSummary | null>(null);
 async function loadCheckin() {
   checkin.value = await api<CheckinSummary>("/checkin");
@@ -788,6 +795,7 @@ async function load() {
       faqData,
       dailyBillsData,
       pricingData,
+      pricingCatalog,
     ] = await Promise.all([
       api<any>("/me"),
       api<any>("/products"),
@@ -810,6 +818,7 @@ async function load() {
       ),
       api<any>("/billing/daily-bills"),
       api<Record<string, number>>("/pricing"),
+      api<{ items: { code: string; unit: string; unitPriceMicros: number }[] }>("/pricing/catalog"),
     ]);
     name.value = m.DisplayName;
     impersonation.value = {
@@ -818,6 +827,9 @@ async function load() {
       actorName: m.ActorDisplayName || "管理员",
     };
     pricing.value = pricingData || {};
+    globalPriceItems.value = (pricingCatalog.items || []).sort((left, right) =>
+      usageCodeLabel(left.code).localeCompare(usageCodeLabel(right.code), "zh-CN"),
+    );
     faqs.value = faqData.faqs || [];
     products.value = catalogToFlat(p.products);
     productCatalog.value = p.products;
@@ -1770,6 +1782,27 @@ async function exitImpersonation() {
 
       <!-- 右列 (1/3): 账户计划卡 + 快捷操作 + 平台通知 -->
       <div class="overview-side-col">
+        <div class="nextdev-card p-0">
+          <div class="card-header-bar">
+            <div class="card-title-group">
+              <span class="eyebrow">GLOBAL PRICING · 全局定价</span>
+              <h3>当前价格</h3>
+            </div>
+            <BadgeDollarSign :size="18" />
+          </div>
+          <div class="card-divider"></div>
+          <div v-if="globalPriceItems.length" class="global-price-list">
+            <div v-for="entry in globalPriceItems" :key="entry.code" class="global-price-row">
+              <div>
+                <strong>{{ usageCodeLabel(entry.code) }}</strong>
+                <small>{{ usageUnitLabel(entry.unit) }}</small>
+              </div>
+              <span class="mono-data">¥ {{ formatGlobalPrice(entry.unitPriceMicros) }}</span>
+            </div>
+          </div>
+          <p v-else class="quiet global-price-empty">暂无已生效的全局价格</p>
+        </div>
+
         <!-- 账户计划卡片 (NextDevTpl PlanCard) -->
         <div class="nextdev-card p-6">
           <span class="eyebrow">CURRENT PLAN · 账户计划</span>

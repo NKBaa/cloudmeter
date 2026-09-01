@@ -105,7 +105,7 @@ func (s *Server) deleteProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var appCount, activeTests int
-	if err = tx.QueryRow(r.Context(), `SELECT (SELECT count(*) FROM user_apps WHERE product_id=$1),(SELECT count(*) FROM app_product_version_tests t JOIN app_product_versions v ON v.id=t.product_version_id WHERE v.product_id=$1 AND t.state NOT IN ('succeeded','failed'))`, productID).Scan(&appCount, &activeTests); err != nil {
+	if err = tx.QueryRow(r.Context(), `SELECT (SELECT count(*) FROM user_apps WHERE product_id=$1),(SELECT count(*) FROM app_product_version_tests t JOIN app_product_versions v ON v.id=t.product_version_id WHERE v.product_id=$1 AND t.state NOT IN ('succeeded','failed','cancelled'))`, productID).Scan(&appCount, &activeTests); err != nil {
 		s.internalError(w, err)
 		return
 	}

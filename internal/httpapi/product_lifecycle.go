@@ -191,7 +191,7 @@ func (s *Server) updateProductAvailability(w http.ResponseWriter, r *http.Reques
 		}
 	} else if currentStatus != "retired" {
 		var activeTests int
-		if err = tx.QueryRow(r.Context(), `SELECT count(*) FROM app_product_version_tests t JOIN app_product_versions pv ON pv.id=t.product_version_id WHERE pv.product_id=$1 AND t.state NOT IN ('succeeded','failed')`, productID).Scan(&activeTests); err != nil {
+		if err = tx.QueryRow(r.Context(), `SELECT count(*) FROM app_product_version_tests t JOIN app_product_versions pv ON pv.id=t.product_version_id WHERE pv.product_id=$1 AND t.state NOT IN ('succeeded','failed','cancelled')`, productID).Scan(&activeTests); err != nil {
 			s.internalError(w, err)
 			return
 		}

@@ -48,7 +48,7 @@ project/
 
 角色至少为 super_admin、admin、user。每个 API 必须检查身份、角色、资源所有权、资源状态、订阅和配额；普通用户访问 /api/admin/* 返回 403。用户视角默认只读，代操作需明确开启和二次确认，审计同时记录 actor_user_id 与 subject_user_id。
 
-管理员可以网页创建应用产品和版本：镜像 Digest、启动命令、端口、健康检查、资源范围、卷、环境变量/Secret 表单、依赖服务、Path 路由、Base Path、WebSocket/SSE、更新策略和各项价格覆盖。新产品先测试部署，再发布上架，无需改代码或重启 Compose。
+管理员可以网页创建应用产品和版本：镜像 Digest、启动命令、端口、健康检查、资源范围、卷、环境变量/Secret 表单、依赖服务、Path 路由、Base Path、WebSocket/SSE 和更新策略。所有产品统一使用平台全局价格。新产品先测试部署，再发布上架，无需改代码或重启 Compose。
 
 每次成功部署生成不可变 app_release，保存镜像 Digest、资源、卷、环境变量快照、Secret 版本、路由和健康检查。更新流程为保存旧快照、拉取 Digest、启动新发布、健康检查、切换路由；失败自动恢复 last_successful_release_id。数据卷默认不自动回退，产品声明 stateless、volume_compatible 或 backup_required。
 
@@ -70,7 +70,7 @@ project/
 
 ## 8. 数据表建议
 
-users、roles、permissions、user_roles、sessions、system_state、audit_logs、impersonation_sessions；app_products、app_product_versions、product_fields、product_dependencies、product_volumes、user_apps、app_releases、deployment_jobs、deployment_steps、deployment_events、app_routes、app_secrets、app_secret_versions、backups；plans、plan_versions、plan_entitlements、user_subscriptions、user_entitlements、pricing_items、pricing_versions、pricing_overrides、billing_accounts、usage_intervals、usage_events、usage_aggregates、bills、bill_items、credit_grants、credit_consumptions；orders、order_items、order_events、payments、payment_events、payment_provider_configs、refunds、refund_events、wallets、wallet_transactions、wallet_ledger_entries。
+users、roles、permissions、user_roles、sessions、system_state、audit_logs、impersonation_sessions；app_products、app_product_versions、product_fields、product_dependencies、product_volumes、user_apps、app_releases、deployment_jobs、deployment_steps、deployment_events、app_routes、app_secrets、app_secret_versions、backups；plans、plan_versions、plan_entitlements、user_subscriptions、user_entitlements、pricing_items、pricing_versions、billing_accounts、usage_intervals、usage_events、usage_aggregates、bills、bill_items、credit_grants、credit_consumptions；orders、order_items、order_events、payments、payment_events、payment_provider_configs、refunds、refund_events、wallets、wallet_transactions、wallet_ledger_entries。
 
 ## 9. 测试与最终验收
 

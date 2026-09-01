@@ -10,7 +10,7 @@
     "runtimeSpec": {
       "cpuCores": 0.5,
       "memoryMiB": 512,
-      "dataVolumeGiB": 2,
+      "dataVolumeGiB": 4,
       "editableOptions": {
         "cpu": true,
         "memory": true,
@@ -19,10 +19,16 @@
         "dependencies": false
       },
       "env": {
+        "NODE_ENV": "production",
+        "FORCE_COLOR": "1",
+        "SILLYTAVERN_HEARTBEATINTERVAL": "30",
         "SILLYTAVERN_WHITELISTMODE": "false",
         "SILLYTAVERN_SECURITYOVERRIDE": "true"
       },
       "envDescriptions": {
+        "NODE_ENV": "使用生产模式运行 SillyTavern",
+        "FORCE_COLOR": "保留容器日志中的彩色级别标识",
+        "SILLYTAVERN_HEARTBEATINTERVAL": "WebSocket 心跳间隔，单位为秒",
         "SILLYTAVERN_WHITELISTMODE": "关闭访问白名单，允许平台网关反向代理与健康检查访问",
         "SILLYTAVERN_SECURITYOVERRIDE": "跳过非本机监听的内部安全拦截，由平台网关提供认证边界"
       },
@@ -35,7 +41,22 @@
         {
           "name": "data",
           "mountPath": "/home/node/app/data",
-          "sizeGiB": 2
+          "sizeGiB": 4
+        },
+        {
+          "name": "config",
+          "mountPath": "/home/node/app/config",
+          "sizeGiB": 4
+        },
+        {
+          "name": "plugins",
+          "mountPath": "/home/node/app/plugins",
+          "sizeGiB": 4
+        },
+        {
+          "name": "extensions",
+          "mountPath": "/home/node/app/public/scripts/extensions/third-party",
+          "sizeGiB": 4
         }
       ],
       "dependencies": []
@@ -50,8 +71,8 @@
     },
     "healthSpec": {
       "path": "/",
-      "intervalSeconds": 5,
-      "timeoutSeconds": 3,
+      "intervalSeconds": 30,
+      "timeoutSeconds": 10,
       "acceptedStatusCodes": [200]
     },
     "updateSpec": {

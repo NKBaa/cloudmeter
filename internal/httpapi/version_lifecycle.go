@@ -31,7 +31,7 @@ func (s *Server) deleteProductVersion(w http.ResponseWriter, r *http.Request) {
 	var activeTests int
 	if err = tx.QueryRow(r.Context(), `SELECT p.slug,v.deleted_at,
 			(SELECT count(*) FROM app_releases r WHERE r.product_version_id=v.id),
-			(SELECT count(*) FROM app_product_version_tests t WHERE t.product_version_id=v.id AND t.state NOT IN ('succeeded','failed'))
+			(SELECT count(*) FROM app_product_version_tests t WHERE t.product_version_id=v.id AND t.state NOT IN ('succeeded','failed','cancelled'))
 		FROM app_product_versions v JOIN app_products p ON p.id=v.product_id
 		WHERE p.id=$1 AND v.id=$2 FOR UPDATE OF v`, productID, versionID).Scan(&slug, &deletedAt, &released, &activeTests); err == pgx.ErrNoRows {
 		writeError(w, http.StatusNotFound, "version_not_found", "product version not found")

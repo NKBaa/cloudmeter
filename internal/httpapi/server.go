@@ -183,6 +183,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/setup/status", s.setupStatus)
 	s.mux.HandleFunc("GET /api/system/settings", s.getSystemSettingsPublic)
 	s.mux.HandleFunc("GET /api/pricing", s.getPricingPublic)
+	s.mux.HandleFunc("GET /api/pricing/catalog", s.getPricingCatalogPublic)
 	s.mux.HandleFunc("GET /api/homepage", s.getHomepage)
 	s.mux.HandleFunc("POST /api/setup/initialize", s.initialize)
 	s.mux.HandleFunc("POST /api/auth/login", s.login)
@@ -310,9 +311,6 @@ func (s *Server) routes() {
 	s.mux.Handle("PUT /api/admin/users/{userID}/subscription", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.assignSubscription))))
 	s.mux.Handle("POST /api/admin/pricing/items", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.createPricingItem))))
 	s.mux.Handle("POST /api/admin/pricing/items/{itemID}/versions", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.createPricingVersion))))
-	s.mux.Handle("GET /api/admin/pricing/overrides", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.adminPricingOverrides))))
-	s.mux.Handle("PUT /api/admin/pricing/overrides", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.upsertPricingOverride))))
-	s.mux.Handle("DELETE /api/admin/pricing/overrides/{overrideID}", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.deletePricingOverride))))
 	s.mux.Handle("POST /api/apps", s.authenticate(http.HandlerFunc(s.createApp)))
 	s.mux.Handle("DELETE /api/apps/{appID}", s.authenticate(http.HandlerFunc(s.deleteApp)))
 	s.mux.Handle("POST /api/apps/{appID}/releases", s.authenticate(http.HandlerFunc(s.createAppRelease)))
@@ -325,6 +323,7 @@ func (s *Server) routes() {
 	s.mux.Handle("POST /api/admin/products/{productID}/versions", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.createProductVersion))))
 	s.mux.Handle("DELETE /api/admin/products/{productID}/versions/{versionID}", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.deleteProductVersion))))
 	s.mux.Handle("POST /api/admin/products/{productID}/versions/{versionID}/tests", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.startProductVersionTest))))
+	s.mux.Handle("POST /api/admin/products/{productID}/versions/{versionID}/tests/{testID}/cancel", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.cancelProductVersionTest))))
 	s.mux.Handle("POST /api/admin/products/{productID}/versions/{versionID}/publish", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.publishProductVersion))))
 	s.mux.Handle("GET /api/admin/users", s.authenticate(s.requireRoles("admin", "super_admin")(http.HandlerFunc(s.listUsers))))
 	s.mux.Handle("POST /api/admin/users/{userID}/impersonation", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.startImpersonation))))
@@ -1669,7 +1668,7 @@ func (s *Server) adminListProducts(w http.ResponseWriter, r *http.Request) {
 		t.id::text,t.state,t.attempts,t.last_error,t.created_at,t.updated_at,t.completed_at
 		FROM app_products p
 		LEFT JOIN app_product_versions pv ON pv.product_id=p.id AND pv.archived_at IS NULL AND pv.deleted_at IS NULL
-		LEFT JOIN LATERAL (SELECT id,state,attempts,last_error,created_at,updated_at,completed_at FROM app_product_version_tests WHERE product_version_id=pv.id ORDER BY created_at DESC LIMIT 1) t ON true
+		LEFT JOIN LATERAL (SELECT t0.id,CASE WHEN c.test_id IS NOT NULL AND c.processed_at IS NULL THEN 'cancelling' ELSE t0.state END AS state,t0.attempts,t0.last_error,t0.created_at,t0.updated_at,t0.completed_at FROM app_product_version_tests t0 LEFT JOIN app_product_version_test_cancellations c ON c.test_id=t0.id WHERE t0.product_version_id=pv.id ORDER BY t0.created_at DESC LIMIT 1) t ON true
 		WHERE p.deleted_at IS NULL ORDER BY p.created_at DESC,pv.version DESC`)
 	if err != nil {
 		s.internalError(w, err)

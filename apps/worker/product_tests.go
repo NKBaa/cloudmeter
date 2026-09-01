@@ -41,7 +41,7 @@ func processProductVersionTestOne(ctx context.Context, db *pgxpool.Pool, logger 
 	terminal := false
 	err = tx.QueryRow(ctx, `SELECT id::text,state,immutable_snapshot,encrypted_secrets,health_attempts
 		FROM app_product_version_tests
-		WHERE state NOT IN ('succeeded','failed') AND available_at<=now()
+		WHERE state NOT IN ('succeeded','failed','cancelled') AND available_at<=now()
 		ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1`).Scan(&id, &state, &snapshot, &encryptedSecrets, &healthAttempts)
 	if err == pgx.ErrNoRows {
 		return
@@ -62,6 +62,21 @@ func processProductVersionTestOne(ctx context.Context, db *pgxpool.Pool, logger 
 		failProductVersionTest(ctx, db, id, productTestFailure("读取版本配置", "版本快照", fmt.Errorf("test deployment snapshot is invalid"), nil), logger)
 		return
 	}
+	operationCtx, cancelOperation := context.WithCancel(ctx)
+	productTestOperations.Store(id, cancelOperation)
+	defer func() {
+		productTestOperations.Delete(id)
+		cancelOperation()
+	}()
+	var cancellationRequested bool
+	if err = db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM app_product_version_test_cancellations
+		WHERE test_id=$1 AND processed_at IS NULL)`, id).Scan(&cancellationRequested); err != nil {
+		logger.Error("product test cancellation check failed", "test", id, "error", err)
+		return
+	}
+	if cancellationRequested {
+		return
+	}
 	switch state {
 	case "queued":
 		if err = advanceProductVersionTest(ctx, tx, id, "pulling", 0); err != nil {
@@ -69,13 +84,13 @@ func processProductVersionTestOne(ctx context.Context, db *pgxpool.Pool, logger 
 			return
 		}
 	case "pulling":
-		if _, err = pullConfiguredProductImage(ctx, db, spec.Image); err != nil {
+		if _, err = pullConfiguredProductImage(operationCtx, db, spec.Image); err != nil {
 			tx.Rollback(ctx)
 			failProductVersionTest(ctx, db, id, productTestFailure("拉取应用镜像", spec.Image, err, productTestSecretValues(id, encryptedSecrets)), logger)
 			return
 		}
 		if _, needsProbe := healthPath(spec.Health); needsProbe {
-			if err = executor.Pull(ctx, backupHelperImage); err != nil {
+			if err = executor.Pull(operationCtx, backupHelperImage); err != nil {
 				tx.Rollback(ctx)
 				failProductVersionTest(ctx, db, id, productTestFailure("准备健康检查组件", backupHelperImage, err, productTestSecretValues(id, encryptedSecrets)), logger)
 				return
@@ -86,7 +101,7 @@ func processProductVersionTestOne(ctx context.Context, db *pgxpool.Pool, logger 
 			return
 		}
 	case "starting":
-		if err = startProductVersionTestContainer(ctx, db, id, spec, encryptedSecrets); err != nil {
+		if err = startProductVersionTestContainer(operationCtx, db, id, spec, encryptedSecrets); err != nil {
 			tx.Rollback(ctx)
 			failProductVersionTest(ctx, db, id, productTestFailure("创建并启动测试容器", spec.Image, err, productTestSecretValues(id, encryptedSecrets)), logger)
 			return
@@ -96,7 +111,7 @@ func processProductVersionTestOne(ctx context.Context, db *pgxpool.Pool, logger 
 			return
 		}
 	case "health_checking":
-		healthy, healthDetail, healthErr := productVersionTestHealthy(ctx, id, spec)
+		healthy, healthDetail, healthErr := productVersionTestHealthy(operationCtx, id, spec)
 		if healthErr != nil {
 			tx.Rollback(ctx)
 			failProductVersionTest(ctx, db, id, productTestFailure("执行健康检查", spec.Image, healthErr, productTestSecretValues(id, encryptedSecrets)), logger)
@@ -339,10 +354,7 @@ func completeProductVersionTest(ctx context.Context, tx pgx.Tx, id, state, messa
 		WHERE id=$1`, id, state, lastError); err != nil {
 		return err
 	}
-	action := "product.test.succeeded"
-	if state == "failed" {
-		action = "product.test.failed"
-	}
+	action := map[string]string{"succeeded": "product.test.succeeded", "failed": "product.test.failed", "cancelled": "product.test.cancelled"}[state]
 	_, err := tx.Exec(ctx, `INSERT INTO audit_logs(actor_user_id,action,resource_type,resource_id,request_id,metadata)
 		SELECT requested_by,$2::text,'app_product_version_test',$1::text,'worker/product-test/'||$1::text,jsonb_build_object('state',$3::text)
 		FROM app_product_version_tests WHERE id=$1::uuid`, id, action, state)
@@ -355,8 +367,14 @@ func failProductVersionTest(ctx context.Context, db *pgxpool.Pool, id string, ca
 		defer tx.Rollback(ctx)
 		var state string
 		err = tx.QueryRow(ctx, "SELECT state FROM app_product_version_tests WHERE id=$1 FOR UPDATE", id).Scan(&state)
-		if err == nil && state != "succeeded" && state != "failed" {
-			err = completeProductVersionTest(ctx, tx, id, "failed", cause.Error())
+		if err == nil && state != "succeeded" && state != "failed" && state != "cancelled" {
+			var cancellationRequested bool
+			err = tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM app_product_version_test_cancellations WHERE test_id=$1 AND processed_at IS NULL)", id).Scan(&cancellationRequested)
+			if err == nil && cancellationRequested {
+				err = completeProductVersionTest(ctx, tx, id, "cancelled", "")
+			} else if err == nil {
+				err = completeProductVersionTest(ctx, tx, id, "failed", cause.Error())
+			}
 		}
 		if err == nil {
 			err = tx.Commit(ctx)
@@ -364,6 +382,69 @@ func failProductVersionTest(ctx context.Context, db *pgxpool.Pool, id string, ca
 	}
 	if err != nil {
 		logger.Error("product test failure persistence failed", "test", id, "error", err)
+	}
+	cleanupProductVersionTestRuntime(ctx, id, logger)
+}
+
+func runProductVersionTestCancellationWorker(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		processProductVersionTestCancellationOne(ctx, db, logger)
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func processProductVersionTestCancellationOne(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
+	var pendingID string
+	if err := db.QueryRow(ctx, `SELECT test_id::text FROM app_product_version_test_cancellations
+		WHERE processed_at IS NULL ORDER BY requested_at LIMIT 1`).Scan(&pendingID); err == pgx.ErrNoRows {
+		return
+	} else if err != nil {
+		logger.Error("product test cancellation lookup failed", "error", err)
+		return
+	}
+	if cancel, ok := productTestOperations.Load(pendingID); ok {
+		cancel.(context.CancelFunc)()
+	}
+	cleanupProductVersionTestRuntime(ctx, pendingID, logger)
+
+	tx, err := db.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		logger.Error("product test cancellation transaction failed", "error", err)
+		return
+	}
+	defer tx.Rollback(ctx)
+	var id, state string
+	err = tx.QueryRow(ctx, `SELECT c.test_id::text,t.state
+		FROM app_product_version_test_cancellations c
+		JOIN app_product_version_tests t ON t.id=c.test_id
+		WHERE c.processed_at IS NULL
+		ORDER BY c.requested_at FOR UPDATE OF c,t SKIP LOCKED LIMIT 1`).Scan(&id, &state)
+	if err == pgx.ErrNoRows {
+		return
+	}
+	if err != nil {
+		logger.Error("product test cancellation claim failed", "error", err)
+		return
+	}
+	if state != "succeeded" && state != "failed" && state != "cancelled" {
+		if err = completeProductVersionTest(ctx, tx, id, "cancelled", ""); err != nil {
+			logger.Error("product test cancellation completion failed", "test", id, "error", err)
+			return
+		}
+	}
+	if _, err = tx.Exec(ctx, `UPDATE app_product_version_test_cancellations SET processed_at=now() WHERE test_id=$1`, id); err != nil {
+		logger.Error("product test cancellation acknowledgement failed", "test", id, "error", err)
+		return
+	}
+	if err = tx.Commit(ctx); err != nil {
+		logger.Error("product test cancellation commit failed", "test", id, "error", err)
+		return
 	}
 	cleanupProductVersionTestRuntime(ctx, id, logger)
 }
@@ -448,7 +529,7 @@ func reconcileProductTestContainers(ctx context.Context, db *pgxpool.Pool, logge
 }
 
 func activeProductVersionTestIDs(ctx context.Context, db *pgxpool.Pool) (map[string]struct{}, error) {
-	rows, err := db.Query(ctx, "SELECT id::text FROM app_product_version_tests WHERE state NOT IN ('succeeded','failed')")
+	rows, err := db.Query(ctx, "SELECT id::text FROM app_product_version_tests WHERE state NOT IN ('succeeded','failed','cancelled')")
 	if err != nil {
 		return nil, err
 	}
