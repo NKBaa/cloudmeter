@@ -392,7 +392,7 @@ async function reloadConfig() {
   }
 }
 
-async function save() {
+async function save(): Promise<{ ok: true } | { ok: false; message: string }> {
   saving.value = true;
   error.value = "";
   message.value = "";
@@ -423,10 +423,11 @@ async function save() {
     window.setTimeout(() => {
       message.value = "";
     }, 3000);
-    return true;
+    return { ok: true };
   } catch (err: any) {
-    error.value = err.message || "保存网站设置失败";
-    return false;
+    const failureMessage = err.message || "保存网站设置失败";
+    error.value = failureMessage;
+    return { ok: false, message: failureMessage };
   } finally {
     saving.value = false;
   }
@@ -434,7 +435,14 @@ async function save() {
 
 async function finishWizard() {
   if (!validateWizardStep(1) || !validateWizardStep(2)) return;
-  if (await save()) wizardOpen.value = false;
+  wizardError.value = "";
+  const result = await save();
+  if (!result.ok) {
+    wizardError.value = result.message;
+    return;
+  }
+  wizardStep.value = 0;
+  wizardOpen.value = false;
 }
 
 function openCertificateImport(target: "console" | "applications") {
