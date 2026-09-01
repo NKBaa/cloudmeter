@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import {
   ArrowLeft,
@@ -328,6 +328,7 @@ async function copyInstanceId() {
   }
 }
 const logOpen = ref(false),
+  logSection = ref<HTMLElement | null>(null),
   logBusy = ref(false),
   logData = ref<{
     logs: string;
@@ -393,6 +394,8 @@ async function openLogs() {
   if (!app.value) return;
   logOpen.value = true;
   logData.value = { logs: "", status: "" };
+  await nextTick();
+  logSection.value?.scrollIntoView({ behavior: "smooth", block: "start" });
   await refreshLogs();
   logTimer = window.setInterval(() => {
     void loadLogs();
@@ -726,51 +729,50 @@ onMounted(load);
           <p>还没有发布记录</p>
         </div>
       </section>
+      <section v-if="logOpen" ref="logSection" class="log-section">
+        <header class="log-section-head">
+          <div>
+            <p class="eyebrow">{{ app.slug }}</p>
+            <h2>运行日志</h2>
+            <small v-if="logData.sampledAt"
+              >采样于 {{ new Date(logData.sampledAt).toLocaleString() }} · 每 3
+              秒自动刷新</small
+            >
+          </div>
+          <div class="log-section-actions">
+            <span
+              :class="[
+                'status-pill',
+                logData.status === 'succeeded' || logData.status === 'cached'
+                  ? 'active'
+                  : logData.status === 'failed'
+                    ? 'danger'
+                    : 'pending',
+              ]"
+              >{{ logStatusLabel(logData.status) }}</span
+            >
+            <button
+              class="secondary compact"
+              :disabled="logBusy"
+              @click="refreshLogs"
+            >
+              <RefreshCw :class="{ spin: logBusy }" :size="15" />立即刷新
+            </button>
+            <button class="icon-action" title="收起日志" @click="closeLogs">
+              <X :size="18" />
+            </button>
+          </div>
+        </header>
+        <p v-if="logData.lastError" class="message">{{ logData.lastError }}</p>
+        <p v-if="!logData.logs && !logBusy" class="quiet log-empty">
+          正在拉取日志…
+        </p>
+        <pre class="log-viewer" :class="{ 'log-loading': logBusy }">{{
+          logData.logs || (logBusy ? "正在拉取日志…" : "")
+        }}</pre>
+      </section>
     </template>
   </main>
-  <div v-if="logOpen" class="modal-backdrop" @click.self="closeLogs">
-    <section class="secret-dialog log-dialog">
-      <header>
-        <div>
-          <p class="eyebrow">{{ app?.slug }}</p>
-          <h2>运行日志</h2>
-          <small v-if="logData.sampledAt"
-            >采样于 {{ new Date(logData.sampledAt).toLocaleString() }} · 每 3
-            秒自动刷新</small
-          >
-        </div>
-        <button class="icon-action" title="关闭" @click="closeLogs">
-          <X :size="18" />
-        </button>
-      </header>
-      <div class="log-toolbar">
-        <span
-          :class="[
-            'status-pill',
-            logData.status === 'succeeded' || logData.status === 'cached'
-              ? 'active'
-              : logData.status === 'failed'
-                ? 'danger'
-                : 'pending',
-          ]"
-          >{{ logStatusLabel(logData.status) }}</span
-        ><button
-          class="secondary compact"
-          :disabled="logBusy"
-          @click="refreshLogs"
-        >
-          <RefreshCw :class="{ spin: logBusy }" :size="15" />立即刷新
-        </button>
-      </div>
-      <p v-if="logData.lastError" class="message">{{ logData.lastError }}</p>
-      <p v-if="!logData.logs && !logBusy" class="quiet log-empty">
-        正在拉取日志…
-      </p>
-      <pre class="log-viewer" :class="{ 'log-loading': logBusy }">{{
-        logData.logs || (logBusy ? "正在拉取日志…" : "")
-      }}</pre>
-    </section>
-  </div>
 </template>
 
 <style scoped>
@@ -855,7 +857,7 @@ onMounted(load);
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
-  align-items: start;
+  align-items: stretch;
 }
 .status-card {
   display: flex;
@@ -865,7 +867,8 @@ onMounted(load);
   background: var(--paper);
   border: 1px solid var(--line);
   border-radius: 14px;
-  min-height: 0;
+  min-height: 84px;
+  box-sizing: border-box;
 }
 .status-icon {
   width: 38px;
@@ -1125,6 +1128,39 @@ onMounted(load);
 .history-section .section-heading {
   margin-bottom: 0;
 }
+.log-section {
+  padding: 20px 22px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  scroll-margin-top: 20px;
+}
+.log-section-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+.log-section-head h2 {
+  margin: 4px 0 0;
+  font-size: 18px;
+}
+.log-section-head small {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.log-section-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.log-section .log-viewer {
+  width: 100%;
+  min-height: 260px;
+  max-height: 520px;
+  box-sizing: border-box;
+}
 .history-row {
   display: flex;
   align-items: center;
@@ -1184,6 +1220,16 @@ onMounted(load);
   }
   .app-detail-actions button {
     flex: 1;
+  }
+  .status-grid {
+    grid-template-columns: 1fr;
+  }
+  .log-section-head {
+    flex-direction: column;
+  }
+  .log-section-actions {
+    width: 100%;
+    flex-wrap: wrap;
   }
   .config-actions {
     flex-direction: column;
