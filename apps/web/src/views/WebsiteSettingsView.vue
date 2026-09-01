@@ -652,7 +652,7 @@ onMounted(refreshAll);
                 :placeholder="form.accessMode === 'all_caddy' ? 'https://console.example.com' : 'https://console.example.com'"
               />
               <small v-if="form.accessMode === 'all_caddy'">保存时会按 HTTPS 开关统一协议并移除端口，只保留主域名。</small>
-              <small v-else>用于 OAuth 回调、Webhook、支付通知和系统外链。公网 HTTPS 与反向代理由你的外部代理实现，不代表控制台监听地址。</small>
+              <small v-else>对外公开地址，用于 OAuth 回调、Webhook、支付通知和系统外链。公网 HTTPS 与反向代理由你的外部代理实现，不代表控制台监听地址。</small>
             </label>
 
             <div v-if="form.accessMode === 'apps_only'" class="standalone-listener">
@@ -1063,7 +1063,7 @@ onMounted(refreshAll);
               <section v-else-if="wizardStep === 1" class="wizard-step">
                 <div class="wizard-step-heading"><span>02</span><div><h3>配置公开域名</h3><p>这些地址将用于控制台外链和应用专属入口。</p></div></div>
                 <div class="wizard-fields">
-                  <label><span>{{ form.accessMode === "all_caddy" ? "控制台主域名" : "服务器公开 URL" }}</span><input v-model="form.serverUrl" type="url" inputmode="url" placeholder="https://console.example.com" /><small>请输入完整 URL，包括 http:// 或 https://。</small></label>
+                  <label><span>{{ form.accessMode === "all_caddy" ? "控制台主域名" : "服务器公开 URL" }}</span><input v-model="form.serverUrl" type="url" inputmode="url" placeholder="https://console.example.com" /><small>{{ form.accessMode === "apps_only" ? "对外公开地址，" : "" }}请输入完整 URL，包括 http:// 或 https://。</small></label>
                   <label><span>应用泛子域名</span><div class="domain-input"><i>*.</i><input v-model="form.appBaseDomain" inputmode="url" placeholder="apps.example.com" /></div><small>为每个应用生成独立子域名，无需输入 *. 前缀。</small></label>
                 </div>
               </section>
