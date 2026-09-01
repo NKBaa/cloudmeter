@@ -65,7 +65,26 @@ For complete production guides, see [Docker Deployment Guide](docs/docker-deploy
 - [Docker Deployment Guide](docs/docker-deployment.md) - Fresh server installation, configuration, security hardening, and upgrades.
 - [Operations & Verification Guide](docs/operations.md) - Routine operations, database backups, WSL keepalive, and automated test suites.
 - [State Machines Specification](docs/state-machines.md) - Lifecycle states for deployments, releases, tasks, and payment orders.
+- [System Open API Specification](docs/system-api.md) - Authentication, tool/automation endpoints, write boundaries, and integration examples.
 - [OpenAPI 3.0 Specification](docs/openapi.yaml) - Complete HTTP REST API contract.
+
+---
+
+## System Open API
+
+CloudMeter exposes a versioned API for trusted AI agents, scripts, operations tools, and third-party integrations. A super-administrator creates or rotates the access key in **System Settings → System Open API & Access Key**. The plaintext key is shown only once; the server stores only its SHA-256 digest.
+
+```bash
+export CLOUDMETER_URL="https://console.example.com"
+export CLOUDMETER_API_KEY="cm_api_..."
+
+curl -sS "$CLOUDMETER_URL/api/automation/v1/analysis" \
+  -H "Authorization: Bearer $CLOUDMETER_API_KEY"
+```
+
+The API can read system analysis, settings, sanitized user information, and audit events. Whitelisted write operations can update display settings and user status, clear runtime logs, and run database `ANALYZE`. It never exposes arbitrary SQL, passwords, sessions, payment credentials, application secrets, or TLS/DNS credentials. Every write operation is audited.
+
+See the [System Open API Specification](docs/system-api.md) for endpoint details and safety requirements. The legacy `/api/llm/v1` path and `cm_llm_` keys remain compatible; new integrations should use `/api/automation/v1` and `cm_api_` keys.
 
 ---
 
@@ -187,7 +206,26 @@ docker compose --env-file .env -f deploy/compose.yaml up -d --build
 - [Docker 部署指南](docs/docker-deployment.md) - 从零开始的生产级安装、环境调优、权限设置与版本平滑升级。
 - [运维与验收指南](docs/operations.md) - 日常运维检查、WSL 常驻保活方案与自动化回归测试脚本说明。
 - [状态机规范](docs/state-machines.md) - 部署、构建任务、备份还原及支付订单的完整状态机流转图。
+- [系统开放 API 规范](docs/system-api.md) - 访问密钥、工具与自动化接口、写入边界及调用示例。
 - [OpenAPI 规范](docs/openapi.yaml) - 平台标准 RESTful API 接口定义。
+
+---
+
+## 系统开放 API
+
+CloudMeter 提供面向受信任的大模型、脚本、运维工具和第三方集成的版本化开放 API。超级管理员在 **系统设置 → 系统开放 API 与访问密钥** 中生成或轮换密钥；密钥明文只显示一次，服务端仅保存 SHA-256 摘要。
+
+```bash
+export CLOUDMETER_URL="https://console.example.com"
+export CLOUDMETER_API_KEY="cm_api_..."
+
+curl -sS "$CLOUDMETER_URL/api/automation/v1/analysis" \
+  -H "Authorization: Bearer $CLOUDMETER_API_KEY"
+```
+
+接口支持读取系统分析、系统设置、脱敏用户信息和审计事件；白名单写操作支持修改展示设置及用户状态、清理运行日志和执行数据库 `ANALYZE`。接口不提供任意 SQL，也不会开放密码、会话、支付凭据、应用 Secret 或 TLS/DNS 凭据。所有写入均进入审计日志。
+
+完整端点与安全规范参见 [系统开放 API 规范](docs/system-api.md)。旧版 `/api/llm/v1` 路径和 `cm_llm_` 密钥继续兼容，新接入应使用 `/api/automation/v1` 和 `cm_api_` 密钥。
 
 ---
 
