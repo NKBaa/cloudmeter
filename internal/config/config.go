@@ -19,6 +19,7 @@ type Config struct {
 	RouterContainer   string
 	RouterToken       string
 	BackupVolume      string
+	BackupStoragePath string
 	BackupHelperImage string
 	PublicBaseURL     string
 	SecretsKey        []byte
@@ -56,6 +57,7 @@ func Load() (Config, error) {
 		RouterContainer:   env("ROUTER_CONTAINER_NAME", "cloudmeter-app-router"),
 		RouterToken:       strings.TrimSpace(os.Getenv("ROUTER_INTERNAL_TOKEN")),
 		BackupVolume:      env("BACKUP_STORAGE_VOLUME", "cloudmeter_backup_data"),
+		BackupStoragePath: env("BACKUP_STORAGE_PATH", "/var/lib/cloudmeter/backups"),
 		BackupHelperImage: env("BACKUP_HELPER_IMAGE", "nginx@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10"),
 		PublicBaseURL:     env("PUBLIC_BASE_URL", ""),
 		SecretsKey:        key,

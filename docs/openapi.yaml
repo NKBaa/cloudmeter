@@ -547,6 +547,45 @@ paths:
       responses:
         '202': {description: Restore queued and app entered maintenance state}
         '409': {description: Restore already in progress or idempotency key conflict}
+  /apps/{appID}/backups/import:
+    post:
+      operationId: importAppBackup
+      summary: Import a volume backup archive
+      description: Validates and stores a tar.gz archive as a successful backup owned by the current user and application. Imported archives count toward the application's shared data-volume capacity and can be restored through the normal restore queue.
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: appID, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [volumeKey, file]
+              properties:
+                volumeKey: {type: string, minLength: 1}
+                file: {type: string, format: binary, description: tar.gz archive up to 2 GiB}
+      responses:
+        '201': {description: Archive imported as a successful backup}
+        '400': {description: Invalid, unsafe, empty, or oversized archive}
+        '404': {description: Application not found for current user}
+        '409': {description: Imported archive would exceed shared data-volume capacity}
+  /apps/{appID}/backups/{backupID}/export:
+    get:
+      operationId: exportAppBackup
+      summary: Export a successful backup archive
+      description: Downloads the original tar.gz archive when it belongs to the current user and has not entered deletion.
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: appID, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: backupID, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: Backup tar.gz archive
+          content:
+            application/gzip:
+              schema: {type: string, format: binary}
+        '404': {description: Successful archive not found for current user}
   /apps/{appID}/backups/{backupID}:
     delete:
       operationId: deleteAppBackup

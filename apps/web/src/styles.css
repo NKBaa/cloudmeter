@@ -3928,6 +3928,8 @@ input.field-invalid, select.field-invalid, textarea.field-invalid {
   gap: 12px;
 }
 .backup-volume-groups { display: grid; gap: 7px; }
+.backup-import-input { display: none; }
+.backup-volume-actions { display: inline-flex; align-items: center; gap: 7px; padding-right: 9px; }
 .backup-volume-group { overflow: hidden; border: 1px solid var(--line); border-radius: 11px; background: var(--paper); }
 .backup-volume-group.expanded { border-color: var(--line-strong); }
 .backup-volume-group .backup-volume-row { display: flex; align-items: stretch; gap: 9px; min-height: 55px; padding: 0; border-top: 0; }

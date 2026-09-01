@@ -234,6 +234,8 @@ func (s *Server) routes() {
 	s.mux.Handle("POST /api/apps/{appID}/backups", s.authenticate(http.HandlerFunc(s.createAppBackup)))
 	s.mux.Handle("DELETE /api/apps/{appID}/backups/{backupID}", s.authenticate(http.HandlerFunc(s.deleteAppBackup)))
 	s.mux.Handle("POST /api/apps/{appID}/backups/{backupID}/restore", s.authenticate(http.HandlerFunc(s.restoreAppBackup)))
+	s.mux.Handle("GET /api/apps/{appID}/backups/{backupID}/export", s.authenticate(http.HandlerFunc(s.exportAppBackup)))
+	s.mux.Handle("POST /api/apps/{appID}/backups/import", s.authenticate(http.HandlerFunc(s.importAppBackup)))
 	s.mux.Handle("GET /api/billing/summary", s.authenticate(http.HandlerFunc(s.billingSummary)))
 	s.mux.Handle("GET /api/billing/ledger", s.authenticate(http.HandlerFunc(s.billingLedger)))
 	s.mux.Handle("GET /api/billing/usage", s.authenticate(http.HandlerFunc(s.billingUsage)))

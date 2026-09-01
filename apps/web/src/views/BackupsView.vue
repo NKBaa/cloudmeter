@@ -5,7 +5,9 @@ import {
   ArchiveRestore,
   ChevronDown,
   Database,
+  Download,
   HardDrive,
+  Import,
   PackagePlus,
   Plus,
   RefreshCw,
@@ -48,6 +50,8 @@ const error = ref("");
 const message = ref("");
 const busy = ref("");
 const loading = ref(false);
+const importInput = ref<HTMLInputElement | null>(null);
+const importTarget = ref<{ app: App; volumeKey: string } | null>(null);
 const labels: Record<string, string> = {
   queued: "排队中",
   running: "处理中",
@@ -250,6 +254,76 @@ async function removeBackup(app: App, backup: Backup) {
     busy.value = "";
   }
 }
+function chooseImport(app: App, volumeKey: string) {
+  importTarget.value = { app, volumeKey };
+  if (importInput.value) {
+    importInput.value.value = "";
+    importInput.value.click();
+  }
+}
+async function importBackup(event: Event) {
+  const file = (event.target as HTMLInputElement).files?.[0];
+  const target = importTarget.value;
+  if (!file || !target) return;
+  if (!/\.tar\.gz$/i.test(file.name)) {
+    error.value = "请选择 tar.gz 格式的备份归档";
+    return;
+  }
+  try {
+    busy.value = `import:${target.app.id}:${target.volumeKey}`;
+    error.value = "";
+    const body = new FormData();
+    body.set("volumeKey", target.volumeKey);
+    body.set("file", file);
+    const token = localStorage.getItem("session_token") || "";
+    const response = await fetch(`/api/apps/${target.app.id}/backups/import`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body,
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok)
+      throw new Error(result?.error?.message || `导入失败（${response.status}）`);
+    message.value = `${target.app.slug} / ${target.volumeKey} 已导入备份`;
+    expandedVolumeID.value = volumeID(target.app.id, target.volumeKey);
+    await load(true);
+  } catch (value) {
+    error.value = (value as Error).message;
+  } finally {
+    busy.value = "";
+    importTarget.value = null;
+  }
+}
+async function exportBackup(app: App, backup: Backup) {
+  try {
+    busy.value = `export:${backup.id}`;
+    error.value = "";
+    const token = localStorage.getItem("session_token") || "";
+    const response = await fetch(
+      `/api/apps/${app.id}/backups/${backup.id}/export`,
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+    if (!response.ok) {
+      const result = await response.json().catch(() => ({}));
+      throw new Error(result?.error?.message || `导出失败（${response.status}）`);
+    }
+    const blob = await response.blob();
+    const disposition = response.headers.get("Content-Disposition") || "";
+    const filename =
+      disposition.match(/filename="?([^";]+)"?/i)?.[1] ||
+      `${app.slug}-${backup.volumeKey}.tar.gz`;
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(url);
+  } catch (value) {
+    error.value = (value as Error).message;
+  } finally {
+    busy.value = "";
+  }
+}
 
 onMounted(async () => {
   await load();
@@ -264,6 +338,13 @@ onBeforeUnmount(() => {
 
 <template>
   <main class="workspace backups-view">
+    <input
+      ref="importInput"
+      class="backup-import-input"
+      type="file"
+      accept=".tar.gz,application/gzip"
+      @change="importBackup"
+    />
     <header class="page-heading">
       <div>
         <p class="eyebrow">数据保护</p>
@@ -428,14 +509,22 @@ onBeforeUnmount(() => {
                       >
                       <ChevronDown class="backup-volume-chevron" :size="17" />
                     </button>
-                    <button
-                      v-if="group.active"
-                      class="secondary compact"
-                      :disabled="app.status !== 'running' || busy !== ''"
-                      @click="createBackup(app, group.name)"
-                    >
-                      <Archive :size="15" />立即备份
-                    </button>
+                    <span v-if="group.active" class="backup-volume-actions">
+                      <button
+                        class="secondary compact"
+                        :disabled="busy !== ''"
+                        @click="chooseImport(app, group.name)"
+                      >
+                        <Import :size="15" />导入
+                      </button>
+                      <button
+                        class="secondary compact"
+                        :disabled="app.status !== 'running' || busy !== ''"
+                        @click="createBackup(app, group.name)"
+                      >
+                        <Archive :size="15" />立即备份
+                      </button>
+                    </span>
                     <span v-else class="status-pill suspended">历史卷</span>
                   </div>
                   <Transition name="backup-detail">
@@ -468,6 +557,18 @@ onBeforeUnmount(() => {
                             >{{ backupStatus(backup) }}</span
                           >
                           <span class="backup-row-actions">
+                            <button
+                              class="icon-action"
+                              title="导出备份文件"
+                              :disabled="
+                                backup.status !== 'succeeded' ||
+                                Boolean(backup.deletionStatus) ||
+                                busy !== ''
+                              "
+                              @click="exportBackup(app, backup)"
+                            >
+                              <Download :size="16" />
+                            </button>
                             <button
                               class="icon-action"
                               title="恢复此备份"

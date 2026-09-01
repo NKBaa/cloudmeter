@@ -160,11 +160,14 @@ services:
       # Optional authoritative override. Empty keeps the Website Settings switch editable.
       GATEWAY_ACCESS_MODE: ${GATEWAY_ACCESS_MODE:-}
       ROUTER_INTERNAL_TOKEN: ${ROUTER_INTERNAL_TOKEN:?ROUTER_INTERNAL_TOKEN is required}
+      BACKUP_STORAGE_PATH: /var/lib/cloudmeter/backups
     volumes:
       - caddy_runtime:/etc/cloudmeter/runtime
+      - backup_storage:/var/lib/cloudmeter/backups
     expose: ["8081"]
     depends_on:
       caddy-runtime-init: {condition: service_completed_successfully}
+      backup-storage-init: {condition: service_completed_successfully}
       migrate: {condition: service_completed_successfully}
       redis: {condition: service_healthy}
     networks: [platform_network, data_network]
@@ -175,6 +178,15 @@ services:
       retries: 5
     labels:
       cloudmeter.owner: ${COMPOSE_PROJECT_NAME:-cloudmeter}
+    security_opt: [no-new-privileges:true]
+
+  backup-storage-init:
+    image: alpine:3.21
+    command: ["sh", "-c", "chown 65532:65532 /backup && chmod 770 /backup"]
+    restart: "no"
+    volumes:
+      - backup_storage:/backup
+    networks: [data_network]
     security_opt: [no-new-privileges:true]
 
   worker:
@@ -267,3 +279,7 @@ volumes:
   caddy_data: {}
   caddy_config: {}
   caddy_runtime: {}
+  backup_storage:
+    name: ${BACKUP_STORAGE_MOUNT_VOLUME:-cloudmeter_backup_data}
+    labels:
+      cloudmeter.owner: ${COMPOSE_PROJECT_NAME:-cloudmeter}

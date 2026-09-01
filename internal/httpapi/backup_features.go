@@ -1,15 +1,26 @@
 package httpapi
 
 import (
+	"archive/tar"
+	"compress/gzip"
+	"errors"
+	"fmt"
+	"io"
 	"math"
 	"math/big"
 	"net/http"
+	"os"
+	"path"
+	"path/filepath"
 	"strings"
 	"time"
 
 	runtimepolicy "cloudmeter/internal/runtime"
 	"github.com/jackc/pgx/v5"
 )
+
+const maxBackupImportBytes int64 = 2 << 30
+const maxBackupExpandedBytes int64 = 20 << 30
 
 func (s *Server) listAppBackups(w http.ResponseWriter, r *http.Request) {
 	p, _ := r.Context().Value(principalKey).(principal)
@@ -164,6 +175,288 @@ func (s *Server) deleteAppBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"backupId": backupID, "deletionJobId": jobID, "status": "queued"})
+}
+
+func (s *Server) exportAppBackup(w http.ResponseWriter, r *http.Request) {
+	p, _ := r.Context().Value(principalKey).(principal)
+	appID, backupID := r.PathValue("appID"), r.PathValue("backupID")
+	if !validUUID(appID) || !validUUID(backupID) {
+		writeError(w, http.StatusNotFound, "backup_not_found", "backup not found")
+		return
+	}
+	var storageKey, appSlug, volumeKey string
+	var createdAt time.Time
+	err := s.db.QueryRow(r.Context(), `SELECT backup.storage_key,app.slug,backup.volume_key,backup.created_at
+		FROM app_backups backup JOIN user_apps app ON app.id=backup.user_app_id
+		LEFT JOIN app_backup_deletion_jobs deletion ON deletion.backup_id=backup.id
+		WHERE backup.id=$1 AND backup.user_app_id=$2 AND app.user_id=$3 AND backup.status='succeeded'
+		  AND coalesce(deletion.status,'') NOT IN ('queued','running','succeeded')`, backupID, appID, p.ID).
+		Scan(&storageKey, &appSlug, &volumeKey, &createdAt)
+	if err == pgx.ErrNoRows {
+		writeError(w, http.StatusNotFound, "backup_not_found", "successful backup not found")
+		return
+	}
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	archivePath, err := s.backupArchivePath(storageKey)
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	if _, err = s.db.Exec(r.Context(), `INSERT INTO audit_logs(actor_user_id,subject_user_id,action,resource_type,resource_id,request_id,metadata)
+		VALUES($1,$2,'backup.export','app_backup',$3,$4,jsonb_build_object('app_id',$5::text,'volume_key',$6::text))`, p.auditActorID(), p.ID, backupID, requestID(r.Context()), appID, volumeKey); err != nil {
+		s.internalError(w, err)
+		return
+	}
+	file, err := os.Open(archivePath)
+	if errors.Is(err, os.ErrNotExist) {
+		writeError(w, http.StatusNotFound, "backup_archive_missing", "backup archive is missing")
+		return
+	}
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	filename := fmt.Sprintf("%s-%s-%s.tar.gz", appSlug, volumeKey, createdAt.UTC().Format("20060102-150405"))
+	w.Header().Set("Content-Type", "application/gzip")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename=%q`, filename))
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", info.Size()))
+	if _, err = io.Copy(w, file); err != nil {
+		s.logger.Warn("backup export interrupted", "backup", backupID, "error", err)
+	}
+}
+
+func (s *Server) importAppBackup(w http.ResponseWriter, r *http.Request) {
+	p, _ := r.Context().Value(principalKey).(principal)
+	appID := r.PathValue("appID")
+	if !validUUID(appID) {
+		writeError(w, http.StatusNotFound, "app_not_found", "application not found")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxBackupImportBytes+1<<20)
+	if err := os.MkdirAll(s.cfg.BackupStoragePath, 0o770); err != nil {
+		s.internalError(w, err)
+		return
+	}
+	temp, err := os.CreateTemp(s.cfg.BackupStoragePath, ".import-*.tar.gz")
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	tempPath := temp.Name()
+	keepArchive := false
+	defer func() {
+		temp.Close()
+		if !keepArchive {
+			_ = os.Remove(tempPath)
+		}
+	}()
+	multipartReader, err := r.MultipartReader()
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_backup_archive", "请求必须使用 multipart/form-data")
+		return
+	}
+	volumeKey := ""
+	var size int64
+	fileFound := false
+	for {
+		part, partErr := multipartReader.NextPart()
+		if partErr == io.EOF {
+			break
+		}
+		if partErr != nil {
+			writeError(w, http.StatusBadRequest, "invalid_backup_archive", "无法读取上传文件")
+			return
+		}
+		switch part.FormName() {
+		case "volumeKey":
+			value, readErr := io.ReadAll(io.LimitReader(part, 1025))
+			if readErr != nil || len(value) > 1024 {
+				part.Close()
+				writeError(w, http.StatusBadRequest, "validation_failed", "数据卷标识无效")
+				return
+			}
+			volumeKey = strings.TrimSpace(string(value))
+		case "file":
+			if fileFound {
+				part.Close()
+				writeError(w, http.StatusBadRequest, "validation_failed", "一次只能导入一个备份文件")
+				return
+			}
+			fileFound = true
+			size, err = io.Copy(temp, io.LimitReader(part, maxBackupImportBytes+1))
+		}
+		part.Close()
+		if err != nil {
+			break
+		}
+	}
+	if volumeKey == "" || !fileFound {
+		writeError(w, http.StatusBadRequest, "validation_failed", "必须选择数据卷和 tar.gz 备份文件")
+		return
+	}
+	if err != nil || size == 0 || size > maxBackupImportBytes {
+		writeError(w, http.StatusBadRequest, "invalid_backup_archive", "备份文件必须为非空且不超过 2 GiB")
+		return
+	}
+	if err = temp.Sync(); err != nil {
+		s.internalError(w, err)
+		return
+	}
+	if err = temp.Close(); err != nil {
+		s.internalError(w, err)
+		return
+	}
+	if err = validateBackupArchive(tempPath); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_backup_archive", err.Error())
+		return
+	}
+
+	tx, err := s.db.BeginTx(r.Context(), pgx.TxOptions{IsoLevel: pgx.Serializable})
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	defer tx.Rollback(r.Context())
+	var runtimeSpec map[string]any
+	err = tx.QueryRow(r.Context(), `SELECT release.immutable_snapshot->'runtime_spec' FROM user_apps app
+		JOIN app_releases release ON release.id=app.last_successful_release_id
+		WHERE app.id=$1 AND app.user_id=$2 FOR UPDATE OF app`, appID, p.ID).Scan(&runtimeSpec)
+	if err == pgx.ErrNoRows {
+		writeError(w, http.StatusNotFound, "app_not_found", "application not found")
+		return
+	}
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	volumeFound := false
+	for _, mount := range runtimepolicy.VolumeMounts(runtimeSpec) {
+		if mount.Key == volumeKey {
+			volumeFound = true
+			break
+		}
+	}
+	if !volumeFound {
+		writeError(w, http.StatusBadRequest, "volume_not_found", "volume is not declared by the active release")
+		return
+	}
+	var activeBackup bool
+	if err = tx.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM app_backups WHERE user_app_id=$1 AND status IN ('queued','running'))`, appID).Scan(&activeBackup); err != nil {
+		s.internalError(w, err)
+		return
+	}
+	if activeBackup {
+		writeError(w, http.StatusConflict, "backup_in_progress", "应用已有备份任务，完成后才能导入归档")
+		return
+	}
+	capacityGiB, _ := runtimepolicy.RuntimeDataVolumeGiB(runtimeSpec, false)
+	var liveBytes, retainedBytes int64
+	if err = tx.QueryRow(r.Context(), `SELECT coalesce((SELECT sum(usage_bytes) FROM (
+		SELECT DISTINCT ON (volume_key) volume_key,usage_bytes FROM app_storage_metrics
+		WHERE user_app_id=$1 AND sampled_at>=now()-interval '15 minutes' ORDER BY volume_key,sampled_at DESC
+	) latest_metrics),0)::bigint,
+		coalesce((SELECT sum(backup.size_bytes) FROM app_backups backup LEFT JOIN app_backup_deletion_jobs deletion ON deletion.backup_id=backup.id
+		WHERE backup.user_app_id=$1 AND backup.status='succeeded' AND coalesce(deletion.status,'') <> 'succeeded'),0)::bigint`, appID).Scan(&liveBytes, &retainedBytes); err != nil {
+		s.internalError(w, err)
+		return
+	}
+	if backupStorageQuotaExceeded(fmt.Sprintf("%g", capacityGiB), liveBytes+retainedBytes, size) {
+		writeError(w, http.StatusConflict, "backup_capacity_exceeded", "导入归档会超过应用共享数据卷容量，请先删除旧备份或扩容")
+		return
+	}
+	var backupID, storageKey string
+	dockerVolume := runtimepolicy.AppVolumeNameForOwner(s.cfg.RuntimeOwner, appID, volumeKey)
+	if err = tx.QueryRow(r.Context(), `INSERT INTO app_backups(user_app_id,volume_key,docker_volume,storage_key,reserved_bytes)
+		VALUES($1,$2,$3,gen_random_uuid()::text||'.tar.gz',0) RETURNING id::text,storage_key`, appID, volumeKey, dockerVolume).Scan(&backupID, &storageKey); err != nil {
+		s.internalError(w, err)
+		return
+	}
+	archivePath, err := s.backupArchivePath(storageKey)
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	if err = os.Rename(tempPath, archivePath); err != nil {
+		s.internalError(w, err)
+		return
+	}
+	tempPath = archivePath
+	if _, err = tx.Exec(r.Context(), `UPDATE app_backups SET status='running' WHERE id=$1`, backupID); err == nil {
+		_, err = tx.Exec(r.Context(), `UPDATE app_backups SET status='succeeded',size_bytes=$2,completed_at=now(),last_error=NULL WHERE id=$1`, backupID, size)
+	}
+	if err == nil {
+		_, err = tx.Exec(r.Context(), `INSERT INTO audit_logs(actor_user_id,subject_user_id,action,resource_type,resource_id,request_id,metadata)
+			VALUES($1,$2,'backup.import','app_backup',$3,$4,jsonb_build_object('app_id',$5::text,'volume_key',$6::text,'size_bytes',$7::bigint))`, p.auditActorID(), p.ID, backupID, requestID(r.Context()), appID, volumeKey, size)
+	}
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	if err = tx.Commit(r.Context()); err != nil {
+		s.internalError(w, err)
+		return
+	}
+	keepArchive = true
+	writeJSON(w, http.StatusCreated, map[string]any{"backupId": backupID, "status": "succeeded", "sizeBytes": size})
+}
+
+func (s *Server) backupArchivePath(storageKey string) (string, error) {
+	if storageKey == "" || filepath.Base(storageKey) != storageKey || !strings.HasSuffix(storageKey, ".tar.gz") {
+		return "", fmt.Errorf("invalid backup storage key")
+	}
+	return filepath.Join(s.cfg.BackupStoragePath, storageKey), nil
+}
+
+func validateBackupArchive(filename string) error {
+	file, err := os.Open(filename)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	gz, err := gzip.NewReader(file)
+	if err != nil {
+		return fmt.Errorf("文件不是有效的 tar.gz 归档")
+	}
+	defer gz.Close()
+	reader := tar.NewReader(gz)
+	entries := 0
+	var expandedBytes int64
+	for {
+		header, nextErr := reader.Next()
+		if nextErr == io.EOF {
+			break
+		}
+		if nextErr != nil {
+			return fmt.Errorf("tar.gz 归档已损坏")
+		}
+		entries++
+		if entries > 1_000_000 || header.Size < 0 || expandedBytes > maxBackupExpandedBytes-header.Size {
+			return fmt.Errorf("归档解压后的数据过大或文件数量过多")
+		}
+		expandedBytes += header.Size
+		clean := path.Clean(strings.ReplaceAll(header.Name, "\\", "/"))
+		if clean == ".." || strings.HasPrefix(clean, "../") || path.IsAbs(clean) {
+			return fmt.Errorf("归档包含不安全的文件路径")
+		}
+		switch header.Typeflag {
+		case tar.TypeReg, tar.TypeRegA, tar.TypeDir:
+		default:
+			return fmt.Errorf("归档包含不支持的链接或设备文件")
+		}
+	}
+	if entries == 0 {
+		return fmt.Errorf("归档中没有可恢复的数据")
+	}
+	return nil
 }
 
 func (s *Server) createAppBackup(w http.ResponseWriter, r *http.Request) {
