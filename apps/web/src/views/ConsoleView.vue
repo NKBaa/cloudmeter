@@ -2770,7 +2770,6 @@ async function exitImpersonation() {
               <strong>{{ deployPort }}</strong>
               <small>由产品模板声明；Gateway、健康检查和端口映射会统一使用此端口</small>
             </label>
-            >
             <label v-if="deployMode === 'create'"
               >独立子域名刷新方式<select v-model="deployDomainPermanent">
                 <option :value="true">永久不变</option>
