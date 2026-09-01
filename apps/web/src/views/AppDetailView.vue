@@ -774,8 +774,18 @@ onMounted(load);
 <style scoped>
 .app-detail-page {
   display: grid;
+  grid-template-rows: max-content;
   gap: 14px;
+  align-content: start !important;
+  min-height: 0 !important;
+  height: auto;
   padding-bottom: 40px;
+}
+.app-detail-page > * {
+  align-self: start;
+}
+.app-main > .workspace.app-detail-page {
+  min-height: 0 !important;
 }
 .app-detail-header {
   display: flex;
@@ -843,6 +853,7 @@ onMounted(load);
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
+  align-items: start;
 }
 .status-card {
   display: flex;
@@ -852,6 +863,7 @@ onMounted(load);
   background: var(--paper);
   border: 1px solid var(--line);
   border-radius: 14px;
+  min-height: 0;
 }
 .status-icon {
   width: 38px;
@@ -902,6 +914,7 @@ onMounted(load);
   border: 1px solid var(--line);
   border-radius: 16px;
   padding: 20px 22px;
+  align-self: start;
 }
 .config-section {
 }
