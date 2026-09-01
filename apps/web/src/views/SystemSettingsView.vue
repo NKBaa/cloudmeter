@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
-import { Save, CheckCircle2, RotateCcw, KeyRound, Copy, Trash2, BookOpen } from "@lucide/vue";
+import { Save, CheckCircle2, RotateCcw, KeyRound, Copy, Trash2, BookOpen, X } from "@lucide/vue";
 import { api } from "../api";
 import { useSiteConfig, type SystemSettings } from "../site-config";
 
@@ -28,6 +28,7 @@ const llmKeyName = ref("默认自动化访问密钥");
 const generatedLLMKey = ref("");
 const llmKeyBusy = ref(false);
 const llmKeyMessage = ref("");
+const apiReferenceOpen = ref(false);
 
 async function loadLLMKey() {
   try {
@@ -184,7 +185,7 @@ onMounted(() => { Promise.all([load(), loadLLMKey()]); });
       <section class="nextdev-card p-0 llm-api-card">
         <div class="card-header-bar">
           <div class="card-title-group"><span class="eyebrow">OPEN API · 工具与自动化</span><h3>系统开放 API 与访问密钥</h3></div>
-          <span :class="['llm-key-state', llmKeyStatus.configured ? 'ready' : 'idle']">{{ llmKeyStatus.configured ? "已启用" : "未配置" }}</span>
+          <div class="llm-card-actions"><button class="secondary compact" type="button" @click="apiReferenceOpen = true"><BookOpen :size="16" />调用规范</button><span :class="['llm-key-state', llmKeyStatus.configured ? 'ready' : 'idle']">{{ llmKeyStatus.configured ? "已启用" : "未配置" }}</span></div>
         </div>
         <div class="card-divider"></div>
         <div class="llm-api-layout">
@@ -202,12 +203,6 @@ onMounted(() => { Promise.all([load(), loadLLMKey()]); });
               <button class="primary compact" type="button" :disabled="llmKeyBusy" @click="rotateLLMKey"><RotateCcw :size="16" />{{ llmKeyStatus.configured ? "轮换密钥" : "生成密钥" }}</button>
               <button v-if="llmKeyStatus.configured" class="secondary compact danger-action" type="button" :disabled="llmKeyBusy" @click="revokeLLMKey"><Trash2 :size="16" />撤销密钥</button>
             </div>
-          </div>
-          <div class="llm-api-reference">
-            <div class="llm-reference-heading"><BookOpen :size="18" /><div><strong>调用规范</strong><p>使用 Bearer 密钥访问版本化接口。</p></div></div>
-            <div class="llm-code-block"><span>鉴权请求头</span><code>Authorization: Bearer cm_api_...</code></div>
-            <div class="llm-endpoints"><div><code>GET /api/automation/v1/analysis</code><small>系统设置与运行汇总分析</small></div><div><code>GET /api/automation/v1/settings/system</code><small>读取系统展示设置</small></div><div><code>PATCH /api/automation/v1/settings/system</code><small>修改白名单内的系统设置</small></div><div><code>GET/PATCH /api/automation/v1/users</code><small>读取用户并修改显示名或状态</small></div><div><code>GET /api/automation/v1/logs/audit</code><small>读取最近审计日志</small></div><div><code>GET/POST /api/automation/v1/database/*</code><small>数据库摘要与白名单维护</small></div></div>
-            <p class="llm-safety-note">调用方可按规范维护系统设置、用户状态、运行日志和数据库统计，但不能读取或修改用户密码、会话、支付凭据、应用 Secret、网站 TLS 与 DNS 凭据，也不能执行任意 SQL。所有写入都会进入审计日志。</p>
           </div>
         </div>
       </section>
@@ -266,6 +261,7 @@ onMounted(() => { Promise.all([load(), loadLLMKey()]); });
         </div>
       </section>
     </div>
+    <Teleport to="body"><Transition name="dialog-fade"><div v-if="apiReferenceOpen" class="dialog-backdrop" @click.self="apiReferenceOpen = false"><section class="dialog-panel api-reference-dialog" role="dialog" aria-modal="true" aria-labelledby="api-reference-title"><header><div><p class="eyebrow">OPEN API · 接口文档</p><h2 id="api-reference-title">调用规范</h2><p>使用 Bearer 访问密钥调用版本化的工具与自动化接口。</p></div><button class="api-dialog-close" type="button" title="关闭" aria-label="关闭调用规范" @click="apiReferenceOpen = false"><X :size="18" /></button></header><div class="api-reference-body"><div class="llm-code-block"><span>鉴权请求头</span><code>Authorization: Bearer cm_api_...</code></div><div class="llm-endpoints"><div><code>GET /api/automation/v1/analysis</code><small>系统设置与运行汇总分析</small></div><div><code>GET /api/automation/v1/settings/system</code><small>读取系统展示设置</small></div><div><code>PATCH /api/automation/v1/settings/system</code><small>修改白名单内的系统设置</small></div><div><code>GET/PATCH /api/automation/v1/users</code><small>读取用户并修改显示名或状态</small></div><div><code>GET /api/automation/v1/logs/audit</code><small>读取最近审计日志</small></div><div><code>POST /api/automation/v1/logs/runtime/clear</code><small>清理应用运行日志</small></div><div><code>GET/POST /api/automation/v1/database/*</code><small>数据库摘要与白名单维护</small></div></div><p class="llm-safety-note">调用方可按规范维护系统设置、用户状态、运行日志和数据库统计，但不能读取或修改用户密码、会话、支付凭据、应用 Secret、网站 TLS 与 DNS 凭据，也不能执行任意 SQL。所有写入都会进入审计日志。</p></div></section></div></Transition></Teleport>
   </main>
 </template>
 
@@ -342,9 +338,10 @@ onMounted(() => { Promise.all([load(), loadLLMKey()]); });
 .llm-key-state { padding: 5px 8px; border-radius: 6px; font-size: 10px; font-weight: 700; }
 .llm-key-state.ready { color: var(--accent); background: var(--accent-soft); }
 .llm-key-state.idle { color: var(--text-muted); background: var(--surface); }
-.llm-api-layout { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(340px, .95fr); }
+.llm-card-actions { display: flex; align-items: center; gap: 9px; }
+.llm-api-layout { display: grid; grid-template-columns: minmax(0, 1fr); }
 .llm-key-panel, .llm-api-reference { min-width: 0; display: grid; align-content: start; gap: 17px; padding: 22px 24px; }
-.llm-key-panel { border-right: 1px solid var(--line); }
+.llm-key-panel { max-width: 760px; }
 .llm-key-heading, .llm-reference-heading { display: flex; align-items: flex-start; gap: 10px; }
 .llm-key-heading > svg, .llm-reference-heading > svg { color: var(--accent); }
 .llm-key-heading strong, .llm-reference-heading strong { font-size: 13px; }
@@ -368,7 +365,12 @@ onMounted(() => { Promise.all([load(), loadLLMKey()]); });
 .llm-endpoints div { display: grid; gap: 4px; padding: 11px 12px; border-bottom: 1px solid var(--line); }
 .llm-endpoints div:last-child { border-bottom: 0; } .llm-endpoints code { font-size: 10px; } .llm-endpoints small { color: var(--text-muted); font-size: 9px; }
 .llm-safety-note { margin: 0; color: var(--text-muted); font-size: 10px; line-height: 1.6; }
-@media (max-width: 860px) { .llm-api-layout { grid-template-columns: 1fr; } .llm-key-panel { border-right: 0; border-bottom: 1px solid var(--line); } }
+.api-reference-dialog { width: min(760px, calc(100vw - 32px)); max-width: 760px; max-height: min(760px, calc(100vh - 48px)); padding: 0; overflow: hidden; }
+.api-reference-dialog > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
+.api-reference-dialog > header p:last-child { margin: 5px 0 0; color: var(--text-muted); font-size: 11px; }
+.api-dialog-close { width: 34px; height: 34px; flex: 0 0 auto; display: grid; place-items: center; padding: 0; color: var(--text-muted); background: var(--surface); border: 1px solid var(--line); border-radius: 7px; }
+.api-reference-body { display: grid; gap: 16px; max-height: calc(100vh - 190px); padding: 20px 24px 24px; overflow-y: auto; }
+@media (max-width: 680px) { .llm-card-actions { align-items: flex-end; flex-direction: column-reverse; } .api-reference-dialog { width: 100%; max-height: 100vh; border-radius: 0; } .api-reference-body { max-height: calc(100vh - 130px); padding: 18px 16px; } }
 @media (min-width: 768px) {
   .md\:grid-cols-2 {
     grid-template-columns: repeat(2, minmax(0, 1fr));
