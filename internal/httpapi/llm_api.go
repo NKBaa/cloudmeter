@@ -217,3 +217,151 @@ func (s *Server) llmPatchSystemSettings(w http.ResponseWriter, r *http.Request) 
 	}
 	s.getSystemSettings(w, r)
 }
+
+func (s *Server) llmListUsers(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.db.Query(r.Context(), "SELECT id::text,email,display_name,status,created_at,updated_at FROM users ORDER BY created_at DESC LIMIT 100")
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	defer rows.Close()
+	out := []map[string]any{}
+	for rows.Next() {
+		var id, email, name, status string
+		var created, updated time.Time
+		if err := rows.Scan(&id, &email, &name, &status, &created, &updated); err != nil {
+			s.internalError(w, err)
+			return
+		}
+		out = append(out, map[string]any{"id": id, "email": email, "displayName": name, "status": status, "createdAt": created, "updatedAt": updated})
+	}
+	writeJSON(w, 200, map[string]any{"users": out})
+}
+
+func (s *Server) llmPatchUser(w http.ResponseWriter, r *http.Request) {
+	p, _ := r.Context().Value(principalKey).(principal)
+	id := r.PathValue("userID")
+	if !validUUID(id) {
+		writeError(w, 400, "validation_failed", "userID must be a UUID")
+		return
+	}
+	var q struct {
+		DisplayName *string
+		Status      *string
+	}
+	if err := decodeJSON(r, &q); err != nil {
+		writeError(w, 400, "invalid_request", err.Error())
+		return
+	}
+	if q.DisplayName == nil && q.Status == nil {
+		writeError(w, 400, "validation_failed", "provide displayName or status")
+		return
+	}
+	if q.Status != nil && *q.Status != "active" && *q.Status != "suspended" {
+		writeError(w, 400, "validation_failed", "status must be active or suspended")
+		return
+	}
+	fields := []string{}
+	args := []any{}
+	if q.DisplayName != nil {
+		fields = append(fields, fmt.Sprintf("display_name=$%d", len(args)+1))
+		args = append(args, strings.TrimSpace(*q.DisplayName))
+	}
+	if q.Status != nil {
+		fields = append(fields, fmt.Sprintf("status=$%d", len(args)+1))
+		args = append(args, *q.Status)
+	}
+	args = append(args, id)
+	tx, err := s.db.Begin(r.Context())
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	defer tx.Rollback(r.Context())
+	res, err := tx.Exec(r.Context(), fmt.Sprintf("UPDATE users SET %s,updated_at=now() WHERE id=$%d", strings.Join(fields, ","), len(args)), args...)
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	if res.RowsAffected() == 0 {
+		writeError(w, 404, "user_not_found", "user not found")
+		return
+	}
+	if q.Status != nil && *q.Status == "suspended" {
+		_, _ = tx.Exec(r.Context(), "UPDATE sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL", id)
+	}
+	if _, err = tx.Exec(r.Context(), "INSERT INTO audit_logs(actor_user_id,subject_user_id,action,resource_type,resource_id,request_id) VALUES($1,$2,'llm.user.update','user',$2,$3)", p.ID, id, requestID(r.Context())); err != nil {
+		s.internalError(w, err)
+		return
+	}
+	if err = tx.Commit(r.Context()); err != nil {
+		s.internalError(w, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"updated": true, "userId": id})
+}
+
+func (s *Server) llmListAuditLogs(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.db.Query(r.Context(), "SELECT id,action,resource_type,resource_id,request_id,metadata,created_at FROM audit_logs ORDER BY id DESC LIMIT 100")
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	defer rows.Close()
+	out := []map[string]any{}
+	for rows.Next() {
+		var id int64
+		var action, typ, req string
+		var rid *string
+		var metadata map[string]any
+		var created time.Time
+		if err := rows.Scan(&id, &action, &typ, &rid, &req, &metadata, &created); err != nil {
+			s.internalError(w, err)
+			return
+		}
+		out = append(out, map[string]any{"id": id, "action": action, "resourceType": typ, "resourceId": rid, "requestId": req, "metadata": metadata, "createdAt": created})
+	}
+	writeJSON(w, 200, map[string]any{"logs": out})
+}
+func (s *Server) llmClearRuntimeLogs(w http.ResponseWriter, r *http.Request) {
+	s.clearRuntimeLogs(w, r)
+}
+func (s *Server) llmDatabaseSummary(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.db.Query(r.Context(), "SELECT table_name FROM information_schema.tables WHERE table_schema='public' ORDER BY table_name")
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			s.internalError(w, err)
+			return
+		}
+		out = append(out, n)
+	}
+	writeJSON(w, 200, map[string]any{"database": "postgresql", "tables": out, "policy": "仅允许版本化白名单维护，不提供任意 SQL"})
+}
+func (s *Server) llmDatabaseMaintenance(w http.ResponseWriter, r *http.Request) {
+	p, _ := r.Context().Value(principalKey).(principal)
+	var q struct{ Operation string }
+	if err := decodeJSON(r, &q); err != nil {
+		writeError(w, 400, "invalid_request", err.Error())
+		return
+	}
+	if q.Operation != "analyze" {
+		writeError(w, 400, "validation_failed", "operation must be analyze")
+		return
+	}
+	if _, err := s.db.Exec(r.Context(), "ANALYZE"); err != nil {
+		s.internalError(w, err)
+		return
+	}
+	if _, err := s.db.Exec(r.Context(), "INSERT INTO audit_logs(actor_user_id,action,resource_type,resource_id,request_id) VALUES($1,'llm.database.maintenance','database','public',$2)", p.ID, requestID(r.Context())); err != nil {
+		s.internalError(w, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"completed": true, "operation": q.Operation})
+}

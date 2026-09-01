@@ -207,7 +207,7 @@ onMounted(() => { Promise.all([load(), loadLLMKey()]); });
             <div class="llm-reference-heading"><BookOpen :size="18" /><div><strong>调用规范</strong><p>使用 Bearer 密钥访问版本化接口。</p></div></div>
             <div class="llm-code-block"><span>鉴权请求头</span><code>Authorization: Bearer cm_llm_...</code></div>
             <div class="llm-endpoints"><div><code>GET /api/llm/v1/analysis</code><small>系统设置与运行汇总分析</small></div><div><code>GET /api/llm/v1/settings/system</code><small>读取系统展示设置</small></div><div><code>PATCH /api/llm/v1/settings/system</code><small>修改允许的大模型写入字段</small></div></div>
-            <p class="llm-safety-note">模型不能通过该接口读取或修改用户密码、会话、支付凭据、应用 Secret、网站 TLS 与 DNS 凭据。所有写入都会进入审计日志。</p>
+            <p class="llm-safety-note">模型可按规范维护用户状态、运行日志和数据库统计，但不能读取或修改用户密码、会话、支付凭据、应用 Secret、网站 TLS 与 DNS 凭据，也不能执行任意 SQL。所有写入都会进入审计日志。</p>
           </div>
         </div>
       </section>

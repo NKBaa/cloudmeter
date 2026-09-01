@@ -898,22 +898,60 @@ paths:
         required: true
         content:
           application/json:
-            schema:
-              type: object
-              minProperties: 1
-              additionalProperties: false
-              properties:
-                systemName: {type: string, minLength: 1, maxLength: 64}
-                logoUrl: {type: string}
-                footerText: {type: string}
-                aboutContent: {type: string}
-                homepageContent: {type: string}
-                termsOfService: {type: string}
-                privacyPolicy: {type: string}
+            schema: {type: object, minProperties: 1, additionalProperties: false}
       responses:
         '200': {description: Allowed platform display settings updated and audited}
         '400': {description: Invalid or unsupported update}
         '401': {description: LLM API key is invalid or revoked}
+  /llm/v1/users:
+    get:
+      operationId: llmListUsers
+      security: [{llmApiKey: []}]
+      responses: {'200': {description: Sanitized user list without credentials}}
+  /llm/v1/users/{userID}:
+    patch:
+      operationId: llmPatchUser
+      security: [{llmApiKey: []}]
+      parameters: [{name: userID, in: path, required: true, schema: {type: string, format: uuid}}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                displayName: {type: string, minLength: 1, maxLength: 120}
+                status: {type: string, enum: [active, suspended]}
+      responses:
+        '200': {description: User profile or status updated and audited}
+        '400': {description: Invalid update}
+        '404': {description: User not found}
+  /llm/v1/logs/audit:
+    get:
+      operationId: llmListAuditLogs
+      security: [{llmApiKey: []}]
+      responses: {'200': {description: Recent audit events with metadata}}
+  /llm/v1/logs/runtime/clear:
+    post:
+      operationId: llmClearRuntimeLogs
+      security: [{llmApiKey: []}]
+      responses: {'200': {description: Application runtime logs cleared and audited}}
+  /llm/v1/database/summary:
+    get:
+      operationId: llmDatabaseSummary
+      security: [{llmApiKey: []}]
+      responses: {'200': {description: Database engine and public table inventory without row data}}
+  /llm/v1/database/maintenance:
+    post:
+      operationId: llmDatabaseMaintenance
+      security: [{llmApiKey: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, required: [operation], properties: {operation: {type: string, enum: [analyze]}}}
+      responses: {'200': {description: Whitelisted database maintenance completed and audited}}
   /admin/caddy/overview:
     get:
       operationId: getCaddyOverview

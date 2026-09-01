@@ -85,3 +85,16 @@ curl -sS -X PATCH "$CLOUDMETER_URL/api/llm/v1/settings/system" \
 4. 收到 `400` 时根据错误信息修正参数，不重复提交相同无效请求。
 5. 收到 `401` 时停止调用并通知管理员轮换或重新配置密钥。
 6. 对首页 HTML、协议和隐私政策的变更应保留原意，避免注入脚本和不受信任的外部内容。
+
+## 8. 用户、日志与数据库运维
+
+受信任的模型还可以使用以下管理接口。它们仍然只接受 `cm_llm_` 密钥，并且每次写操作都会写入审计日志。
+
+- `GET /users`：读取脱敏用户清单（不含密码、角色细节、钱包和会话）。
+- `PATCH /users/{userID}`：修改 `displayName` 或 `status`（仅允许 `active`、`suspended`）。暂停用户会撤销其现有会话。
+- `GET /logs/audit`：读取最近 100 条审计事件。
+- `POST /logs/runtime/clear`：清理应用运行日志。
+- `GET /database/summary`：查看 PostgreSQL 类型和公开表名，不返回行数据。
+- `POST /database/maintenance`：执行白名单维护操作，目前仅支持 `operation=analyze`。
+
+接口不会提供任意 SQL、建表/删表、原始日志批量篡改、用户密码重置、超级管理员角色变更、支付或应用 Secret 读写能力。
