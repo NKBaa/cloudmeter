@@ -1020,12 +1020,8 @@ func selectedRouteSpec(template map[string]any, selected selectedResources) (map
 	if err = json.Unmarshal(encoded, &result); err != nil {
 		return nil, err
 	}
-	if selected.ContainerPort != nil {
-		if *selected.ContainerPort < 1 || *selected.ContainerPort > 65535 {
-			return nil, fmt.Errorf("container port must be between 1 and 65535")
-		}
-		result["containerPort"] = float64(*selected.ContainerPort)
-	}
+	// The internal listener is part of the published product contract.
+	// User resource overrides may not change the port used by Gateway/health checks.
 	if err = normalizeRouteSpec(result); err != nil {
 		return nil, err
 	}

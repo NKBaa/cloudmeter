@@ -2764,17 +2764,12 @@ async function exitImpersonation() {
                 }}</small
               ></label
             >
-            <label
-              >应用监听端口<input
-                v-model.number="deployPort"
-                type="number"
-                min="1"
-                max="65535"
-                step="1"
-                required
-              /><small
-                >选择容器内应用实际监听的端口；Gateway、健康检查和可选直连映射会同步使用该端口</small
-              ></label
+            <label class="readonly-field">
+              <span class="readonly-tag">模板固定</span>
+              <span class="ro-label">应用监听端口</span>
+              <strong>{{ deployPort }}</strong>
+              <small>由产品模板声明；Gateway、健康检查和端口映射会统一使用此端口</small>
+            </label>
             >
             <label v-if="deployMode === 'create'"
               >独立子域名刷新方式<select v-model="deployDomainPermanent">

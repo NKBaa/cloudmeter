@@ -2,7 +2,7 @@ package httpapi
 
 import "testing"
 
-func TestSelectedRouteSpecUsesDefaultOrSelectedInternalPort(t *testing.T) {
+func TestSelectedRouteSpecUsesTemplateInternalPort(t *testing.T) {
 	fixed := map[string]any{"containerPort": 8080.0}
 	selected, err := selectedRouteSpec(fixed, selectedResources{})
 	if err != nil {
@@ -20,12 +20,13 @@ func TestSelectedRouteSpecUsesDefaultOrSelectedInternalPort(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if selected["containerPort"] != 3000.0 {
-		t.Fatalf("selected override=%v", selected)
+	if selected["containerPort"] != 8080.0 {
+		t.Fatalf("template port was overridden=%v", selected)
 	}
 	invalid := 0
-	if _, err = selectedRouteSpec(fixed, selectedResources{ContainerPort: &invalid}); err == nil {
-		t.Fatal("invalid selected container port was accepted")
+	selected, err = selectedRouteSpec(fixed, selectedResources{ContainerPort: &invalid})
+	if err != nil || selected["containerPort"] != 8080.0 {
+		t.Fatalf("invalid user port changed template port: selected=%v err=%v", selected, err)
 	}
 }
 
