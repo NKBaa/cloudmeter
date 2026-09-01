@@ -1747,6 +1747,15 @@ func processOne(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
 		routePort := routePort(snap.Route)
 		mapping := routePortMapping(snap.Route, routePort, portMappingEnabled)
 		if mapping != nil {
+			if hostPort, allocateErr := allocateConfiguredHostPort(ctx, tx); allocateErr != nil {
+				tx.Rollback(ctx)
+				markJobError(ctx, db, id, allocateErr, logger)
+				return
+			} else {
+				mapping.HostPort = hostPort
+			}
+		}
+		if mapping != nil {
 			logger.Info("port mapping enabled for deployment", "app", appID, "internal", mapping.InternalPort)
 		}
 		containerID, err := executor.Create(ctx, name, image, runtimepolicy.UserNetworkName(runtimeOwner, userID), []string{serviceSlug, releaseAlias(releaseID)}, snap.Runtime, mapping)
@@ -2229,6 +2238,27 @@ func routePortMapping(routeSpec map[string]any, internalPort int, userEnabled bo
 		return nil
 	}
 	return &runtimepolicy.PortMapping{Enabled: true, InternalPort: internalPort, HostPort: 0}
+}
+
+func allocateConfiguredHostPort(ctx context.Context, tx pgx.Tx) (int, error) {
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, int64(918273645)); err != nil {
+		return 0, err
+	}
+	var minPort, maxPort int
+	if err := tx.QueryRow(ctx, `SELECT host_port_min,host_port_max FROM system_settings WHERE singleton`).Scan(&minPort, &maxPort); err != nil {
+		return 0, err
+	}
+	var port int
+	err := tx.QueryRow(ctx, `SELECT candidate FROM generate_series($1,$2) candidate
+		WHERE NOT EXISTS (SELECT 1 FROM app_routes WHERE host_port=candidate)
+		ORDER BY candidate LIMIT 1`, minPort, maxPort).Scan(&port)
+	if err == pgx.ErrNoRows {
+		return 0, fmt.Errorf("configured application port range is exhausted")
+	}
+	if err != nil {
+		return 0, err
+	}
+	return port, nil
 }
 
 func unavailableRuntimeDependencies(ctx context.Context, tx pgx.Tx, userID, appID string, runtimeSpec map[string]any) ([]string, error) {

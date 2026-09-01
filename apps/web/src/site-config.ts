@@ -11,6 +11,8 @@ export interface SystemSettings {
   homepageContent: string;
   termsOfService: string;
   privacyPolicy: string;
+  hostPortMin: number;
+  hostPortMax: number;
   updatedAt?: string;
 }
 

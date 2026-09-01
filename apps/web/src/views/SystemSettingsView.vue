@@ -15,6 +15,8 @@ const form = ref<SystemSettings>({
   homepageContent: "",
   termsOfService: "",
   privacyPolicy: "",
+  hostPortMin: 30000,
+  hostPortMax: 40000,
 });
 
 const loading = ref(false);
@@ -178,6 +180,14 @@ onMounted(() => { Promise.all([load(), loadLLMKey()]); });
             <label>徽标 URL</label>
             <input v-model="form.logoUrl" placeholder="您的徽标图片 URL（可选）" />
             <em>自定义您的平台展示 Logo</em>
+          </div>
+          <div class="log-field mt-5">
+            <label>应用直连端口范围</label>
+            <div class="field-row">
+              <input v-model.number="form.hostPortMin" type="number" min="1" max="65535" step="1" placeholder="起始端口" />
+              <input v-model.number="form.hostPortMax" type="number" min="1" max="65535" step="1" placeholder="结束端口" />
+            </div>
+            <em>启用端口映射时，系统只会从此范围自动分配宿主机端口。</em>
           </div>
         </div>
       </section>

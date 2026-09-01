@@ -20,13 +20,15 @@ type SystemSettingsResponse struct {
 	HomepageContent string    `json:"homepageContent"`
 	TermsOfService  string    `json:"termsOfService"`
 	PrivacyPolicy   string    `json:"privacyPolicy"`
+	HostPortMin     int       `json:"hostPortMin"`
+	HostPortMax     int       `json:"hostPortMax"`
 	UpdatedAt       time.Time `json:"updatedAt"`
 }
 
 func (s *Server) getSystemSettingsPublic(w http.ResponseWriter, r *http.Request) {
 	var res SystemSettingsResponse
-	err := s.db.QueryRow(r.Context(), "SELECT system_name, server_url, coalesce(app_base_domain, ''), logo_url, footer_text, about_content, homepage_content, terms_of_service, privacy_policy, updated_at FROM system_settings WHERE singleton").
-		Scan(&res.SystemName, &res.ServerURL, &res.AppBaseDomain, &res.LogoURL, &res.FooterText, &res.AboutContent, &res.HomepageContent, &res.TermsOfService, &res.PrivacyPolicy, &res.UpdatedAt)
+	err := s.db.QueryRow(r.Context(), "SELECT system_name, server_url, coalesce(app_base_domain, ''), logo_url, footer_text, about_content, homepage_content, terms_of_service, privacy_policy, host_port_min, host_port_max, updated_at FROM system_settings WHERE singleton").
+		Scan(&res.SystemName, &res.ServerURL, &res.AppBaseDomain, &res.LogoURL, &res.FooterText, &res.AboutContent, &res.HomepageContent, &res.TermsOfService, &res.PrivacyPolicy, &res.HostPortMin, &res.HostPortMax, &res.UpdatedAt)
 
 	if err != nil {
 		res.SystemName = "CloudMeter"
@@ -41,8 +43,8 @@ func (s *Server) getSystemSettingsPublic(w http.ResponseWriter, r *http.Request)
 
 func (s *Server) getSystemSettings(w http.ResponseWriter, r *http.Request) {
 	var res SystemSettingsResponse
-	err := s.db.QueryRow(r.Context(), "SELECT system_name, server_url, coalesce(app_base_domain, ''), logo_url, footer_text, about_content, homepage_content, terms_of_service, privacy_policy, updated_at FROM system_settings WHERE singleton").
-		Scan(&res.SystemName, &res.ServerURL, &res.AppBaseDomain, &res.LogoURL, &res.FooterText, &res.AboutContent, &res.HomepageContent, &res.TermsOfService, &res.PrivacyPolicy, &res.UpdatedAt)
+	err := s.db.QueryRow(r.Context(), "SELECT system_name, server_url, coalesce(app_base_domain, ''), logo_url, footer_text, about_content, homepage_content, terms_of_service, privacy_policy, host_port_min, host_port_max, updated_at FROM system_settings WHERE singleton").
+		Scan(&res.SystemName, &res.ServerURL, &res.AppBaseDomain, &res.LogoURL, &res.FooterText, &res.AboutContent, &res.HomepageContent, &res.TermsOfService, &res.PrivacyPolicy, &res.HostPortMin, &res.HostPortMax, &res.UpdatedAt)
 
 	if err != nil {
 		s.internalError(w, err)
@@ -69,6 +71,8 @@ func (s *Server) updateSystemSettings(w http.ResponseWriter, r *http.Request) {
 		HomepageContent string `json:"homepageContent"`
 		TermsOfService  string `json:"termsOfService"`
 		PrivacyPolicy   string `json:"privacyPolicy"`
+		HostPortMin     int    `json:"hostPortMin"`
+		HostPortMax     int    `json:"hostPortMax"`
 	}
 	if err := decodeJSON(r, &q); err != nil {
 		writeError(w, 400, "invalid_request", err.Error())
@@ -91,6 +95,10 @@ func (s *Server) updateSystemSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q.AppBaseDomain = appBaseDomain
+	if q.HostPortMin < 1 || q.HostPortMax > 65535 || q.HostPortMin > q.HostPortMax {
+		writeError(w, 400, "validation_failed", "应用分配端口范围必须是 1 到 65535，且起始端口不得大于结束端口")
+		return
+	}
 
 	tx, err := s.db.Begin(r.Context())
 	if err != nil {
@@ -105,12 +113,12 @@ func (s *Server) updateSystemSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if _, err = tx.Exec(r.Context(), `
-		INSERT INTO system_settings(singleton, system_name, server_url, app_base_domain, logo_url, footer_text, about_content, homepage_content, terms_of_service, privacy_policy, updated_at, updated_by)
-		VALUES (true, $1, $2, $3, $4, $5, $6, $7, $8, $9, now(), $10)
+		INSERT INTO system_settings(singleton, system_name, server_url, app_base_domain, logo_url, footer_text, about_content, homepage_content, terms_of_service, privacy_policy, host_port_min, host_port_max, updated_at, updated_by)
+		VALUES (true, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now(), $12)
 		ON CONFLICT (singleton) DO UPDATE SET
 			system_name=$1, server_url=$2, app_base_domain=$3, logo_url=$4, footer_text=$5, about_content=$6, homepage_content=$7, terms_of_service=$8, privacy_policy=$9,
-			updated_at=now(), updated_by=$10
-	`, q.SystemName, q.ServerURL, q.AppBaseDomain, q.LogoURL, q.FooterText, q.AboutContent, q.HomepageContent, q.TermsOfService, q.PrivacyPolicy, p.ID); err != nil {
+			host_port_min=$10, host_port_max=$11, updated_at=now(), updated_by=$12
+	`, q.SystemName, q.ServerURL, q.AppBaseDomain, q.LogoURL, q.FooterText, q.AboutContent, q.HomepageContent, q.TermsOfService, q.PrivacyPolicy, q.HostPortMin, q.HostPortMax, p.ID); err != nil {
 		s.internalError(w, err)
 		return
 	}
@@ -151,6 +159,8 @@ func (s *Server) updateSystemSettings(w http.ResponseWriter, r *http.Request) {
 		HomepageContent: q.HomepageContent,
 		TermsOfService:  q.TermsOfService,
 		PrivacyPolicy:   q.PrivacyPolicy,
+		HostPortMin:     q.HostPortMin,
+		HostPortMax:     q.HostPortMax,
 		UpdatedAt:       time.Now(),
 	})
 }
