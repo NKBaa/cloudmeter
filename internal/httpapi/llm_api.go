@@ -261,6 +261,10 @@ func (s *Server) llmPatchUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "validation_failed", "status must be active or suspended")
 		return
 	}
+	if q.Status != nil && *q.Status == "suspended" && id == p.ID {
+		writeError(w, http.StatusConflict, "cannot_suspend_self", "不能暂停当前 API 所属管理员")
+		return
+	}
 	fields := []string{}
 	args := []any{}
 	if q.DisplayName != nil {
@@ -278,6 +282,23 @@ func (s *Server) llmPatchUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
+	if q.Status != nil && *q.Status == "suspended" {
+		var privileged, activeSuperAdmins int
+		if err = tx.QueryRow(r.Context(), `SELECT CASE WHEN EXISTS(SELECT 1 FROM user_roles ur JOIN roles r ON r.id=ur.role_id WHERE ur.user_id=$1 AND r.code='super_admin') THEN 1 ELSE 0 END`, id).Scan(&privileged); err != nil {
+			s.internalError(w, err)
+			return
+		}
+		if privileged == 1 {
+			if err = tx.QueryRow(r.Context(), `SELECT count(*) FROM users u JOIN user_roles ur ON ur.user_id=u.id JOIN roles r ON r.id=ur.role_id WHERE r.code='super_admin' AND u.status='active'`).Scan(&activeSuperAdmins); err != nil {
+				s.internalError(w, err)
+				return
+			}
+			if activeSuperAdmins <= 1 {
+				writeError(w, http.StatusConflict, "last_super_admin", "不能暂停最后一个活跃超级管理员")
+				return
+			}
+		}
+	}
 	res, err := tx.Exec(r.Context(), fmt.Sprintf("UPDATE users SET %s,updated_at=now() WHERE id=$%d", strings.Join(fields, ","), len(args)), args...)
 	if err != nil {
 		s.internalError(w, err)
