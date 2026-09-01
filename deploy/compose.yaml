@@ -75,7 +75,7 @@ services:
     logging: *default-logging
     build:
       context: ..
-      dockerfile: deploy/Dockerfile.web.prebuilt
+      dockerfile: deploy/Dockerfile.web
     restart: unless-stopped
     ports:
       - "${PLATFORM_BIND_IP:-0.0.0.0}:${PLATFORM_PORT:-8080}:8080"

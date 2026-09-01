@@ -15,6 +15,7 @@ CloudMeter 采用**单公网端口拓扑设计**：除了入口 Gateway 之外�
 6. [外层反向代理与 HTTPS](#6-外层反向代理与-https)
 7. [平台升级与数据平滑迁移](#7-平台升级与数据平滑迁移)
 8. [日常运维与故障排查](#8-日常运维与故障排查)
+9. [构建与离线交付产物](#9-构建与离线交付产物)
 
 ---
 
@@ -79,31 +80,19 @@ docker pull alpine
 
 ## 2. 代码获取与密钥配置
 
-### 2.1 获取源码（私有仓库，无预构建镜像）
+### 2.1 获取源码
 
-仓库 `NKBaa/cloudmeter` 为**私有仓库**，且 GitHub 上**未发布预构建镜像**（`docker pull` 不可用）。因此所有镜像必须在部署机上**从源码本地构建**——Compose 中每个服务均声明了 `build:` 上下文，`up -d --build` 会自动完成构建。
+联网部署机直接从 GitHub 主线克隆；私有仓库需先配置 GitHub 凭据或 SSH Key：
 
-获取源码二选一：
+```bash
+git clone https://github.com/NKBaa/cloudmeter.git
+cd cloudmeter
+git switch main
+```
 
-- **方式 A（推荐，私有仓库）**：在本地将项目源码打包（排除 `.git`、`node_modules`、`apps/web/dist` 等产物），复制到部署机后解压，再执行 `cd cloudmeter`。
+无外网部署使用第 9 节生成的 `cloudmeter-source-<版本>.tar.gz` 与 `cloudmeter-images-<版本>.tar`。源码包包含 Compose、迁移、前后端源码及文档；镜像包包含平台服务和运行所需的固定基础镜像。
 
-  ```bash
-  # Windows 侧示例：项目根目录打包
-  tar --exclude='.git' --exclude='node_modules' --exclude='apps/web/dist' -czf cloudmeter-src.tar.gz -C C:/Users/www34/Desktop/云部署 .
-
-  # 复制并解压到 WSL
-  wsl -d Ubuntu-24.04 -e cp /mnt/c/Users/www34/Desktop/云部署/cloudmeter-src.tar.gz /opt/
-  wsl -d Ubuntu-24.04 -e bash -lc "mkdir -p /opt/cloudmeter && tar -xzf /opt/cloudmeter-src.tar.gz -C /opt/cloudmeter && cd /opt/cloudmeter"
-  ```
-
-- **方式 B**：部署机上已配置 GitHub 凭据后直接克隆：
-
-  ```bash
-  git clone https://github.com/NKBaa/cloudmeter.git
-  cd cloudmeter
-  ```
-
-> **提示**：Compose 文件位于 `deploy/` 子目录，**所有 compose 命令都必须显式指定 `--env-file .env`**，否则会因找不到变量而报 `required variable ... is missing a value`。首次 `--build` 会本地构建 api / web / gateway / app-router / egress-proxy 等镜像，耗时约 5–15 分钟（视网络而定），之后增量构建仅需数秒。Gateway 使用自定义 Caddy 镜像，内置 Cloudflare、阿里云 DNS、腾讯云 DNSPod、AWS Route 53 和 DigitalOcean 插件；自动证书统一通过 DNS-01 验证，DNS API 凭据在数据库中加密保存。
+> **提示**：Compose 文件位于 `deploy/` 子目录，所有命令都必须显式指定 `--env-file .env`。正式 Compose 使用 `deploy/Dockerfile.web` 在镜像内完成前端构建，GitHub 克隆后不需要预先存在 `apps/web/dist`。`Dockerfile.web.prebuilt` 仅供已经生成本地前端产物的开发/验收流程使用。Gateway 内置 Cloudflare、阿里云 DNS、腾讯云 DNSPod、AWS Route 53 和 DigitalOcean DNS 插件。
 
 ### 2.2 准备配置文件 `.env`
 
@@ -143,6 +132,8 @@ openssl rand -base64 32 | tr -d '=\n'
 | `PLATFORM_PORT` | 模式 2 的控制台独立端口 | `8080` |
 | `GATEWAY_BIND_IP` | Caddy 80/443 的宿主机监听地址 | `0.0.0.0` |
 | `GATEWAY_ACCESS_MODE` | 可选的访问模式强制值：`apps_only`（模式 2）或 `all_caddy`（模式 1）；留空时可在网站设置切换 | 留空，数据库默认 `apps_only` |
+| `BACKUP_STORAGE_VOLUME` | Worker 用于备份归档的 Docker 卷名 | 正式环境 `cloudmeter_backup_data` |
+| `BACKUP_STORAGE_MOUNT_VOLUME` | API 导入/导出所挂载的同一个备份卷 | 必须与上项一致 |
 
 应用访问域名不复用控制台地址。部署完成后由超级管理员在“基础设施 → 网站设置”中分别填写控制台主域名和应用泛子域名，并为后者配置 DNS 泛解析，例如 `*.apps.example.com`。模式 1 由 Caddy 同时代理控制台和应用；模式 2 的控制台直接监听 `PLATFORM_PORT`，Caddy 只代理应用。
 
@@ -203,6 +194,7 @@ DOCKER_GID=998
 
 ```bash
 docker compose --env-file .env -f deploy/compose.yaml config --quiet
+docker compose --env-file .env -f deploy/compose.yaml build
 ```
 
 一键构建并启动所有服务栈：
@@ -210,6 +202,8 @@ docker compose --env-file .env -f deploy/compose.yaml config --quiet
 ```bash
 docker compose --env-file .env -f deploy/compose.yaml up -d --build
 ```
+
+首次构建会生成 `cloudmeter-api`、`cloudmeter-worker`、`cloudmeter-app-router`、`cloudmeter-egress-proxy`、`cloudmeter-web` 和 `cloudmeter-gateway` 镜像。前端生产静态资源在 `cloudmeter-web` 镜像的 `/usr/share/nginx/html` 内，无需把宿主机的 `apps/web/dist` 复制到服务器。
 
 ### 4.2 检查服务运行状态
 
@@ -277,7 +271,7 @@ HTTPS 可分别为控制台和应用选择自动证书或导入 PEM 证书与私
 当平台发布新版本需要升级时，请按照以下标准步骤操作：
 
 ### 7.1 数据与配置备份
-在升级前，强烈建议备份 PostgreSQL 数据库卷、应用数据卷以及当前 `.env` 配置文件。
+在升级前，强烈建议备份 PostgreSQL 数据库卷、应用数据卷、`cloudmeter_backup_data` 备份归档卷以及当前 `.env` 配置文件。`SECRETS_ENCRYPTION_KEY` 必须与数据库备份一同离线保存。用户也可以在“备份与恢复”中导出单个数据卷的 `tar.gz` 归档；导入归档后需明确点击恢复才会覆盖运行卷。
 
 ### 7.2 执行平滑升级
 
@@ -290,6 +284,9 @@ docker compose --env-file .env -f deploy/compose.yaml run --rm migrate
 
 # 3. 重新构建并平滑重启业务服务
 docker compose --env-file .env -f deploy/compose.yaml up -d --build api worker app-router egress-proxy web gateway
+
+# 4. 验证迁移、OpenAPI、容器健康和入口路由
+bash deploy/verify.sh
 ```
 
 > **警告**：生产升级**切勿使用 `docker compose down -v`** 命令！带 `-v` 参数会直接清空 PostgreSQL 数据库卷和 Redis 缓存卷！
@@ -332,9 +329,9 @@ powershell -ExecutionPolicy Bypass -File deploy/verify.ps1
 
 ### 应用端口说明
 
-CloudMeter 不会为每个用户应用创建宿主机 `-p` 映射，也不会假设所有镜像都支持 `PORT` 环境变量。产品版本中的“应用内部监听端口”必须与镜像实际监听端口一致，统一由 Caddy 与应用 Router 通过每个应用的专属子域名转发。宿主机对应用只开放 Caddy 的 80/443。
+产品版本中的“应用内部监听端口”必须与镜像实际监听端口一致，它是不可由用户覆盖的容器内网路由元数据。默认访问链路为 Caddy 80/443 → App Router → 用户应用容器，平台不会假设镜像支持 `PORT` 或 `SERVER_PORT` 环境变量。
 
-该端口是不可由用户覆盖的容器内网路由元数据。平台不会向应用注入 `PORT`、`SERVER_PORT` 等端口环境变量，也不会为用户应用创建 Docker `ports` 映射。同一用户的依赖容器通过固定服务名和该内网端口互访；不同用户网络彼此隔离。
+管理员可在“系统设置 → 基础信息”配置应用直连端口范围，默认 `30000–40000`。只有产品版本允许端口映射且用户主动开启“直连”时，Worker 才会从该范围分配一个宿主机端口；该端口需在宿主机防火墙放行。备份恢复后 Worker 会重新读取 Docker 的实际映射并同步活动 Release 与路由，详情页会自动刷新端口。未开启直连的应用仍只通过 Caddy 80/443 暴露。
 
 生产入口为 `Browser -> Caddy:80/443 -> 平台 Web/API 或应用 Router -> 用户应用容器`。管理员需要准备一个控制台主域名和一个独立的应用泛子域名；证书、HTTP 跳转、HSTS、HTTP/3 与反向代理均在“网站设置”统一管理。
 
@@ -346,6 +343,47 @@ Compose 中 Caddy 固定发布 80/443，Web 仅额外发布模式 2 使用的 `P
    ```bash
    wsl -d Ubuntu-24.04 -u root -e bash -lc "cd /opt/cloudmeter && docker compose --env-file .env -f deploy/compose.yaml up -d"
    ```
+
+## 9. 构建与离线交付产物
+
+### 9.1 生成产物
+
+产物脚本要求仓库处于要发布的提交，并已经准备 `.env`。在 Linux 或 WSL 中运行：
+
+```bash
+chmod +x deploy/build-artifacts.sh
+bash deploy/build-artifacts.sh "$(git rev-parse --short HEAD)"
+```
+
+输出目录为 `artifacts/cloudmeter-<版本>/`：
+
+- `cloudmeter-source-<版本>.tar.gz`：对应 Git 提交的干净源码包；
+- `cloudmeter-images-<版本>.tar`：平台镜像和固定运行时基础镜像；
+- `.env.example`：环境变量模板；
+- `DEPLOYMENT.md`：本部署指南副本；
+- `SHA256SUMS`：源码包和镜像包的 SHA-256 校验值。
+
+### 9.2 离线部署
+
+```bash
+sha256sum -c SHA256SUMS
+docker load -i cloudmeter-images-<版本>.tar
+mkdir -p /opt/cloudmeter
+tar -xzf cloudmeter-source-<版本>.tar.gz -C /opt/cloudmeter --strip-components=1
+cd /opt/cloudmeter
+cp configs/.env.example .env
+# 编辑 .env 后启动；--no-build 保证不访问构建依赖
+docker compose --env-file .env -f deploy/compose.yaml up -d --no-build
+```
+
+### 9.3 Windows 调用 WSL 构建
+
+```powershell
+$version = git rev-parse --short HEAD
+wsl -d Ubuntu-24.04 -e bash -lc "cd '/mnt/c/Users/www34/Desktop/云部署' && bash deploy/build-artifacts.sh '$version'"
+```
+
+产物目录默认位于 Windows 工作区的 `artifacts/`，该目录已被 Git 忽略，不会误提交大型镜像包。
 
 ---
 
