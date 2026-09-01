@@ -29,7 +29,10 @@ services:
 
   gateway:
     logging: *default-logging
-    image: caddy:2.9-alpine
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.gateway
+    image: cloudmeter-gateway:latest
     restart: unless-stopped
     ports:
       - "${GATEWAY_BIND_IP:-0.0.0.0}:80:80"

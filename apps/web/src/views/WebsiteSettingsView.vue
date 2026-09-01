@@ -60,6 +60,8 @@ type GatewaySettings = {
   acmeEmail: string;
   acmeCa: string;
   acmeKeyType: "ed25519" | "p256" | "p384" | "rsa2048" | "rsa4096";
+  acmeDnsProvider: "" | "cloudflare" | "alidns" | "tencentcloud" | "route53" | "digitalocean";
+  acmeDnsConfigured: boolean;
   renewIntervalMinutes: number;
   accessModeManagedByEnvironment: boolean;
   updatedAt?: string;
@@ -109,9 +111,39 @@ const form = ref<GatewaySettings>({
   acmeEmail: "",
   acmeCa: "https://acme-v02.api.letsencrypt.org/directory",
   acmeKeyType: "p256",
+  acmeDnsProvider: "",
+  acmeDnsConfigured: false,
   renewIntervalMinutes: 10,
   accessModeManagedByEnvironment: false,
 });
+type DNSCredentialField = { key: string; label: string; placeholder: string; secret?: boolean };
+const dnsProviderPresets: Array<{ id: GatewaySettings["acmeDnsProvider"]; label: string; detail: string; fields: DNSCredentialField[] }> = [
+  { id: "cloudflare", label: "Cloudflare", detail: "API Token（Zone:Read + DNS:Edit）", fields: [
+    { key: "apiToken", label: "API Token", placeholder: "Cloudflare scoped API token", secret: true },
+  ] },
+  { id: "alidns", label: "阿里云 DNS", detail: "AliDNS AccessKey", fields: [
+    { key: "accessKeyId", label: "AccessKey ID", placeholder: "LTAI..." },
+    { key: "accessKeySecret", label: "AccessKey Secret", placeholder: "输入 AccessKey Secret", secret: true },
+  ] },
+  { id: "tencentcloud", label: "腾讯云 DNSPod", detail: "腾讯云 API 密钥", fields: [
+    { key: "secretId", label: "SecretId", placeholder: "AKID..." },
+    { key: "secretKey", label: "SecretKey", placeholder: "输入 SecretKey", secret: true },
+  ] },
+  { id: "route53", label: "AWS Route 53", detail: "IAM Access Key", fields: [
+    { key: "accessKeyId", label: "Access Key ID", placeholder: "AKIA..." },
+    { key: "secretAccessKey", label: "Secret Access Key", placeholder: "输入 Secret Access Key", secret: true },
+    { key: "region", label: "Region", placeholder: "us-east-1" },
+  ] },
+  { id: "digitalocean", label: "DigitalOcean", detail: "DNS API Token", fields: [
+    { key: "authToken", label: "API Token", placeholder: "DigitalOcean API token", secret: true },
+  ] },
+];
+const dnsCredentials = ref<Record<string, string>>({});
+const activeDNSProvider = computed(() => dnsProviderPresets.find((item) => item.id === form.value.acmeDnsProvider));
+function selectDNSProvider() {
+  dnsCredentials.value = {};
+  form.value.acmeDnsConfigured = false;
+}
 const activePanel = ref<"overview" | "websites" | "certificates" | "routes" | "runtime">("overview");
 const panels = [
   { id: "overview", label: "概览", detail: "入口与健康状态" },
@@ -304,9 +336,13 @@ async function save() {
         appBaseDomain: form.value.appBaseDomain.trim(),
         acmeEmail: form.value.acmeEmail.trim(),
         acmeCa: form.value.acmeCa.trim(),
+        acmeDnsCredentials: Object.values(dnsCredentials.value).some((value) => value.trim())
+          ? dnsCredentials.value
+          : undefined,
       }),
     });
     Object.assign(form.value, res.settings);
+    dnsCredentials.value = {};
     certificates.value = res.certificates || [];
     updatedAt.value = new Date(res.settings.updatedAt || Date.now()).toLocaleString("zh-CN");
     message.value = "网站入口已保存并完成 Caddy 无中断重载";
@@ -657,6 +693,40 @@ onMounted(refreshAll);
           </label>
         </div>
 
+        <div class="dns-challenge-settings">
+          <div class="dns-challenge-heading">
+            <div>
+              <strong>DNS-01 验证</strong>
+              <p>签发与续期时自动创建临时 TXT 记录，适用于泛域名，也不要求验证请求能从公网访问 80/443 端口。</p>
+            </div>
+            <span>唯一验证方式</span>
+          </div>
+          <label class="dns-provider-select">
+            <span>DNS 服务商</span>
+            <select v-model="form.acmeDnsProvider" @change="selectDNSProvider">
+              <option value="" disabled>选择 DNS 服务商</option>
+              <option v-for="provider in dnsProviderPresets" :key="provider.id" :value="provider.id">
+                {{ provider.label }} · {{ provider.detail }}
+              </option>
+            </select>
+          </label>
+          <div v-if="activeDNSProvider" class="dns-credential-grid">
+            <label v-for="field in activeDNSProvider.fields" :key="field.key">
+              <span>{{ field.label }}</span>
+              <input
+                v-model="dnsCredentials[field.key]"
+                :type="field.secret ? 'password' : 'text'"
+                :placeholder="form.acmeDnsConfigured ? '已安全保存，留空保持不变' : field.placeholder"
+                autocomplete="off"
+              />
+            </label>
+          </div>
+          <div v-if="form.acmeDnsConfigured" class="dns-credential-state">
+            <ShieldCheck :size="16" />
+            <span>当前服务商凭据已加密保存。只有重新填写凭据后才会覆盖。</span>
+          </div>
+        </div>
+
         <div class="renewal-policy">
           <div class="policy-copy">
             <strong>自动续期策略</strong>
@@ -675,7 +745,7 @@ onMounted(refreshAll);
 
         <div class="acme-guidance">
           <FileCheck2 :size="17" />
-          <p><strong>HTTP / TLS-ALPN 申请：</strong>控制台域名保存后自动签发。应用使用受授权的按需 TLS，只有数据库中正在运行的应用域名可申请，首次 HTTPS 握手完成签发，后续续期在后台进行。</p>
+          <p><strong>DNS 自动申请：</strong>控制台域名保存后通过 DNS-01 签发。应用继续使用受授权的按需 TLS，只有数据库中正在运行的应用域名可申请；Caddy 会通过所选服务商自动创建并清理验证记录。</p>
         </div>
       </section>
 
@@ -1252,6 +1322,26 @@ onMounted(refreshAll);
 .acme-account-grid small,
 .renewal-policy small,
 .renewal-managed-window small { color: var(--text-muted); font-size: 9px; line-height: 1.45; }
+.dns-challenge-settings {
+  display: grid;
+  grid-template-columns: minmax(240px, .75fr) minmax(280px, 1.25fr);
+  gap: 14px 18px;
+  margin: 0 18px 16px;
+  padding: 16px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+}
+.dns-challenge-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.dns-challenge-heading strong { font-size: 12px; }
+.dns-challenge-heading p { max-width: 48ch; margin: 5px 0 0; color: var(--text-muted); font-size: 10px; line-height: 1.55; }
+.dns-challenge-heading > span { flex: 0 0 auto; padding: 4px 7px; color: var(--accent); background: var(--accent-soft); border-radius: 5px; font-size: 9px; font-weight: 700; }
+.dns-provider-select,
+.dns-credential-grid label { display: grid; align-content: start; gap: 7px; }
+.dns-provider-select > span,
+.dns-credential-grid label > span { font-size: 11px; font-weight: 650; }
+.dns-credential-grid { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.dns-credential-state { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; color: var(--accent); font-size: 10px; }
 .renewal-managed-window strong { color: var(--accent); font-size: 12px; }
 .renewal-policy {
   display: grid;
@@ -1467,6 +1557,8 @@ onMounted(refreshAll);
   .acme-account-grid { grid-template-columns: 1fr 1fr; }
   .acme-account-grid label:nth-child(2) { grid-column: 1 / -1; grid-row: 2; }
   .renewal-policy { grid-template-columns: 1fr 1fr; }
+  .dns-challenge-settings { grid-template-columns: 1fr; }
+  .dns-credential-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .policy-copy { grid-column: 1 / -1; }
 }
 @media (max-width: 680px) {
@@ -1500,7 +1592,8 @@ onMounted(refreshAll);
   .automation-summary > div:first-child { border-radius: 8px 8px 0 0; }
   .text-action { min-height: 40px; border-radius: 0 0 8px 8px; }
   .acme-account-grid,
-  .renewal-policy { grid-template-columns: 1fr; }
+  .renewal-policy,
+  .dns-credential-grid { grid-template-columns: 1fr; }
   .acme-account-grid label:nth-child(2),
   .policy-copy { grid-column: auto; grid-row: auto; }
   .certificate-disabled-note { align-items: flex-start; flex-wrap: wrap; }

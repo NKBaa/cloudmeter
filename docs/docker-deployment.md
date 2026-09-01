@@ -103,7 +103,7 @@ docker pull alpine
   cd cloudmeter
   ```
 
-> **提示**：Compose 文件位于 `deploy/` 子目录，**所有 compose 命令都必须显式指定 `--env-file .env`**，否则会因找不到变量而报 `required variable ... is missing a value`。首次 `--build` 会本地构建 api / web / gateway / app-router / egress-proxy 等镜像，耗时约 5–15 分钟（视网络而定），之后增量构建仅需数秒。
+> **提示**：Compose 文件位于 `deploy/` 子目录，**所有 compose 命令都必须显式指定 `--env-file .env`**，否则会因找不到变量而报 `required variable ... is missing a value`。首次 `--build` 会本地构建 api / web / gateway / app-router / egress-proxy 等镜像，耗时约 5–15 分钟（视网络而定），之后增量构建仅需数秒。Gateway 使用自定义 Caddy 镜像，内置 Cloudflare、阿里云 DNS、腾讯云 DNSPod、AWS Route 53 和 DigitalOcean 插件；自动证书统一通过 DNS-01 验证，DNS API 凭据在数据库中加密保存。
 
 ### 2.2 准备配置文件 `.env`
 

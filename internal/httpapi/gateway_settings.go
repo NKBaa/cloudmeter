@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -23,22 +24,25 @@ import (
 const defaultACMEDirectory = "https://acme-v02.api.letsencrypt.org/directory"
 
 type gatewaySettings struct {
-	AccessMode             string    `json:"accessMode"`
-	ServerURL              string    `json:"serverUrl"`
-	AppBaseDomain          string    `json:"appBaseDomain"`
-	StandalonePort         int       `json:"standalonePort"`
-	TLSEnabled             bool      `json:"tlsEnabled"`
-	HTTPPolicy             string    `json:"httpPolicy"`
-	HSTSEnabled            bool      `json:"hstsEnabled"`
-	HTTP3Enabled           bool      `json:"http3Enabled"`
-	ConsoleCertificateMode string    `json:"consoleCertificateMode"`
-	AppCertificateMode     string    `json:"appCertificateMode"`
-	ACMEEmail              string    `json:"acmeEmail"`
-	ACMECA                 string    `json:"acmeCa"`
-	ACMEKeyType            string    `json:"acmeKeyType"`
-	RenewIntervalMinutes   int       `json:"renewIntervalMinutes"`
-	AccessModeManaged      bool      `json:"accessModeManagedByEnvironment"`
-	UpdatedAt              time.Time `json:"updatedAt"`
+	AccessMode             string            `json:"accessMode"`
+	ServerURL              string            `json:"serverUrl"`
+	AppBaseDomain          string            `json:"appBaseDomain"`
+	StandalonePort         int               `json:"standalonePort"`
+	TLSEnabled             bool              `json:"tlsEnabled"`
+	HTTPPolicy             string            `json:"httpPolicy"`
+	HSTSEnabled            bool              `json:"hstsEnabled"`
+	HTTP3Enabled           bool              `json:"http3Enabled"`
+	ConsoleCertificateMode string            `json:"consoleCertificateMode"`
+	AppCertificateMode     string            `json:"appCertificateMode"`
+	ACMEEmail              string            `json:"acmeEmail"`
+	ACMECA                 string            `json:"acmeCa"`
+	ACMEKeyType            string            `json:"acmeKeyType"`
+	ACMEDNSProvider        string            `json:"acmeDnsProvider"`
+	ACMEDNSCredentials     map[string]string `json:"acmeDnsCredentials,omitempty"`
+	ACMEDNSConfigured      bool              `json:"acmeDnsConfigured"`
+	RenewIntervalMinutes   int               `json:"renewIntervalMinutes"`
+	AccessModeManaged      bool              `json:"accessModeManagedByEnvironment"`
+	UpdatedAt              time.Time         `json:"updatedAt"`
 }
 
 type gatewayCertificateSummary struct {
@@ -54,16 +58,28 @@ type gatewayCertificateSummary struct {
 
 func (s *Server) readGatewaySettings(ctx context.Context) (gatewaySettings, error) {
 	settings := gatewaySettings{StandalonePort: s.cfg.StandalonePort}
+	var encryptedDNSCredentials string
 	err := s.db.QueryRow(ctx, `SELECT access_mode,server_url,coalesce(app_base_domain,''),tls_enabled,http_policy,hsts_enabled,http3_enabled,
 		console_certificate_mode,app_certificate_mode,acme_email,acme_ca,acme_key_type,
-		certificate_renew_interval_minutes,updated_at
+		acme_dns_provider,acme_dns_credentials,certificate_renew_interval_minutes,updated_at
 		FROM system_settings WHERE singleton`).Scan(
 		&settings.AccessMode, &settings.ServerURL, &settings.AppBaseDomain, &settings.TLSEnabled,
 		&settings.HTTPPolicy, &settings.HSTSEnabled, &settings.HTTP3Enabled,
 		&settings.ConsoleCertificateMode, &settings.AppCertificateMode,
 		&settings.ACMEEmail, &settings.ACMECA, &settings.ACMEKeyType,
+		&settings.ACMEDNSProvider, &encryptedDNSCredentials,
 		&settings.RenewIntervalMinutes, &settings.UpdatedAt,
 	)
+	if err == nil && settings.ACMEDNSProvider != "" && encryptedDNSCredentials != "" {
+		plaintext, decryptErr := s.secrets.Decrypt("gateway.acme_dns_credentials", encryptedDNSCredentials)
+		if decryptErr != nil {
+			return settings, decryptErr
+		}
+		if decryptErr = json.Unmarshal([]byte(plaintext), &settings.ACMEDNSCredentials); decryptErr != nil {
+			return settings, fmt.Errorf("decode ACME DNS credentials: %w", decryptErr)
+		}
+		settings.ACMEDNSConfigured = true
+	}
 	if settings.ACMECA == "" {
 		settings.ACMECA = defaultACMEDirectory
 	}
@@ -128,7 +144,16 @@ func (s *Server) getGatewaySettings(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, err)
 		return
 	}
+	settings.ACMEDNSCredentials = nil
 	writeJSON(w, http.StatusOK, map[string]any{"settings": settings, "certificates": certificates})
+}
+
+var acmeDNSProviderFields = map[string][]string{
+	"cloudflare":   {"apiToken"},
+	"alidns":       {"accessKeyId", "accessKeySecret"},
+	"tencentcloud": {"secretId", "secretKey"},
+	"route53":      {"accessKeyId", "secretAccessKey", "region"},
+	"digitalocean": {"authToken"},
 }
 
 func normalizeGatewaySettings(settings *gatewaySettings) error {
@@ -183,6 +208,23 @@ func normalizeGatewaySettings(settings *gatewaySettings) error {
 			return fmt.Errorf("自动证书申请需要有效的 ACME 联系邮箱")
 		}
 	}
+	settings.ACMEDNSProvider = strings.TrimSpace(settings.ACMEDNSProvider)
+	fields, providerValid := acmeDNSProviderFields[settings.ACMEDNSProvider]
+	if needsACME && !providerValid {
+		return fmt.Errorf("自动证书申请必须选择 DNS 服务商")
+	}
+	if providerValid {
+		cleaned := make(map[string]string, len(fields))
+		for _, field := range fields {
+			value := strings.TrimSpace(settings.ACMEDNSCredentials[field])
+			if value == "" {
+				return fmt.Errorf("DNS 服务商凭据不完整")
+			}
+			cleaned[field] = value
+		}
+		settings.ACMEDNSCredentials = cleaned
+		settings.ACMEDNSConfigured = true
+	}
 	settings.ACMECA = strings.TrimSpace(settings.ACMECA)
 	if settings.ACMECA == "" {
 		settings.ACMECA = defaultACMEDirectory
@@ -223,6 +265,16 @@ func (s *Server) updateGatewaySettings(w http.ResponseWriter, r *http.Request) {
 		settings.AccessMode = s.cfg.GatewayAccessMode
 		settings.AccessModeManaged = true
 	}
+	if len(settings.ACMEDNSCredentials) == 0 && settings.ACMEDNSProvider != "" {
+		current, readErr := s.readGatewaySettings(r.Context())
+		if readErr != nil {
+			s.internalError(w, readErr)
+			return
+		}
+		if current.ACMEDNSProvider == settings.ACMEDNSProvider {
+			settings.ACMEDNSCredentials = current.ACMEDNSCredentials
+		}
+	}
 	if err := normalizeGatewaySettings(&settings); err != nil {
 		writeError(w, http.StatusBadRequest, "validation_failed", err.Error())
 		return
@@ -244,14 +296,27 @@ func (s *Server) updateGatewaySettings(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, err)
 		return
 	}
+	encryptedDNSCredentials := ""
+	if settings.ACMEDNSProvider != "" {
+		credentialsJSON, marshalErr := json.Marshal(settings.ACMEDNSCredentials)
+		if marshalErr != nil {
+			s.internalError(w, marshalErr)
+			return
+		}
+		encryptedDNSCredentials, err = s.secrets.Encrypt("gateway.acme_dns_credentials", string(credentialsJSON))
+		if err != nil {
+			s.internalError(w, err)
+			return
+		}
+	}
 	if _, err = tx.Exec(r.Context(), `UPDATE system_settings SET
 		access_mode=$1,server_url=$2,app_base_domain=$3,tls_enabled=$4,http_policy=$5,hsts_enabled=$6,http3_enabled=$7,
 		console_certificate_mode=$8,app_certificate_mode=$9,acme_email=$10,acme_ca=$11,acme_key_type=$12,
-		certificate_renew_interval_minutes=$13,updated_at=now(),updated_by=$14
+		certificate_renew_interval_minutes=$13,updated_at=now(),updated_by=$14,acme_dns_provider=$15,acme_dns_credentials=$16
 		WHERE singleton`, settings.AccessMode, settings.ServerURL, settings.AppBaseDomain, settings.TLSEnabled,
 		settings.HTTPPolicy, settings.HSTSEnabled, settings.HTTP3Enabled, settings.ConsoleCertificateMode,
 		settings.AppCertificateMode, settings.ACMEEmail, settings.ACMECA, settings.ACMEKeyType,
-		settings.RenewIntervalMinutes, p.ID); err != nil {
+		settings.RenewIntervalMinutes, p.ID, settings.ACMEDNSProvider, encryptedDNSCredentials); err != nil {
 		s.internalError(w, err)
 		return
 	}
@@ -290,6 +355,7 @@ func (s *Server) updateGatewaySettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	certificates, _ := s.listGatewayCertificateSummaries(r.Context())
+	settings.ACMEDNSCredentials = nil
 	writeJSON(w, http.StatusOK, map[string]any{"settings": settings, "certificates": certificates, "reloaded": true})
 }
 
@@ -341,6 +407,7 @@ func (s *Server) renderGatewayCaddyfile(settings gatewaySettings) ([]byte, error
 		out.WriteString("\tacme_ca " + settings.ACMECA + "\n")
 		out.WriteString("\tkey_type " + settings.ACMEKeyType + "\n")
 		out.WriteString(fmt.Sprintf("\trenew_interval %dm\n", settings.RenewIntervalMinutes))
+		writeACMEDNSProvider(&out, settings)
 	}
 	if settings.TLSEnabled && settings.AppCertificateMode == "automatic" && settings.AppBaseDomain != "" {
 		out.WriteString("\ton_demand_tls {\n\t\task http://api:8081/api/internal/caddy/allow-domain\n\t}\n")
@@ -402,6 +469,26 @@ func (s *Server) renderGatewayCaddyfile(settings gatewaySettings) ([]byte, error
 		out.WriteString(":80 {\n\trespond \"application domain is not configured\" 421\n}\n")
 	}
 	return []byte(out.String()), nil
+}
+
+func writeACMEDNSProvider(out *strings.Builder, settings gatewaySettings) {
+	out.WriteString("\tacme_dns " + settings.ACMEDNSProvider + " {\n")
+	fieldNames := map[string]map[string]string{
+		"cloudflare":   {"apiToken": "api_token"},
+		"alidns":       {"accessKeyId": "access_key_id", "accessKeySecret": "access_key_secret"},
+		"tencentcloud": {"secretId": "secret_id", "secretKey": "secret_key"},
+		"route53":      {"accessKeyId": "access_key_id", "secretAccessKey": "secret_access_key", "region": "region"},
+		"digitalocean": {"authToken": "auth_token"},
+	}
+	keys := make([]string, 0, len(fieldNames[settings.ACMEDNSProvider]))
+	for key := range fieldNames[settings.ACMEDNSProvider] {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		out.WriteString("\t\t" + fieldNames[settings.ACMEDNSProvider][key] + " " + strconv.Quote(settings.ACMEDNSCredentials[key]) + "\n")
+	}
+	out.WriteString("\t}\n")
 }
 
 func (s *Server) writeConsoleSites(out *strings.Builder, settings gatewaySettings, host string) {

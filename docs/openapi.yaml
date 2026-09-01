@@ -870,7 +870,7 @@ paths:
           application/json:
             schema:
               type: object
-              required: [accessMode, serverUrl, appBaseDomain, tlsEnabled, httpPolicy, hstsEnabled, http3Enabled, consoleCertificateMode, appCertificateMode, acmeEmail, acmeCa, acmeKeyType, renewIntervalMinutes]
+              required: [accessMode, serverUrl, appBaseDomain, tlsEnabled, httpPolicy, hstsEnabled, http3Enabled, consoleCertificateMode, appCertificateMode, acmeEmail, acmeCa, acmeKeyType, acmeDnsProvider, renewIntervalMinutes]
               properties:
                 accessMode: {type: string, enum: [all_caddy, apps_only]}
                 serverUrl: {type: string, format: uri, description: Public console origin used for OAuth callbacks, webhooks and external links; in apps_only mode an external reverse proxy owns public access}
@@ -884,6 +884,9 @@ paths:
                 acmeEmail: {type: string, format: email}
                 acmeCa: {type: string, format: uri}
                 acmeKeyType: {type: string, enum: [ed25519, p256, p384, rsa2048, rsa4096]}
+                acmeDnsProvider: {type: string, enum: [cloudflare, alidns, tencentcloud, route53, digitalocean], description: DNS-01 provider built into the managed Caddy image}
+                acmeDnsCredentials: {type: object, additionalProperties: {type: string}, writeOnly: true, description: Provider credentials; omit to retain already encrypted credentials for the selected provider}
+                acmeDnsConfigured: {type: boolean, readOnly: true}
                 renewIntervalMinutes: {type: integer, minimum: 1, maximum: 1440, description: How often Caddy scans managed certificates for renewal}
                 accessModeManagedByEnvironment: {type: boolean, readOnly: true, description: True when GATEWAY_ACCESS_MODE is authoritative}
       responses:
