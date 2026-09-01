@@ -3520,12 +3520,19 @@ input.field-invalid, select.field-invalid, textarea.field-invalid {
   align-self: start;
   overflow: hidden;
 }
+.pricing-select-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 42px;
+  align-items: stretch;
+  border-top: 1px solid var(--line);
+  background: var(--field);
+}
 .pricing-select {
   width: 100%;
   min-height: 62px;
   border: 0;
-  border-top: 1px solid var(--line);
-  background: var(--field);
+  background: transparent;
   display: grid;
   grid-template-columns: 28px 1fr;
   align-items: center;
@@ -3542,11 +3549,18 @@ input.field-invalid, select.field-invalid, textarea.field-invalid {
 .pricing-select:hover {
   transform: translateX(2px);
 }
-.pricing-select.selected {
+.pricing-select-row.selected {
   background: var(--accent-soft);
   color: var(--accent-dark);
   box-shadow: inset 3px 0 0 var(--ink);
 }
+.pricing-select-row.selected .pricing-select { color: var(--accent-dark); }
+.pricing-delete {
+  align-self: center;
+  justify-self: center;
+  color: var(--muted);
+}
+.pricing-delete:hover { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); }
 .pricing-select strong,
 .pricing-select small {
   display: block;
@@ -3563,8 +3577,17 @@ input.field-invalid, select.field-invalid, textarea.field-invalid {
 .pricing-main {
   display: grid;
   gap: 18px;
+  align-self: start;
+  align-content: start;
+  grid-auto-rows: max-content;
   transition: opacity .22s ease, transform .22s cubic-bezier(.22, .8, .24, 1), filter .22s ease;
 }
+.pricing-version-form {
+  align-self: start;
+  min-height: 0;
+  padding-bottom: 22px;
+}
+.pricing-version-form form { padding-bottom: 0; }
 .pricing-main.is-switching {
   opacity: .45;
   transform: translateY(6px);

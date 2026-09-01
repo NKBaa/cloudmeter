@@ -20,8 +20,21 @@ type pricingVersionResponse struct {
 	CreatedAt       time.Time `json:"createdAt"`
 }
 
+var pricingItemPresets = map[string]string{
+	"app.runtime.minutes":     "minute",
+	"cpu.core_hours":          "core_hour",
+	"memory.gib_hours":        "GiB_hour",
+	"storage.data.gib_days":   "GiB_day",
+	"network.egress_gib":      "GiB",
+	"app.deployment":          "deployment",
+	"product.authorization":   "authorization",
+	"network.public_ingress":  "ingress",
+	"backup.operation":        "operation",
+	"backup.storage.gib_days": "GiB_day",
+}
+
 func (s *Server) getPricingPublic(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.db.Query(r.Context(), `SELECT i.code, v.unit_price_micros FROM pricing_items i JOIN LATERAL (SELECT unit_price_micros FROM pricing_versions WHERE pricing_item_id = i.id AND effective_at <= now() ORDER BY effective_at DESC, version DESC LIMIT 1) v ON true`)
+	rows, err := s.db.Query(r.Context(), `SELECT i.code, v.unit_price_micros FROM pricing_items i JOIN LATERAL (SELECT unit_price_micros FROM pricing_versions WHERE pricing_item_id = i.id AND effective_at <= now() ORDER BY effective_at DESC, version DESC LIMIT 1) v ON true WHERE i.active`)
 	if err != nil {
 		s.internalError(w, err)
 		return
@@ -45,7 +58,7 @@ func (s *Server) getPricingCatalogPublic(w http.ResponseWriter, r *http.Request)
 	rows, err := s.db.Query(r.Context(), `SELECT i.code,i.unit,v.unit_price_micros
 		FROM pricing_items i
 		JOIN LATERAL (SELECT unit_price_micros FROM pricing_versions WHERE pricing_item_id=i.id AND effective_at<=now() ORDER BY effective_at DESC,version DESC LIMIT 1) v ON true
-		WHERE i.code <> 'storage.system.gib_days' ORDER BY i.code`)
+		WHERE i.active AND i.code <> 'storage.system.gib_days' ORDER BY i.code`)
 	if err != nil {
 		s.internalError(w, err)
 		return
@@ -66,7 +79,7 @@ func (s *Server) getPricingCatalogPublic(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) adminPricing(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.db.Query(r.Context(), `SELECT i.id,i.code,i.unit,i.created_at,v.id,v.version,v.unit_price_micros,v.precision_scale,v.rounding_mode,v.minimum_quantity::text,v.free_quantity::text,v.effective_at,v.created_at FROM pricing_items i LEFT JOIN pricing_versions v ON v.pricing_item_id=i.id WHERE i.code <> 'storage.system.gib_days' ORDER BY i.code,v.version DESC`)
+	rows, err := s.db.Query(r.Context(), `SELECT i.id,i.code,i.unit,i.created_at,v.id,v.version,v.unit_price_micros,v.precision_scale,v.rounding_mode,v.minimum_quantity::text,v.free_quantity::text,v.effective_at,v.created_at FROM pricing_items i LEFT JOIN pricing_versions v ON v.pricing_item_id=i.id WHERE i.active AND i.code <> 'storage.system.gib_days' ORDER BY i.code,v.version DESC`)
 	if err != nil {
 		s.internalError(w, err)
 		return
@@ -118,15 +131,12 @@ func (s *Server) createPricingItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q.Code = strings.ToLower(strings.TrimSpace(q.Code))
-	q.Unit = strings.ToLower(strings.TrimSpace(q.Unit))
-	if q.Code == "storage.system.gib_days" {
-		writeError(w, 400, "pricing_item_retired", "system disk billing has been retired; price persistent data volumes instead")
+	presetUnit, ok := pricingItemPresets[q.Code]
+	if !ok {
+		writeError(w, 400, "validation_failed", "pricing item must use a supported preset")
 		return
 	}
-	if q.Code == "" || q.Unit == "" {
-		writeError(w, 400, "validation_failed", "code and unit are required")
-		return
-	}
+	q.Unit = presetUnit
 	tx, err := s.db.BeginTx(r.Context(), pgx.TxOptions{})
 	if err != nil {
 		s.internalError(w, err)
@@ -134,7 +144,9 @@ func (s *Server) createPricingItem(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	var id string
-	if err = tx.QueryRow(r.Context(), "INSERT INTO pricing_items(code,unit) VALUES($1,$2) RETURNING id", q.Code, q.Unit).Scan(&id); err != nil {
+	if err = tx.QueryRow(r.Context(), `INSERT INTO pricing_items(code,unit,active) VALUES($1,$2,true)
+		ON CONFLICT(code) DO UPDATE SET active=true WHERE pricing_items.unit=excluded.unit AND NOT pricing_items.active
+		RETURNING id`, q.Code, q.Unit).Scan(&id); err != nil {
 		writeError(w, 409, "pricing_item_exists", "pricing item already exists")
 		return
 	}
@@ -147,6 +159,34 @@ func (s *Server) createPricingItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 201, map[string]any{"id": id, "code": q.Code, "unit": q.Unit})
+}
+
+func (s *Server) deletePricingItem(w http.ResponseWriter, r *http.Request) {
+	p, _ := r.Context().Value(principalKey).(principal)
+	itemID := r.PathValue("itemID")
+	tx, err := s.db.BeginTx(r.Context(), pgx.TxOptions{})
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	defer tx.Rollback(r.Context())
+	var code string
+	if err = tx.QueryRow(r.Context(), `UPDATE pricing_items SET active=false WHERE id=$1 AND active RETURNING code`, itemID).Scan(&code); err == pgx.ErrNoRows {
+		writeError(w, 404, "pricing_item_not_found", "pricing item not found")
+		return
+	} else if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	if _, err = tx.Exec(r.Context(), `INSERT INTO audit_logs(actor_user_id,action,resource_type,resource_id,request_id,metadata) VALUES($1,'pricing.item.delete','pricing_item',$2,$3,jsonb_build_object('code',$4::text))`, p.ID, itemID, requestID(r.Context()), code); err != nil {
+		s.internalError(w, err)
+		return
+	}
+	if err = tx.Commit(r.Context()); err != nil {
+		s.internalError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) createPricingVersion(w http.ResponseWriter, r *http.Request) {
@@ -195,7 +235,7 @@ func (s *Server) createPricingVersion(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	var itemCode string
-	if err = tx.QueryRow(r.Context(), "SELECT code FROM pricing_items WHERE id=$1 FOR UPDATE", itemID).Scan(&itemCode); err == pgx.ErrNoRows {
+	if err = tx.QueryRow(r.Context(), "SELECT code FROM pricing_items WHERE id=$1 AND active FOR UPDATE", itemID).Scan(&itemCode); err == pgx.ErrNoRows {
 		writeError(w, 404, "pricing_item_not_found", "pricing item not found")
 		return
 	} else if err != nil {

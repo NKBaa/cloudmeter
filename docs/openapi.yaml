@@ -743,6 +743,16 @@ paths:
       responses:
         '201': {description: Immutable pricing version created}
         '404': {description: Pricing item not found}
+  /admin/pricing/items/{itemID}:
+    delete:
+      operationId: deletePricingItem
+      description: Removes a pricing item from the active catalog while retaining immutable price and billing history.
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: itemID, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '204': {description: Pricing item removed from the active catalog}
+        '404': {description: Pricing item not found}
   /payments/orders:
     get:
       operationId: listPaymentOrders

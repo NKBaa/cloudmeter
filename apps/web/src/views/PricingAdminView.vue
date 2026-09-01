@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { nextTick, onMounted, reactive, ref } from "vue";
+import { computed, nextTick, onMounted, reactive, ref } from "vue";
 import {
   ArrowLeft,
   BadgeCent,
   CheckCircle2,
   Plus,
   RefreshCw,
+  Trash2,
 } from "@lucide/vue";
 import { api } from "../api";
 import { usageCodeLabel, usageUnitLabel } from "../billing-labels";
@@ -32,7 +33,27 @@ const items = ref<Item[]>([]),
   error = ref(""),
   message = ref(""),
   busy = ref("");
-const item = reactive({ code: "app.runtime.minutes", unit: "minute" });
+const pricingPresets = [
+  { code: "app.runtime.minutes", unit: "minute" },
+  { code: "cpu.core_hours", unit: "core_hour" },
+  { code: "memory.gib_hours", unit: "GiB_hour" },
+  { code: "storage.data.gib_days", unit: "GiB_day" },
+  { code: "network.egress_gib", unit: "GiB" },
+  { code: "app.deployment", unit: "deployment" },
+  { code: "product.authorization", unit: "authorization" },
+  { code: "network.public_ingress", unit: "ingress" },
+  { code: "backup.operation", unit: "operation" },
+  { code: "backup.storage.gib_days", unit: "GiB_day" },
+];
+const item = reactive({ code: "", unit: "" });
+const availablePresets = computed(() => {
+  const active = new Set(items.value.map((entry) => entry.code));
+  return pricingPresets.filter((preset) => !active.has(preset.code));
+});
+function selectPreset() {
+  item.unit =
+    pricingPresets.find((preset) => preset.code === item.code)?.unit || "";
+}
 const version = reactive({
   unitPriceYuan: 0.01,
   precisionScale: 6,
@@ -91,8 +112,14 @@ async function load() {
     items.value = prices.items.filter(
       (entry) => entry.code !== "storage.system.gib_days",
     );
+    if (selected.value && !items.value.some((entry) => entry.id === selected.value))
+      selected.value = "";
     if (!selected.value && items.value.length)
       await selectPricing(items.value[0].id);
+    if (!availablePresets.value.some((preset) => preset.code === item.code)) {
+      item.code = availablePresets.value[0]?.code || "";
+      selectPreset();
+    }
     error.value = "";
   } catch (e) {
     error.value = (e as Error).message;
@@ -104,6 +131,7 @@ function done(text: string) {
   error.value = "";
 }
 async function createItem() {
+  if (!item.code) return;
   try {
     busy.value = "item";
     savePricingDraft();
@@ -115,6 +143,21 @@ async function createItem() {
     selected.value = result.id;
     loadPricingDraft(result.id);
     done("费用项已创建");
+    await load();
+  } catch (e) {
+    error.value = (e as Error).message;
+  } finally {
+    busy.value = "";
+  }
+}
+async function deleteItem(entry: Item) {
+  if (!window.confirm(`确定删除“${usageCodeLabel(entry.code)}”收费项吗？历史账单仍会保留。`)) return;
+  try {
+    busy.value = `delete:${entry.id}`;
+    await api(`/admin/pricing/items/${entry.id}`, { method: "DELETE" });
+    pricingDrafts.delete(entry.id);
+    if (selected.value === entry.id) selected.value = "";
+    done("收费项已删除");
     await load();
   } catch (e) {
     error.value = (e as Error).message;
@@ -180,25 +223,39 @@ function price(v: Version) {
             <h2>费用项</h2>
           </div>
         </div>
-        <button
+        <div
           v-for="entry in items"
           :key="entry.id"
-          :class="['pricing-select', { selected: selected === entry.id }]"
-          @click="selectPricing(entry.id)"
+          :class="['pricing-select-row', { selected: selected === entry.id }]"
         >
-          <BadgeCent :size="18" /><span
-            ><strong>{{ usageCodeLabel(entry.code) }}</strong
-            ><small
-              >{{ entry.code }} · {{ usageUnitLabel(entry.unit) }}</small
-            ></span
+          <button class="pricing-select" @click="selectPricing(entry.id)">
+            <BadgeCent :size="18" /><span
+              ><strong>{{ usageCodeLabel(entry.code) }}</strong
+              ><small>{{ entry.code }} · {{ usageUnitLabel(entry.unit) }}</small></span
+            >
+          </button>
+          <button
+            class="pricing-delete icon-button"
+            type="button"
+            :disabled="busy === `delete:${entry.id}`"
+            :title="`删除${usageCodeLabel(entry.code)}`"
+            @click="deleteItem(entry)"
           >
-        </button>
+            <Trash2 :size="16" />
+          </button>
+        </div>
         <form class="inline-form pricing-create" @submit.prevent="createItem">
-          <label>代码<input v-model="item.code" required /></label
-          ><label>单位<input v-model="item.unit" required /></label
-          ><button class="secondary compact" :disabled="busy === 'item'">
+          <label
+            >收费项<select v-model="item.code" :disabled="!availablePresets.length" required @change="selectPreset">
+              <option value="" disabled>请选择收费项</option>
+              <option v-for="preset in availablePresets" :key="preset.code" :value="preset.code">
+                {{ usageCodeLabel(preset.code) }}（{{ usageUnitLabel(preset.unit) }}）
+              </option>
+            </select></label
+          ><button class="secondary compact" :disabled="busy === 'item' || !item.code">
             <Plus :size="16" />添加费用项
           </button>
+          <small v-if="!availablePresets.length" class="quiet">所有预设收费项均已添加</small>
         </form>
       </section>
       <Transition name="panel-swap" mode="out-in">
@@ -206,7 +263,7 @@ function price(v: Version) {
           :key="selected || 'pricing-empty'"
           :class="['pricing-main', switchingPricing && 'is-switching']"
         >
-          <section v-if="selected" class="form-panel">
+          <section v-if="selected" class="form-panel pricing-version-form">
             <h2><BadgeCent :size="19" />发布价格版本</h2>
             <form @submit.prevent="createVersion">
               <div class="field-row">

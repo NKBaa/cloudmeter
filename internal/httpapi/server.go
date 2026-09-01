@@ -310,6 +310,7 @@ func (s *Server) routes() {
 	s.mux.Handle("POST /api/admin/plans/{planID}/versions", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.createPlanVersion))))
 	s.mux.Handle("PUT /api/admin/users/{userID}/subscription", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.assignSubscription))))
 	s.mux.Handle("POST /api/admin/pricing/items", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.createPricingItem))))
+	s.mux.Handle("DELETE /api/admin/pricing/items/{itemID}", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.deletePricingItem))))
 	s.mux.Handle("POST /api/admin/pricing/items/{itemID}/versions", s.authenticate(s.requireRoles("super_admin")(http.HandlerFunc(s.createPricingVersion))))
 	s.mux.Handle("POST /api/apps", s.authenticate(http.HandlerFunc(s.createApp)))
 	s.mux.Handle("DELETE /api/apps/{appID}", s.authenticate(http.HandlerFunc(s.deleteApp)))
