@@ -2,7 +2,7 @@
 
 ## 首次部署
 
-复制 `configs/.env.example` 为根目录 `.env`，替换密码和令牌。`PLATFORM_PORT` 是模式 2 的独立控制台端口，默认 `8080`；Caddy 固定接收 TCP 80/443 与 UDP 443。首次初始化后在“基础设施 → 网站设置”中分别配置控制台主域名和应用泛子域名，例如 `console.example.com` 与 `apps.example.com`，二者互相独立。模式 1 由 Caddy 同时托管控制台与应用；模式 2 仅让应用走 Caddy，控制台直接使用 `http://服务器地址:PLATFORM_PORT`。执行 `docker compose --env-file .env -f deploy/compose.yaml up -d --build`，然后打开 `/setup` 创建唯一超级管理员。
+运行 `bash deploy/install.sh` 自动生成 `.env`、密码、令牌和主加密密钥并启动服务。`PLATFORM_PORT` 是模式 2 的独立控制台端口，默认 `8080`；Caddy 固定接收 TCP 80/443 与 UDP 443。首次初始化后在“基础设施 → 网站设置”中分别配置控制台主域名和应用泛子域名，例如 `console.example.com` 与 `apps.example.com`，二者互相独立。模式 1 由 Caddy 同时托管控制台与应用；模式 2 仅让应用走 Caddy，控制台直接使用 `http://服务器地址:PLATFORM_PORT`。
 
 “网站设置”通过仅在 `platform_network` 内可达的 Caddy Admin API 展示活动路由、监听地址和实时上游状态，并生成托管 Caddyfile、先适配校验再无中断重载。Admin 端口 `2019` 不得映射到宿主机或公网。导入证书在数据库中加密保存，运行时证书文件与托管配置放在 `caddy_runtime` 持久卷；自动证书使用 Caddy ACME，应用站点只允许数据库中活动路由对应的域名按需申请。
 
@@ -10,13 +10,7 @@
 
 用户端“每日签到”按 `Asia/Shanghai` 自然日计算，每位用户每天最多一次。奖励使用加密安全随机数生成并作为 `checkin_reward` 追加到不可修改的钱包账本；重复请求只返回当日原奖励。超级管理员在“额度设置”中统一管理签到开关、1–10000 分奖励范围、新用户初始额度和邀请奖励，设置变更写入审计日志。
 
-首次启动前必须生成一次 `SECRETS_ENCRYPTION_KEY`：
-
-```bash
-openssl rand -base64 32 | tr -d '=\n'
-```
-
-将结果写入 `.env`。该 32 字节主密钥只注入 API 和执行应用部署的 Worker，用于 AES-256-GCM 加密 SMTP 密码、OAuth Client Secret、支付密钥和应用 Secret。必须与数据库备份一起离线保管；直接更换或遗失会导致已保存凭据无法解密。API 启动时会验证平台凭据密文，并自动将旧版本明文凭据原地升级为带版本前缀的密文。应用 Secret 每次修改都会创建不可变版本，Release 只保存版本引用，Worker 仅在创建容器时解密。
+安装脚本首次运行时会自动生成 `SECRETS_ENCRYPTION_KEY` 并写入权限受限的 `.env`。该 32 字节主密钥只注入 API 和执行应用部署的 Worker，用于 AES-256-GCM 加密 SMTP 密码、OAuth Client Secret、支付密钥和应用 Secret。必须与数据库备份一起离线保管；直接更换或遗失会导致已保存凭据无法解密。API 启动时会验证平台凭据密文，并自动将旧版本明文凭据原地升级为带版本前缀的密文。应用 Secret 每次修改都会创建不可变版本，Release 只保存版本引用，Worker 仅在创建容器时解密。
 
 ## 升级
 

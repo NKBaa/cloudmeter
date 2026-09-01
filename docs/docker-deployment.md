@@ -94,29 +94,21 @@ git switch main
 
 > **提示**：Compose 文件位于 `deploy/` 子目录，所有命令都必须显式指定 `--env-file .env`。正式 Compose 使用 `deploy/Dockerfile.web` 在镜像内完成前端构建，GitHub 克隆后不需要预先存在 `apps/web/dist`。`Dockerfile.web.prebuilt` 仅供已经生成本地前端产物的开发/验收流程使用。Gateway 内置 Cloudflare、阿里云 DNS、腾讯云 DNSPod、AWS Route 53 和 DigitalOcean DNS 插件。
 
-### 2.2 准备配置文件 `.env`
+### 2.2 自动生成配置并部署
 
-基于配置模板创建 `.env` 文件：
-
-```bash
-cp configs/.env.example .env
-```
-
-`.env` 文件包含所有的环境变量和密码配置，已自动列入 `.gitignore`，**请勿将生产 `.env` 提交至 Git 仓库**。
-
-### 2.3 生成加密密钥
-
-运行以下命令生成安全随机密钥：
+安装脚本会在首次运行时生成 `.env`、数据库密码、内部通信令牌和主加密密钥，然后构建并启动全部服务：
 
 ```bash
-# 生成各类服务内部通信密码与令牌
-openssl rand -hex 32
-
-# 生成 SECRETS_ENCRYPTION_KEY (32 字节 Base64，无填充)
-openssl rand -base64 32 | tr -d '=\n'
+bash deploy/install.sh
 ```
 
-编辑 `.env` 文件，替换以下核心字段：
+Windows PowerShell 可执行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File deploy/install.ps1
+```
+
+重复运行会保留现有 `.env`，不会轮换密钥。`.env` 已列入 `.gitignore`，请勿提交，并务必与数据库备份一起离线保存。核心字段如下：
 
 | 环境变量 | 说明 | 示例 / 提示 |
 | :--- | :--- | :--- |

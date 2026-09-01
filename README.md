@@ -23,7 +23,6 @@ CloudMeter is a self-hosted AI application deployment and usage-based billing pl
 ### Prerequisites
 - Linux / macOS / Windows with Docker Desktop (or WSL2)
 - Docker Engine 24+ and Docker Compose v2 (`docker compose version`)
-- OpenSSL (for generating secrets)
 
 ### Installation
 
@@ -32,26 +31,8 @@ CloudMeter is a self-hosted AI application deployment and usage-based billing pl
 git clone https://github.com/NKBaa/cloudmeter.git
 cd cloudmeter
 
-# 2. Prepare environment file
-cp configs/.env.example .env
-
-# 3. Generate cryptographic secrets and update .env
-# Replace passwords, tokens, and SECRETS_ENCRYPTION_KEY
-```
-
-Generate secure keys:
-```bash
-# For DB / Redis / Router / Egress tokens
-openssl rand -hex 32
-
-# For SECRETS_ENCRYPTION_KEY (32-byte Base64, no padding)
-openssl rand -base64 32 | tr -d '=\n'
-```
-
-### Start Services
-
-```bash
-docker compose --env-file .env -f deploy/compose.yaml up -d --build
+# 2. Generate secure credentials and start all services
+bash deploy/install.sh
 ```
 
 Access the setup wizard at `http://<server-ip>:<PLATFORM_PORT>/setup` to create the super-administrator account, then configure the public URL in Website Settings.
@@ -174,25 +155,8 @@ CloudMeter 是一款面向云端环境的开源 AI 应用部署与按量计费�
 git clone https://github.com/NKBaa/cloudmeter.git
 cd cloudmeter
 
-# 2. 复制环境配置模板
-cp configs/.env.example .env
-
-# 3. 生成必要安全密钥并修改 .env 配置文件
-```
-
-生成随机密码与主加密密钥：
-```bash
-# 生成各类服务密码与通信令牌
-openssl rand -hex 32
-
-# 生成 SECRETS_ENCRYPTION_KEY (32 字节无填充 Base64)
-openssl rand -base64 32 | tr -d '=\n'
-```
-
-### 启动服务栈
-
-```bash
-docker compose --env-file .env -f deploy/compose.yaml up -d --build
+# 2. 自动生成安全密钥并启动全部服务
+bash deploy/install.sh
 ```
 
 通过浏览器访问 `http://<服务器 IP>:<PLATFORM_PORT>/setup` 完成超级管理员账号初始化，然后在“网站设置”中配置服务器公开 URL。
