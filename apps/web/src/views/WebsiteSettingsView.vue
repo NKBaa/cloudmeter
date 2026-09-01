@@ -699,7 +699,6 @@ onMounted(refreshAll);
               <strong>DNS-01 验证</strong>
               <p>签发与续期时自动创建临时 TXT 记录，适用于泛域名，也不要求验证请求能从公网访问 80/443 端口。</p>
             </div>
-            <span>唯一验证方式</span>
           </div>
           <label class="dns-provider-select">
             <span>DNS 服务商</span>
