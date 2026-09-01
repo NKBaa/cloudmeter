@@ -1451,9 +1451,10 @@ func (s *Server) billingLedger(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) billingUsage(w http.ResponseWriter, r *http.Request) {
 	p, _ := r.Context().Value(principalKey).(principal)
-	rows, err := s.db.Query(r.Context(), `SELECT a.user_app_id::text,app.slug,a.usage_code,a.unit,a.window_start,a.window_end,a.quantity::text,a.sealed_at,a.billing_disposition,c.amount_cents,coalesce(c.pricing_version_id,a.price_version_id)::text,price.unit_price_micros
+	rows, err := s.db.Query(r.Context(), `SELECT a.user_app_id::text,app.slug,product.slug,app.deleted_at IS NOT NULL,a.usage_code,a.unit,a.window_start,a.window_end,a.quantity::text,a.sealed_at,a.billing_disposition,c.amount_cents,coalesce(c.pricing_version_id,a.price_version_id)::text,price.unit_price_micros
 		FROM usage_aggregates a LEFT JOIN usage_charges c ON c.user_id=a.user_id AND c.user_app_id IS NOT DISTINCT FROM a.user_app_id AND c.usage_code=a.usage_code AND c.window_start=a.window_start AND c.window_end=a.window_end AND (a.user_app_id IS NULL OR c.pricing_version_id IS NOT DISTINCT FROM a.price_version_id)
 		LEFT JOIN user_apps app ON app.id=a.user_app_id
+		LEFT JOIN app_products product ON product.id=app.product_id
 		LEFT JOIN pricing_versions price ON price.id=coalesce(c.pricing_version_id,a.price_version_id)
         WHERE a.user_id=$1 ORDER BY a.window_start DESC LIMIT 100`, p.ID)
 	if err != nil {
@@ -1464,18 +1465,23 @@ func (s *Server) billingUsage(w http.ResponseWriter, r *http.Request) {
 	items := []map[string]any{}
 	for rows.Next() {
 		var code, unit string
-		var appID, appSlug *string
+		var appID, appSlug, productSlug *string
+		var appDeleted bool
 		var start, end time.Time
 		var quantity string
 		var sealed *time.Time
 		var disposition string
 		var amount, unitPriceMicros *int64
 		var pricingVersionID *string
-		if err := rows.Scan(&appID, &appSlug, &code, &unit, &start, &end, &quantity, &sealed, &disposition, &amount, &pricingVersionID, &unitPriceMicros); err != nil {
+		if err := rows.Scan(&appID, &appSlug, &productSlug, &appDeleted, &code, &unit, &start, &end, &quantity, &sealed, &disposition, &amount, &pricingVersionID, &unitPriceMicros); err != nil {
 			s.internalError(w, err)
 			return
 		}
-		items = append(items, map[string]any{"appId": appID, "appSlug": appSlug, "usageCode": code, "unit": unit, "windowStart": start, "windowEnd": end, "quantity": quantity, "sealedAt": sealed, "billingDisposition": disposition, "amountCents": amount, "pricingVersionId": pricingVersionID, "unitPriceMicros": unitPriceMicros})
+		amountCents := int64(0)
+		if amount != nil && disposition != "unpriced" {
+			amountCents = *amount
+		}
+		items = append(items, map[string]any{"appId": appID, "appSlug": appSlug, "productSlug": productSlug, "appDeleted": appDeleted, "usageCode": code, "unit": unit, "windowStart": start, "windowEnd": end, "quantity": quantity, "sealedAt": sealed, "billingDisposition": disposition, "amountCents": amountCents, "pricingVersionId": pricingVersionID, "unitPriceMicros": unitPriceMicros})
 	}
 	writeJSON(w, 200, map[string]any{"usage": items})
 }

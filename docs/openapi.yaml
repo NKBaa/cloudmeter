@@ -297,9 +297,10 @@ paths:
   /billing/usage:
     get:
       operationId: billingUsage
+      description: Returns recent usage windows with application identity and deletion state. Unpriced windows report amountCents as zero so clients can exclude them without affecting totals.
       security: [{bearerAuth: []}]
       responses:
-        '200': {description: Usage windows with billing status; windows without a price are sealed as unpriced and are never charged retroactively}
+        '200': {description: Usage windows with billing status, productSlug, and appDeleted fields; windows without a price are sealed as unpriced and are never charged retroactively}
   /billing/daily-bills:
     get:
       operationId: billingDailyBills

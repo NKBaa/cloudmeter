@@ -177,6 +177,8 @@ type DeploymentJob = {
 type Usage = {
   appId?: string | null;
   appSlug?: string | null;
+  productSlug?: string | null;
+  appDeleted?: boolean;
   usageCode: string;
   unit: string;
   windowStart: string;
@@ -198,7 +200,7 @@ type UsageAppGroup = {
   categoryCount: number;
   totalAmountCents: number;
   latestAt: string;
-  hasUnpriced: boolean;
+  deleted: boolean;
 };
 type UsageCategorySummary = {
   key: string;
@@ -206,11 +208,9 @@ type UsageCategorySummary = {
   unit: string;
   quantity: number;
   amountCents: number;
-  amountAvailable: boolean;
   unitPrices: number[];
   records: Usage[];
   latestAt: string;
-  hasUnpriced: boolean;
   allSettled: boolean;
 };
 type Order = {
@@ -532,49 +532,37 @@ const totalSpend = computed(() =>
     .reduce((sum, item) => sum - item.amountCents, 0),
 );
 const selectedUsageAppKey = ref("");
+const pricedUsage = computed(() =>
+  usage.value.filter(
+    (item) => item.billingDisposition !== "unpriced",
+  ),
+);
 const usageAppGroups = computed<UsageAppGroup[]>(() => {
   const groups = new Map<string, Omit<UsageAppGroup, "categoryCount">>();
 
-  for (const app of apps.value) {
-    const product = productCatalog.value.find(
-      (entry) => entry.slug === app.productSlug,
-    );
-    groups.set(app.id, {
-      key: app.id,
-      appId: app.id,
-      appSlug: app.slug,
-      productName: product?.name || app.productSlug,
-      iconUrl: product?.iconUrl,
-      items: [],
-      totalAmountCents: 0,
-      latestAt: "",
-      hasUnpriced: false,
-    });
-  }
-
-  for (const item of usage.value) {
+  for (const item of pricedUsage.value) {
     const key = item.appId || "account";
     const app = item.appId
       ? apps.value.find((entry) => entry.id === item.appId)
       : undefined;
-    const product = app
-      ? productCatalog.value.find((entry) => entry.slug === app.productSlug)
-      : undefined;
+    const productSlug = item.productSlug || app?.productSlug;
+    const product = productCatalog.value.find(
+      (entry) => entry.slug === productSlug,
+    );
     const current = groups.get(key) || {
       key,
       appId: item.appId || undefined,
       appSlug: item.appSlug || app?.slug || "账户级用量",
-      productName: product?.name || app?.productSlug || "平台公共费用",
+      productName: product?.name || productSlug || "平台公共费用",
       iconUrl: product?.iconUrl,
       items: [],
       totalAmountCents: 0,
       latestAt: item.windowStart,
-      hasUnpriced: false,
+      deleted: item.appDeleted === true,
     };
 
     current.items.push(item);
-    current.totalAmountCents += item.amountCents || 0;
-    current.hasUnpriced ||= item.billingDisposition === "unpriced";
+    current.totalAmountCents += item.amountCents ?? 0;
     if (
       !current.latestAt ||
       new Date(item.windowStart) > new Date(current.latestAt)
@@ -594,6 +582,22 @@ const usageAppGroups = computed<UsageAppGroup[]>(() => {
         (Date.parse(right.latestAt) || 0) - (Date.parse(left.latestAt) || 0),
     );
 });
+const activeUsageAppGroups = computed(() =>
+  usageAppGroups.value.filter((group) => group.appId && !group.deleted),
+);
+const deletedUsageAppGroups = computed(() =>
+  usageAppGroups.value.filter((group) => group.appId && group.deleted),
+);
+const accountUsageGroups = computed(() =>
+  usageAppGroups.value.filter((group) => !group.appId),
+);
+const usageGroupSections = computed(() =>
+  [
+    { key: "active", title: "当前应用", groups: activeUsageAppGroups.value },
+    { key: "deleted", title: "已删除应用", groups: deletedUsageAppGroups.value },
+    { key: "account", title: "账户级费用", groups: accountUsageGroups.value },
+  ].filter((section) => section.groups.length),
+);
 const selectedUsageGroup = computed(() =>
   usageAppGroups.value.find((group) => group.key === selectedUsageAppKey.value),
 );
@@ -609,19 +613,14 @@ const selectedUsageCategories = computed<UsageCategorySummary[]>(() => {
       unit: item.unit,
       quantity: 0,
       amountCents: 0,
-      amountAvailable: false,
       unitPrices: [],
       records: [],
       latestAt: item.windowStart,
-      hasUnpriced: false,
       allSettled: true,
     };
     const quantity = Number(item.quantity);
     if (Number.isFinite(quantity)) current.quantity += quantity;
-    if (item.amountCents != null) {
-      current.amountCents += item.amountCents;
-      current.amountAvailable = true;
-    }
+    current.amountCents += item.amountCents ?? 0;
     if (
       item.unitPriceMicros != null &&
       !current.unitPrices.includes(item.unitPriceMicros)
@@ -629,7 +628,6 @@ const selectedUsageCategories = computed<UsageCategorySummary[]>(() => {
       current.unitPrices.push(item.unitPriceMicros);
     }
     current.records.push(item);
-    current.hasUnpriced ||= item.billingDisposition === "unpriced";
     current.allSettled &&= Boolean(item.sealedAt);
     if (new Date(item.windowStart) > new Date(current.latestAt)) {
       current.latestAt = item.windowStart;
@@ -654,7 +652,7 @@ function formatUsageAmount(cents: number) {
 }
 
 function formatUsageUnitPrice(prices: number[], unit: string) {
-  if (!prices.length) return "未配置价格";
+  if (!prices.length) return "¥0 / " + usageUnitLabel(unit);
   const sorted = [...prices].sort((left, right) => left - right);
   const format = (micros: number) =>
     `¥${(micros / 100000000)
@@ -2271,7 +2269,9 @@ async function exitImpersonation() {
             <span class="eyebrow">USAGE · 按应用汇总</span>
             <h3>应用用量</h3>
           </div>
-          <span class="mono-data text-sm">{{ usageAppGroups.length }} 个应用</span>
+          <span class="mono-data text-sm">{{
+            activeUsageAppGroups.length + deletedUsageAppGroups.length
+          }} 个应用</span>
         </div>
         <div class="card-divider"></div>
         <div v-if="!usageAppGroups.length" class="card-inner-body">
@@ -2283,41 +2283,53 @@ async function exitImpersonation() {
             <p>部署并运行应用后，系统将采集 CPU、内存、存储与网络用量，并在这里按应用归类。</p>
           </div>
         </div>
-        <div v-else class="usage-app-grid">
-          <button
-            v-for="group in usageAppGroups"
-            :key="group.key"
-            type="button"
-            class="usage-app-card"
-            @click="selectedUsageAppKey = group.key"
+        <div v-else class="usage-app-sections">
+          <section
+            v-for="section in usageGroupSections"
+            :key="section.key"
+            class="usage-app-section"
           >
-            <span class="usage-app-icon">
-              <AppWindow v-if="group.appId" :size="21" />
-              <CreditCard v-else :size="21" />
-              <img
-                v-if="group.iconUrl"
-                :src="group.iconUrl"
-                :alt="group.productName + ' 图标'"
-                @error="
-                  ($event.currentTarget as HTMLImageElement).style.display =
-                    'none'
-                "
-              />
-            </span>
-            <span class="usage-app-main">
-              <strong>{{ group.appSlug }}</strong>
-              <small>{{ group.productName }}</small>
-            </span>
-            <span class="usage-app-price">
-              <small>记录内费用</small>
-              <strong>{{ formatUsageAmount(group.totalAmountCents) }}</strong>
-            </span>
-            <span class="usage-app-meta">
-              {{ group.categoryCount }} 个计费分类 · {{ group.items.length }} 个用量窗口
-              <em v-if="group.hasUnpriced">含未定价项目</em>
-            </span>
-            <ChevronRight class="usage-app-arrow" :size="18" />
-          </button>
+            <div class="usage-app-section-heading">
+              <strong>{{ section.title }}</strong>
+              <span>{{ section.groups.length }}</span>
+            </div>
+            <div class="usage-app-grid">
+              <button
+                v-for="group in section.groups"
+                :key="group.key"
+                type="button"
+                class="usage-app-card"
+                @click="selectedUsageAppKey = group.key"
+              >
+                <span class="usage-app-icon">
+                  <AppWindow v-if="group.appId" :size="21" />
+                  <CreditCard v-else :size="21" />
+                  <img
+                    v-if="group.iconUrl"
+                    :src="group.iconUrl"
+                    :alt="group.productName + ' 图标'"
+                    @error="
+                      ($event.currentTarget as HTMLImageElement).style.display =
+                        'none'
+                    "
+                  />
+                </span>
+                <span class="usage-app-main">
+                  <strong>{{ group.appSlug }}</strong>
+                  <small>{{ group.productName }}</small>
+                </span>
+                <span class="usage-app-price">
+                  <small>记录内费用</small>
+                  <strong>{{ formatUsageAmount(group.totalAmountCents) }}</strong>
+                </span>
+                <span class="usage-app-meta">
+                  {{ group.categoryCount }} 个计费分类 · {{ group.items.length }} 个用量窗口
+                  <em v-if="group.deleted">已删除</em>
+                </span>
+                <ChevronRight class="usage-app-arrow" :size="18" />
+              </button>
+            </div>
+          </section>
         </div>
       </template>
 
@@ -2389,25 +2401,12 @@ async function exitImpersonation() {
             </div>
             <div class="usage-category-total">
               <small>分类合计</small>
-              <strong v-if="category.amountAvailable">
-                {{ formatUsageAmount(category.amountCents) }}
-              </strong>
-              <strong v-else>—</strong>
+              <strong>{{ formatUsageAmount(category.amountCents) }}</strong>
               <span
                 class="status-pill"
-                :class="
-                  category.hasUnpriced
-                    ? 'pending'
-                    : category.allSettled
-                      ? 'active'
-                      : 'suspended'
-                "
+                :class="category.allSettled ? 'active' : 'suspended'"
               >{{
-                category.hasUnpriced
-                  ? "未配置价格"
-                  : category.allSettled
-                    ? "已结算"
-                    : "待结算"
+                category.allSettled ? "已结算" : "待结算"
               }}</span>
             </div>
           </article>
