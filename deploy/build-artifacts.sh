@@ -19,6 +19,7 @@ docker pull redis:7.4-alpine
 docker pull migrate/migrate:v4.18.1
 docker pull alpine:3.21
 docker pull "nginx@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10"
+docker tag "nginx@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10" nginx:1.27-alpine
 
 IMAGES=(
   cloudmeter-api:latest
