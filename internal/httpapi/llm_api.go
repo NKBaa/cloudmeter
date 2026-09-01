@@ -48,7 +48,7 @@ func (s *Server) rotateLLMAPIKey(w http.ResponseWriter, r *http.Request) {
 	}
 	q.Name = strings.TrimSpace(q.Name)
 	if q.Name == "" {
-		q.Name = "默认大模型密钥"
+		q.Name = "默认自动化访问密钥"
 	}
 	if len([]rune(q.Name)) > 64 {
 		writeError(w, http.StatusBadRequest, "validation_failed", "密钥名称不能超过 64 个字符")
@@ -59,7 +59,7 @@ func (s *Server) rotateLLMAPIKey(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, err)
 		return
 	}
-	token := "cm_llm_" + base64.RawURLEncoding.EncodeToString(random)
+	token := "cm_api_" + base64.RawURLEncoding.EncodeToString(random)
 	hash := sha256.Sum256([]byte(token))
 	prefix := token[:15]
 	tx, err := s.db.Begin(r.Context())
@@ -110,18 +110,19 @@ func (s *Server) revokeLLMAPIKey(w http.ResponseWriter, r *http.Request) {
 func (s *Server) authenticateLLM(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		auth := strings.TrimSpace(r.Header.Get("Authorization"))
-		if !strings.HasPrefix(auth, "Bearer cm_llm_") {
-			writeError(w, http.StatusUnauthorized, "invalid_api_key", "有效的大模型 API 密钥是必需的")
+		token := strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
+		if !strings.HasPrefix(auth, "Bearer ") || (!strings.HasPrefix(token, "cm_api_") && !strings.HasPrefix(token, "cm_llm_")) {
+			writeError(w, http.StatusUnauthorized, "invalid_api_key", "有效的系统开放 API 密钥是必需的")
 			return
 		}
-		hash := sha256.Sum256([]byte(strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))))
+		hash := sha256.Sum256([]byte(token))
 		var p principal
 		err := s.db.QueryRow(r.Context(), `SELECT key.created_by,u.email,u.display_name FROM llm_api_keys key JOIN users u ON u.id=key.created_by WHERE key.singleton AND key.token_hash=$1 AND key.revoked_at IS NULL AND u.status='active'`, hash[:]).Scan(&p.ID, &p.Email, &p.DisplayName)
 		if err != nil {
-			writeError(w, http.StatusUnauthorized, "invalid_api_key", "大模型 API 密钥无效或已撤销")
+			writeError(w, http.StatusUnauthorized, "invalid_api_key", "系统开放 API 密钥无效或已撤销")
 			return
 		}
-		p.Roles = []string{"llm_api"}
+		p.Roles = []string{"automation_api"}
 		_, _ = s.db.Exec(r.Context(), `UPDATE llm_api_keys SET last_used_at=now() WHERE singleton`)
 		ctx := context.WithValue(r.Context(), principalKey, p)
 		next.ServeHTTP(w, r.WithContext(ctx))

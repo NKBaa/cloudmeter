@@ -952,6 +952,27 @@ paths:
           application/json:
             schema: {type: object, required: [operation], properties: {operation: {type: string, enum: [analyze]}}}
       responses: {'200': {description: Whitelisted database maintenance completed and audited}}
+  /automation/v1/analysis:
+    get: {operationId: automationSystemAnalysis, security: [{llmApiKey: []}], responses: {'200': {description: System analysis for trusted tools}}}
+  /automation/v1/settings/system:
+    get: {operationId: automationGetSystemSettings, security: [{llmApiKey: []}], responses: {'200': {description: Platform display settings}}}
+    patch: {operationId: automationPatchSystemSettings, security: [{llmApiKey: []}], responses: {'200': {description: Whitelisted settings updated and audited}}}
+  /automation/v1/users:
+    get: {operationId: automationListUsers, security: [{llmApiKey: []}], responses: {'200': {description: Sanitized user list}}}
+  /automation/v1/users/{userID}:
+    patch:
+      operationId: automationPatchUser
+      security: [{llmApiKey: []}]
+      parameters: [{name: userID, in: path, required: true, schema: {type: string, format: uuid}}]
+      responses: {'200': {description: User display name or status updated and audited}}
+  /automation/v1/logs/audit:
+    get: {operationId: automationListAuditLogs, security: [{llmApiKey: []}], responses: {'200': {description: Recent audit events}}}
+  /automation/v1/logs/runtime/clear:
+    post: {operationId: automationClearRuntimeLogs, security: [{llmApiKey: []}], responses: {'200': {description: Runtime logs cleared and audited}}}
+  /automation/v1/database/summary:
+    get: {operationId: automationDatabaseSummary, security: [{llmApiKey: []}], responses: {'200': {description: Database engine and table inventory}}}
+  /automation/v1/database/maintenance:
+    post: {operationId: automationDatabaseMaintenance, security: [{llmApiKey: []}], responses: {'200': {description: Whitelisted database maintenance completed}}}
   /admin/caddy/overview:
     get:
       operationId: getCaddyOverview
@@ -1667,7 +1688,7 @@ paths:
 components:
   securitySchemes:
     bearerAuth: {type: http, scheme: bearer}
-    llmApiKey: {type: http, scheme: bearer, bearerFormat: CloudMeter LLM API key}
+    llmApiKey: {type: http, scheme: bearer, bearerFormat: CloudMeter system API key}
   schemas:
     TicketStatus:
       type: string

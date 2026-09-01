@@ -24,7 +24,7 @@ const error = ref("");
 const updatedAt = ref("");
 type LLMAPIKeyStatus = { configured: boolean; name?: string; prefix?: string; createdAt?: string; lastUsedAt?: string };
 const llmKeyStatus = ref<LLMAPIKeyStatus>({ configured: false });
-const llmKeyName = ref("默认大模型密钥");
+const llmKeyName = ref("默认自动化访问密钥");
 const generatedLLMKey = ref("");
 const llmKeyBusy = ref(false);
 const llmKeyMessage = ref("");
@@ -34,7 +34,7 @@ async function loadLLMKey() {
     llmKeyStatus.value = await api<LLMAPIKeyStatus>("/admin/settings/llm-api-key");
     if (llmKeyStatus.value.name) llmKeyName.value = llmKeyStatus.value.name;
   } catch (err: any) {
-    error.value = err.message || "加载大模型 API 密钥状态失败";
+    error.value = err.message || "加载系统开放 API 密钥状态失败";
   }
 }
 
@@ -60,7 +60,7 @@ async function copyLLMKey() {
 }
 
 async function revokeLLMKey() {
-  if (!window.confirm("撤销后，正在使用该密钥的模型调用将立即失败。确认撤销？")) return;
+  if (!window.confirm("撤销后，正在使用该密钥的工具和自动化调用将立即失败。确认撤销？")) return;
   llmKeyBusy.value = true;
   error.value = "";
   try {
@@ -183,14 +183,14 @@ onMounted(() => { Promise.all([load(), loadLLMKey()]); });
 
       <section class="nextdev-card p-0 llm-api-card">
         <div class="card-header-bar">
-          <div class="card-title-group"><span class="eyebrow">LLM API · 模型接入</span><h3>大模型 API 与鉴权密钥</h3></div>
+          <div class="card-title-group"><span class="eyebrow">OPEN API · 工具与自动化</span><h3>系统开放 API 与访问密钥</h3></div>
           <span :class="['llm-key-state', llmKeyStatus.configured ? 'ready' : 'idle']">{{ llmKeyStatus.configured ? "已启用" : "未配置" }}</span>
         </div>
         <div class="card-divider"></div>
         <div class="llm-api-layout">
           <div class="llm-key-panel">
-            <div class="llm-key-heading"><KeyRound :size="19" /><div><strong>机器访问密钥</strong><p>仅超级管理员可生成、轮换或撤销。明文只显示一次。</p></div></div>
-            <label class="log-field"><span>密钥名称</span><input v-model="llmKeyName" maxlength="64" placeholder="例如：生产环境分析模型" /></label>
+            <div class="llm-key-heading"><KeyRound :size="19" /><div><strong>工具访问密钥</strong><p>供大模型、脚本、运维工具和第三方集成调用，仅超级管理员可管理。</p></div></div>
+            <label class="log-field"><span>密钥名称</span><input v-model="llmKeyName" maxlength="64" placeholder="例如：生产环境运维工具" /></label>
             <dl v-if="llmKeyStatus.configured" class="llm-key-facts">
               <div><dt>密钥前缀</dt><dd><code>{{ llmKeyStatus.prefix }}...</code></dd></div>
               <div><dt>创建时间</dt><dd>{{ llmKeyStatus.createdAt ? new Date(llmKeyStatus.createdAt).toLocaleString() : "—" }}</dd></div>
@@ -205,9 +205,9 @@ onMounted(() => { Promise.all([load(), loadLLMKey()]); });
           </div>
           <div class="llm-api-reference">
             <div class="llm-reference-heading"><BookOpen :size="18" /><div><strong>调用规范</strong><p>使用 Bearer 密钥访问版本化接口。</p></div></div>
-            <div class="llm-code-block"><span>鉴权请求头</span><code>Authorization: Bearer cm_llm_...</code></div>
-            <div class="llm-endpoints"><div><code>GET /api/llm/v1/analysis</code><small>系统设置与运行汇总分析</small></div><div><code>GET /api/llm/v1/settings/system</code><small>读取系统展示设置</small></div><div><code>PATCH /api/llm/v1/settings/system</code><small>修改允许的大模型写入字段</small></div></div>
-            <p class="llm-safety-note">模型可按规范维护用户状态、运行日志和数据库统计，但不能读取或修改用户密码、会话、支付凭据、应用 Secret、网站 TLS 与 DNS 凭据，也不能执行任意 SQL。所有写入都会进入审计日志。</p>
+            <div class="llm-code-block"><span>鉴权请求头</span><code>Authorization: Bearer cm_api_...</code></div>
+            <div class="llm-endpoints"><div><code>GET /api/automation/v1/analysis</code><small>系统设置与运行汇总分析</small></div><div><code>GET /api/automation/v1/settings/system</code><small>读取系统展示设置</small></div><div><code>PATCH /api/automation/v1/settings/system</code><small>修改白名单内的系统设置</small></div><div><code>GET/PATCH /api/automation/v1/users</code><small>读取用户并修改显示名或状态</small></div><div><code>GET /api/automation/v1/logs/audit</code><small>读取最近审计日志</small></div><div><code>GET/POST /api/automation/v1/database/*</code><small>数据库摘要与白名单维护</small></div></div>
+            <p class="llm-safety-note">调用方可按规范维护系统设置、用户状态、运行日志和数据库统计，但不能读取或修改用户密码、会话、支付凭据、应用 Secret、网站 TLS 与 DNS 凭据，也不能执行任意 SQL。所有写入都会进入审计日志。</p>
           </div>
         </div>
       </section>

@@ -1,19 +1,21 @@
-# CloudMeter 大模型管理 API 规范
+# CloudMeter 系统开放 API 规范
 
 ## 1. 适用范围
 
-该 API 供受信任的大模型或自动化代理读取系统分析上下文，并修改经过白名单限制的系统展示设置。它不是通用管理员接口，不能管理用户、余额、支付、应用密钥或执行任意数据库操作。
+该 API 供受信任的大模型、脚本、运维工具和第三方集成读取系统信息，并执行经过白名单限制的管理操作。它不是数据库直连接口，不提供任意 SQL、密码或 Secret 访问能力。
 
-基础路径：`https://你的控制台域名/api/llm/v1`
+基础路径：`https://你的控制台域名/api/automation/v1`
+
+旧版 `/api/llm/v1` 路径与 `cm_llm_` 密钥继续兼容，新接入应使用 `/api/automation/v1` 和 `cm_api_` 密钥。
 
 ## 2. 鉴权
 
-超级管理员在“系统设置 → 大模型 API”中生成或轮换密钥。密钥明文只显示一次，服务端仅保存 SHA-256 摘要。
+超级管理员在“系统设置 → 系统开放 API 与访问密钥”中生成或轮换密钥。密钥明文只显示一次，服务端仅保存 SHA-256 摘要。
 
 每个请求必须包含：
 
 ```http
-Authorization: Bearer cm_llm_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+Authorization: Bearer cm_api_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 Content-Type: application/json
 ```
 
@@ -39,8 +41,8 @@ Content-Type: application/json
 `GET /analysis` 返回系统展示设置与汇总指标。指标包括用户数、应用数、运行中应用数、待完成部署任务数，以及最近 24 小时失败类审计事件数。返回内容不包含密码、会话令牌、支付密钥、应用 Secret 或个人账单明细。
 
 ```bash
-curl -sS "$CLOUDMETER_URL/api/llm/v1/analysis" \
-  -H "Authorization: Bearer $CLOUDMETER_LLM_API_KEY"
+curl -sS "$CLOUDMETER_URL/api/automation/v1/analysis" \
+  -H "Authorization: Bearer $CLOUDMETER_API_KEY"
 ```
 
 ## 5. 读取系统设置
@@ -48,8 +50,8 @@ curl -sS "$CLOUDMETER_URL/api/llm/v1/analysis" \
 `GET /settings/system` 返回当前系统名称、品牌内容、首页内容及法务声明。
 
 ```bash
-curl -sS "$CLOUDMETER_URL/api/llm/v1/settings/system" \
-  -H "Authorization: Bearer $CLOUDMETER_LLM_API_KEY"
+curl -sS "$CLOUDMETER_URL/api/automation/v1/settings/system" \
+  -H "Authorization: Bearer $CLOUDMETER_API_KEY"
 ```
 
 ## 6. 修改系统设置
@@ -69,8 +71,8 @@ curl -sS "$CLOUDMETER_URL/api/llm/v1/settings/system" \
 网站入口、域名、TLS、DNS 凭据等高风险配置不在该接口的写入白名单中。
 
 ```bash
-curl -sS -X PATCH "$CLOUDMETER_URL/api/llm/v1/settings/system" \
-  -H "Authorization: Bearer $CLOUDMETER_LLM_API_KEY" \
+curl -sS -X PATCH "$CLOUDMETER_URL/api/automation/v1/settings/system" \
+  -H "Authorization: Bearer $CLOUDMETER_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"footerText":"由 CloudMeter 提供服务"}'
 ```
@@ -88,7 +90,7 @@ curl -sS -X PATCH "$CLOUDMETER_URL/api/llm/v1/settings/system" \
 
 ## 8. 用户、日志与数据库运维
 
-受信任的模型还可以使用以下管理接口。它们仍然只接受 `cm_llm_` 密钥，并且每次写操作都会写入审计日志。
+受信任的工具还可以使用以下管理接口。它们接受 `cm_api_` 密钥，并且每次写操作都会写入审计日志。
 
 - `GET /users`：读取脱敏用户清单（不含密码、角色细节、钱包和会话）。
 - `PATCH /users/{userID}`：修改 `displayName` 或 `status`（仅允许 `active`、`suspended`）。暂停用户会撤销其现有会话。
