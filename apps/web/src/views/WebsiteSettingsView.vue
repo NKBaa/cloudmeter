@@ -680,6 +680,26 @@ onMounted(refreshAll);
               <small>与服务器地址相互独立。保存后，新旧应用都通过专属子域名访问。</small>
             </label>
 
+            <div class="direct-mapping-settings">
+              <div class="direct-mapping-heading">
+                <strong>应用直连设置</strong>
+                <small>开启端口映射的应用将使用此域名和端口范围生成直连地址。</small>
+              </div>
+              <label>
+                <span>端口映射域名</span>
+                <input v-model="form.portMappingHost" inputmode="url" placeholder="direct.example.com" />
+                <small>填写纯域名；留空时使用当前控制台访问域名。</small>
+              </label>
+              <label>
+                <span>应用直连端口范围</span>
+                <div class="field-row">
+                  <input v-model.number="form.hostPortMin" type="number" min="1" max="65535" step="1" placeholder="起始端口" />
+                  <input v-model.number="form.hostPortMax" type="number" min="1" max="65535" step="1" placeholder="结束端口" />
+                </div>
+                <small>系统只会从此范围自动分配宿主机端口。</small>
+              </label>
+            </div>
+
             <div class="website-toggle-row">
               <div><strong>启用 Caddy HTTPS</strong><small>自动管理或使用导入证书，同时接管 443 与 HTTP/3。</small></div>
               <label class="switch"><input v-model="form.tlsEnabled" type="checkbox" /><span /></label>
@@ -1391,6 +1411,10 @@ onMounted(refreshAll);
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
 .website-form small { color: var(--text-muted); font-size: 12px; line-height: 1.5; }
+.direct-mapping-settings { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; padding: 18px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-sm); }
+.direct-mapping-heading { grid-column: 1 / -1; display: grid; gap: 4px; }
+.direct-mapping-heading strong { font-size: 14px; }
+.direct-mapping-settings .field-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .website-toggle-row {
   display: flex;
   align-items: center;
@@ -1809,6 +1833,8 @@ onMounted(refreshAll);
   .wizard-inline-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 680px) {
+  .direct-mapping-settings { grid-template-columns: 1fr; }
+  .direct-mapping-heading { grid-column: auto; }
   .access-mode-switch,
   .website-option-grid,
   .acme-fields,
