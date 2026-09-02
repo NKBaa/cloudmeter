@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 )
@@ -45,6 +46,16 @@ func TestNewAccessToken(t *testing.T) {
 	second, err := newAccessToken()
 	if err != nil || second == "" || second == first {
 		t.Fatalf("second token=%q err=%v", second, err)
+	}
+}
+
+func TestAccessGrantQueriesDoNotUseReservedGrantAlias(t *testing.T) {
+	source, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(source), "app_access_grants grant") {
+		t.Fatal("PostgreSQL GRANT keyword must not be used as an unquoted table alias")
 	}
 }
 

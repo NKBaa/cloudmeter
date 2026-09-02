@@ -140,11 +140,11 @@ func routeHandler(db *pgxpool.Pool, logger *slog.Logger) http.Handler {
 		var sessionUserID string
 		var authErr error
 		if routeMode == routeModeSubdomain {
-			authErr = db.QueryRow(r.Context(), `SELECT grant.user_id::text
-				FROM app_access_grants grant
-				JOIN users ON users.id=grant.user_id AND users.status='active'
-				JOIN user_apps app ON app.id=grant.user_app_id AND app.user_id=grant.user_id AND app.deleted_at IS NULL
-				WHERE grant.token_hash=$1 AND grant.expires_at>now() AND app.route_host_label=$2`, tokenHash[:], hostMatch).Scan(&sessionUserID)
+			authErr = db.QueryRow(r.Context(), `SELECT access_grant.user_id::text
+				FROM app_access_grants access_grant
+				JOIN users ON users.id=access_grant.user_id AND users.status='active'
+				JOIN user_apps app ON app.id=access_grant.user_app_id AND app.user_id=access_grant.user_id AND app.deleted_at IS NULL
+				WHERE access_grant.token_hash=$1 AND access_grant.expires_at>now() AND app.route_host_label=$2`, tokenHash[:], hostMatch).Scan(&sessionUserID)
 		} else {
 			authErr = db.QueryRow(r.Context(), `SELECT session.user_id::text FROM sessions session
 				JOIN users ON users.id=session.user_id AND users.status='active'
@@ -298,13 +298,13 @@ func redeemAppAccessGrant(db *pgxpool.Pool, logger *slog.Logger, w http.Response
 	}
 	defer tx.Rollback(r.Context())
 	var expiresAt time.Time
-	if err = tx.QueryRow(r.Context(), `SELECT grant.expires_at
-		FROM app_access_grants grant
-		JOIN users ON users.id=grant.user_id AND users.status='active'
-		JOIN user_apps app ON app.id=grant.user_app_id AND app.user_id=grant.user_id AND app.deleted_at IS NULL
-		WHERE grant.token_hash=$1 AND grant.expires_at>now() AND app.status IN ('running','updating')
+	if err = tx.QueryRow(r.Context(), `SELECT access_grant.expires_at
+		FROM app_access_grants access_grant
+		JOIN users ON users.id=access_grant.user_id AND users.status='active'
+		JOIN user_apps app ON app.id=access_grant.user_app_id AND app.user_id=access_grant.user_id AND app.deleted_at IS NULL
+		WHERE access_grant.token_hash=$1 AND access_grant.expires_at>now() AND app.status IN ('running','updating')
 		  AND app.route_host_label=$2
-		FOR UPDATE OF grant`, grantHash[:], hostMatch).Scan(&expiresAt); err != nil {
+		FOR UPDATE OF access_grant`, grantHash[:], hostMatch).Scan(&expiresAt); err != nil {
 		if err == pgx.ErrNoRows {
 			http.Error(w, "application access grant is invalid or expired", http.StatusUnauthorized)
 			return
