@@ -13,8 +13,6 @@ import (
 	"strings"
 	"time"
 
-	runtimepolicy "cloudmeter/internal/runtime"
-
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -90,19 +88,6 @@ func processProductVersionTestOne(ctx context.Context, db *pgxpool.Pool, logger 
 			tx.Rollback(ctx)
 			failProductVersionTest(ctx, db, id, productTestFailure("拉取应用镜像", spec.Image, err, productTestSecretValues(id, encryptedSecrets)), logger)
 			return
-		}
-		if companions, companionErr := runtimepolicy.RuntimeCompanions(spec.Runtime); companionErr != nil {
-			tx.Rollback(ctx)
-			failProductVersionTest(ctx, db, id, productTestFailure("读取组合容器配置", "runtimeSpec.companions", companionErr, productTestSecretValues(id, encryptedSecrets)), logger)
-			return
-		} else {
-			for _, companion := range companions {
-				if _, pullErr := pullConfiguredProductImage(operationCtx, db, companion.Image); pullErr != nil {
-					tx.Rollback(ctx)
-					failProductVersionTest(ctx, db, id, productTestFailure("拉取组合容器镜像", companion.Image, pullErr, productTestSecretValues(id, encryptedSecrets)), logger)
-					return
-				}
-			}
 		}
 		if _, needsProbe := healthPath(spec.Health); needsProbe {
 			if err = executor.Pull(operationCtx, backupHelperImage); err != nil {
@@ -199,24 +184,6 @@ func startProductVersionTestContainer(ctx context.Context, db *pgxpool.Pool, id 
 	}
 	if err = executor.CreateProductTest(ctx, container, image, network, []string{productTestAlias(id)}, runtimeSpec); err != nil {
 		return err
-	}
-	companions, err := runtimepolicy.RuntimeCompanions(spec.Runtime)
-	if err != nil {
-		return err
-	}
-	for _, companion := range companions {
-		companionImage, imageErr := configuredProductImage(ctx, db, companion.Image)
-		if imageErr != nil {
-			return imageErr
-		}
-		companionRuntime := runtimepolicy.CompanionRuntimeSpec(id, companion, runtimepolicy.VolumeMounts(spec.Runtime))
-		companionRuntime["testId"] = id
-		if err = executor.CreateProductTest(ctx, productTestContainerName(id)+"-"+companion.Key, companionImage, network, []string{companion.ServiceName}, companionRuntime); err != nil {
-			return err
-		}
-		if err = executor.Start(ctx, productTestContainerName(id)+"-"+companion.Key); err != nil {
-			return err
-		}
 	}
 	return executor.Start(ctx, container)
 }
@@ -489,11 +456,6 @@ func cleanupProductVersionTestRuntime(ctx context.Context, id string, logger *sl
 	for _, container := range uniqueStrings(productTestContainerName(id), legacyProductTestContainerName(id)) {
 		if err := executor.RemoveIfExists(ctx, container); err != nil {
 			logger.Warn("product test container cleanup failed", "test", id, "container", container, "error", err)
-		}
-	}
-	if names, err := executor.ContainerNames(ctx, productTestContainerName(id)+"-"); err == nil {
-		for _, name := range names {
-			_ = executor.RemoveIfExists(ctx, name)
 		}
 	}
 	for _, probe := range uniqueStrings(productTestHealthContainerName(id), productTestHealthLegacyContainerName(id), legacyProductTestHealthContainerName(id), legacyProductTestHealthLegacyContainerName(id)) {

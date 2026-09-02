@@ -41,21 +41,6 @@ func TestValidateRuntimeSpec(t *testing.T) {
 	}
 }
 
-func TestRuntimeCompanions(t *testing.T) {
-	spec := map[string]any{"cpuCores": 1.0, "memoryMiB": 512.0, "volumes": []any{map[string]any{"name": "data", "mountPath": "/data", "sizeGiB": 10.0}}, "companions": []any{map[string]any{"key": "napcat", "name": "NapCat", "image": "mlikiowa/napcat-docker:v4.8.1", "serviceName": "napcat", "cpuCores": 0.5, "memoryMiB": 512.0, "ports": []any{6099.0}, "volumes": []any{map[string]any{"volumeKey": "data", "mountPath": "/AstrBot/data"}}}}}
-	if err := ValidateRuntimeSpec(spec); err != nil {
-		t.Fatal(err)
-	}
-	bad := map[string]any{}
-	for key, value := range spec {
-		bad[key] = value
-	}
-	bad["companions"] = []any{map[string]any{"key": "napcat", "name": "NapCat", "image": "latest", "serviceName": "napcat", "ports": []any{6099.0}}}
-	if err := ValidateRuntimeSpec(bad); err == nil {
-		t.Fatal("expected invalid companion image")
-	}
-}
-
 func TestVolumeSpec(t *testing.T) {
 	spec := map[string]any{"cpuCores": 1.0, "memoryMiB": 512.0, "systemDiskGiB": 5.0, "volumes": []any{map[string]any{"name": "data", "mountPath": "/var/lib/app", "sizeGiB": 12.0}}}
 	if err := ValidateRuntimeSpec(spec); err != nil {
