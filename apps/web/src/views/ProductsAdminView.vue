@@ -1911,8 +1911,14 @@ function dataPolicyLabel(value?: string) {
                   </div>
                   <div class="listener-controls">
                     <div class="listener-options">
-                      <label class="check-field"><input v-model="listener.userEditable" type="checkbox" /><span>允许用户修改端口</span></label>
-                      <label class="check-field"><input v-model="listener.mappingAvailable" type="checkbox" /><span>允许端口直连</span></label>
+                      <div class="listener-option">
+                        <span>允许用户修改端口</span>
+                        <label class="switch" title="允许用户修改端口"><input v-model="listener.userEditable" type="checkbox" /><span /></label>
+                      </div>
+                      <div class="listener-option">
+                        <span>允许端口直连</span>
+                        <label class="switch" title="允许端口直连"><input v-model="listener.mappingAvailable" type="checkbox" /><span /></label>
+                      </div>
                     </div>
                     <span v-if="listener.primary" class="listener-primary-mark"><Network :size="14" />域名主入口</span>
                     <button v-else type="button" class="icon-action listener-remove" title="删除监听端口" aria-label="删除监听端口" @click="removeListenerPort(index)"><Trash2 :size="16" /></button>

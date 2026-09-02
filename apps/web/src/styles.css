@@ -7107,7 +7107,7 @@ textarea:focus {
   align-items: center;
   gap: 24px;
 }
-.listener-controls .check-field,
+.listener-option,
 .listener-map-toggle {
   display: flex;
   align-items: center;
@@ -7115,15 +7115,10 @@ textarea:focus {
   min-height: 28px;
   white-space: nowrap;
 }
-.listener-controls .check-field > span {
+.listener-option > span {
   color: var(--text);
   font-size: 12px;
   font-weight: 600;
-}
-.listener-controls .check-field input {
-  width: 16px;
-  height: 16px;
-  margin: 0;
 }
 .listener-primary-mark {
   display: inline-flex;
