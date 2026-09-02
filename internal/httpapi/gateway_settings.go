@@ -28,6 +28,8 @@ type gatewaySettings struct {
 	ServerURL              string            `json:"serverUrl"`
 	AppBaseDomain          string            `json:"appBaseDomain"`
 	PortMappingHost        string            `json:"portMappingHost"`
+	HostPortMin            int               `json:"hostPortMin"`
+	HostPortMax            int               `json:"hostPortMax"`
 	StandalonePort         int               `json:"standalonePort"`
 	TLSEnabled             bool              `json:"tlsEnabled"`
 	HTTPPolicy             string            `json:"httpPolicy"`
@@ -60,11 +62,11 @@ type gatewayCertificateSummary struct {
 func (s *Server) readGatewaySettings(ctx context.Context) (gatewaySettings, error) {
 	settings := gatewaySettings{StandalonePort: s.cfg.StandalonePort}
 	var encryptedDNSCredentials string
-	err := s.db.QueryRow(ctx, `SELECT access_mode,server_url,coalesce(app_base_domain,''),coalesce(port_mapping_host,''),tls_enabled,http_policy,hsts_enabled,http3_enabled,
+	err := s.db.QueryRow(ctx, `SELECT access_mode,server_url,coalesce(app_base_domain,''),coalesce(port_mapping_host,''),host_port_min,host_port_max,tls_enabled,http_policy,hsts_enabled,http3_enabled,
 		console_certificate_mode,app_certificate_mode,acme_email,acme_ca,acme_key_type,
 		acme_dns_provider,acme_dns_credentials,certificate_renew_interval_minutes,updated_at
 		FROM system_settings WHERE singleton`).Scan(
-		&settings.AccessMode, &settings.ServerURL, &settings.AppBaseDomain, &settings.PortMappingHost, &settings.TLSEnabled,
+		&settings.AccessMode, &settings.ServerURL, &settings.AppBaseDomain, &settings.PortMappingHost, &settings.HostPortMin, &settings.HostPortMax, &settings.TLSEnabled,
 		&settings.HTTPPolicy, &settings.HSTSEnabled, &settings.HTTP3Enabled,
 		&settings.ConsoleCertificateMode, &settings.AppCertificateMode,
 		&settings.ACMEEmail, &settings.ACMECA, &settings.ACMEKeyType,
@@ -87,6 +89,12 @@ func (s *Server) readGatewaySettings(ctx context.Context) (gatewaySettings, erro
 	settings.PortMappingHost, err = normalizePortMappingHost(settings.PortMappingHost)
 	if err != nil {
 		return settings, err
+	}
+	if settings.HostPortMin == 0 {
+		settings.HostPortMin = 30000
+	}
+	if settings.HostPortMax == 0 {
+		settings.HostPortMax = 40000
 	}
 	if settings.ACMEKeyType == "" {
 		settings.ACMEKeyType = "p256"
@@ -162,6 +170,12 @@ var acmeDNSProviderFields = map[string][]string{
 }
 
 func normalizeGatewaySettings(settings *gatewaySettings) error {
+	if settings.HostPortMin == 0 {
+		settings.HostPortMin = 30000
+	}
+	if settings.HostPortMax == 0 {
+		settings.HostPortMax = 40000
+	}
 	if settings.ACMEKeyType == "" {
 		settings.ACMEKeyType = "p256"
 	}
@@ -169,6 +183,9 @@ func normalizeGatewaySettings(settings *gatewaySettings) error {
 		settings.RenewIntervalMinutes = 10
 	}
 	settings.AccessMode = strings.TrimSpace(settings.AccessMode)
+	if settings.HostPortMin < 1 || settings.HostPortMax > 65535 || settings.HostPortMin > settings.HostPortMax {
+		return fmt.Errorf("应用分配端口范围无效")
+	}
 	if settings.AccessMode != "all_caddy" && settings.AccessMode != "apps_only" {
 		return fmt.Errorf("访问模式无效")
 	}
@@ -315,11 +332,11 @@ func (s *Server) updateGatewaySettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if _, err = tx.Exec(r.Context(), `UPDATE system_settings SET
-		access_mode=$1,server_url=$2,app_base_domain=$3,port_mapping_host=$4,tls_enabled=$5,http_policy=$6,hsts_enabled=$7,http3_enabled=$8,
-		console_certificate_mode=$9,app_certificate_mode=$10,acme_email=$11,acme_ca=$12,acme_key_type=$13,
-		certificate_renew_interval_minutes=$14,updated_at=now(),updated_by=$15,acme_dns_provider=$16,acme_dns_credentials=$17
-		WHERE singleton`, settings.AccessMode, settings.ServerURL, settings.AppBaseDomain, settings.PortMappingHost, settings.TLSEnabled,
-		settings.PortMappingHost, settings.HTTPPolicy, settings.HSTSEnabled, settings.HTTP3Enabled, settings.ConsoleCertificateMode,
+		access_mode=$1,server_url=$2,app_base_domain=$3,port_mapping_host=$4,host_port_min=$5,host_port_max=$6,tls_enabled=$7,http_policy=$8,hsts_enabled=$9,http3_enabled=$10,
+		console_certificate_mode=$11,app_certificate_mode=$12,acme_email=$13,acme_ca=$14,acme_key_type=$15,
+		certificate_renew_interval_minutes=$16,updated_at=now(),updated_by=$17,acme_dns_provider=$18,acme_dns_credentials=$19
+		WHERE singleton`, settings.AccessMode, settings.ServerURL, settings.AppBaseDomain, settings.PortMappingHost, settings.HostPortMin, settings.HostPortMax, settings.TLSEnabled,
+		settings.HTTPPolicy, settings.HSTSEnabled, settings.HTTP3Enabled, settings.ConsoleCertificateMode,
 		settings.AppCertificateMode, settings.ACMEEmail, settings.ACMECA, settings.ACMEKeyType,
 		settings.RenewIntervalMinutes, p.ID, settings.ACMEDNSProvider, encryptedDNSCredentials); err != nil {
 		s.internalError(w, err)

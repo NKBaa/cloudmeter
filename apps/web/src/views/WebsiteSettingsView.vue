@@ -54,6 +54,8 @@ type GatewaySettings = {
   serverUrl: string;
   appBaseDomain: string;
   portMappingHost: string;
+  hostPortMin: number;
+  hostPortMax: number;
   standalonePort: number;
   tlsEnabled: boolean;
   httpPolicy: "redirect" | "allow" | "https_only";
@@ -106,6 +108,8 @@ const form = ref<GatewaySettings>({
   serverUrl: "http://127.0.0.1:8080",
   appBaseDomain: "",
   portMappingHost: "",
+  hostPortMin: 30000,
+  hostPortMax: 40000,
   standalonePort: 8080,
   tlsEnabled: false,
   httpPolicy: "redirect",
@@ -1068,6 +1072,7 @@ onMounted(refreshAll);
                   <label><span>{{ form.accessMode === "all_caddy" ? "控制台主域名" : "服务器公开 URL" }}</span><input v-model="form.serverUrl" type="url" inputmode="url" placeholder="https://console.example.com" /><small>{{ form.accessMode === "apps_only" ? "对外公开地址，" : "" }}请输入完整 URL，包括 http:// 或 https://。</small></label>
                   <label><span>应用泛子域名</span><div class="domain-input"><i>*.</i><input v-model="form.appBaseDomain" inputmode="url" placeholder="apps.example.com" /></div><small>为每个应用生成独立子域名，无需输入 *. 前缀。</small></label>
                   <label><span>端口映射域名</span><input v-model="form.portMappingHost" inputmode="url" placeholder="direct.example.com" /><small>应用直连地址使用此域名和分配端口；留空时使用当前控制台访问域名。无需填写协议和端口。</small></label>
+                  <label><span>应用直连端口范围</span><div class="field-row"><input v-model.number="form.hostPortMin" type="number" min="1" max="65535" step="1" placeholder="起始端口" /><input v-model.number="form.hostPortMax" type="number" min="1" max="65535" step="1" placeholder="结束端口" /></div><small>启用端口映射时，系统只会从此范围自动分配宿主机端口。</small></label>
                 </div>
               </section>
 
