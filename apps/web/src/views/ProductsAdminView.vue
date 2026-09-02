@@ -1904,15 +1904,21 @@ function dataPolicyLabel(value?: string) {
               </div>
               <div class="listener-editor">
                 <div v-for="(listener, index) in versionForm.listeners" :key="index" class="listener-row">
-                  <label><span>端口标识</span><input v-model="listener.key" pattern="[a-z][a-z0-9-]{0,31}" required /></label>
-                  <label><span>容器监听端口</span><input v-model.number="listener.containerPort" type="number" min="1" max="65535" required /></label>
-                  <label><span>用途备注</span><input v-model="listener.remark" maxlength="120" placeholder="例如 Web、API、WebSocket" /></label>
-                  <label class="check-field"><input v-model="listener.userEditable" type="checkbox" /><span>用户可改</span></label>
-                  <label class="check-field"><input v-model="listener.mappingAvailable" type="checkbox" /><span>允许直连</span></label>
-                  <button v-if="!listener.primary" type="button" class="secondary compact" @click="removeListenerPort(index)">删除</button>
-                  <span v-else class="readonly-tag">域名主入口</span>
+                  <div class="listener-fields">
+                    <label><span>端口标识</span><input v-model="listener.key" pattern="[a-z][a-z0-9-]{0,31}" required /></label>
+                    <label><span>容器监听端口</span><input v-model.number="listener.containerPort" type="number" min="1" max="65535" required /></label>
+                    <label><span>用途备注</span><input v-model="listener.remark" maxlength="120" placeholder="例如 Web、API、WebSocket" /></label>
+                  </div>
+                  <div class="listener-controls">
+                    <div class="listener-options">
+                      <label class="check-field"><input v-model="listener.userEditable" type="checkbox" /><span>允许用户修改端口</span></label>
+                      <label class="check-field"><input v-model="listener.mappingAvailable" type="checkbox" /><span>允许端口直连</span></label>
+                    </div>
+                    <span v-if="listener.primary" class="listener-primary-mark"><Network :size="14" />域名主入口</span>
+                    <button v-else type="button" class="icon-action listener-remove" title="删除监听端口" aria-label="删除监听端口" @click="removeListenerPort(index)"><Trash2 :size="16" /></button>
+                  </div>
                 </div>
-                <button type="button" class="secondary compact" @click="addListenerPort">添加监听端口</button>
+                <button type="button" class="listener-add-action" @click="addListenerPort"><Plus :size="16" />添加监听端口</button>
               </div>
               <div class="config-grid route-fields-grid">
                 <label class="aligned-config-field"
