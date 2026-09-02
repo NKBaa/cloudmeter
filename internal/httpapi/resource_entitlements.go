@@ -17,7 +17,7 @@ func (e resourceQuotaError) Error() string { return e.Message }
 // enforceRuntimeEntitlements validates a selected instance shape. Resource
 // capacity is billed per application and is no longer capped by a plan.
 func enforceRuntimeEntitlements(ctx context.Context, tx pgx.Tx, userID, excludedAppID string, spec map[string]any) error {
-	_, err := runtimepolicy.RuntimeTotalResources(spec)
+	_, err := runtimepolicy.RuntimeResources(spec, false)
 	if err != nil {
 		return err
 	}

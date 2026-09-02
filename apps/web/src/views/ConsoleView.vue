@@ -46,7 +46,6 @@ type Dependency = {
   required: boolean;
 };
 type Volume = { name: string; mountPath: string; sizeGiB: number };
-type Companion = { key: string; name: string; serviceName: string; cpuCores?: number; memoryMiB?: number; ports?: number[] };
 type SecretOption = { key: string; description?: string; editable?: boolean };
 type EditableOptions = {
   cpu?: boolean;
@@ -80,7 +79,6 @@ type Product = {
     volumes?: Volume[];
     dataVolumeGiB?: number;
     editableOptions?: EditableOptions;
-    companions?: Companion[];
   };
   routeSpec?: {
     containerPort?: number;

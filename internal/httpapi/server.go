@@ -1073,7 +1073,7 @@ func allocateUserSlug(ctx context.Context, tx pgx.Tx, email string) (string, err
 }
 
 func (s *Server) estimatedMonthlyAppCents(ctx context.Context, userID, appID string, runtimeSpec map[string]any, hasIngress bool) (int64, bool) {
-	resources, err := runtimepolicy.RuntimeTotalResources(runtimeSpec)
+	resources, err := runtimepolicy.RuntimeResources(runtimeSpec, false)
 	if err != nil {
 		return 0, false
 	}
@@ -1158,7 +1158,7 @@ func (s *Server) listApps(w http.ResponseWriter, r *http.Request) {
 			s.internalError(w, err)
 			return
 		}
-		if resources, resourceErr := runtimepolicy.RuntimeTotalResources(runtimeSpec); resourceErr == nil {
+		if resources, resourceErr := runtimepolicy.RuntimeResources(runtimeSpec, false); resourceErr == nil {
 			item.CPUCores, item.MemoryMiB = resources.CPUCores, resources.MemoryMiB
 		}
 		if item.Status == "running" {

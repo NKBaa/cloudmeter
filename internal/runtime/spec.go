@@ -712,25 +712,6 @@ func RuntimeResources(spec map[string]any, required bool) (Resources, error) {
 	return Resources{CPUCores: cpu, MemoryMiB: memory}, nil
 }
 
-// RuntimeTotalResources returns the billable resource envelope for an app.
-// Companion containers are one billing entity with the primary container, so
-// their reservations are summed for overview and quota calculations.
-func RuntimeTotalResources(spec map[string]any) (Resources, error) {
-	total, err := RuntimeResources(spec, false)
-	if err != nil {
-		return Resources{}, err
-	}
-	companions, err := RuntimeCompanions(spec)
-	if err != nil {
-		return Resources{}, err
-	}
-	for _, companion := range companions {
-		total.CPUCores += companion.CPUCores
-		total.MemoryMiB += companion.MemoryMiB
-	}
-	return total, nil
-}
-
 func VolumeMounts(spec map[string]any) []VolumeMount {
 	result := []VolumeMount{}
 	values, ok := spec["volumes"].([]any)

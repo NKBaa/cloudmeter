@@ -1404,8 +1404,7 @@ func meterRuntime(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
 	}
 	rows, err := db.Query(ctx, `SELECT a.id,a.user_id,coalesce(ar.upstream_container,''),
 		coalesce(r.immutable_snapshot->'runtime_spec'->>'cpuCores',''),
-		coalesce(r.immutable_snapshot->'runtime_spec'->>'memoryMiB',''),
-		r.immutable_snapshot->'runtime_spec'
+		coalesce(r.immutable_snapshot->'runtime_spec'->>'memoryMiB','')
 		FROM user_apps a
 		JOIN app_releases r ON r.id=a.last_successful_release_id
 		LEFT JOIN app_routes ar ON ar.user_app_id=a.id
@@ -1417,34 +1416,17 @@ func meterRuntime(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
 	defer rows.Close()
 	for rows.Next() {
 		var appID, userID, container, cpuCores, memoryMiB string
-		var runtimeSpec map[string]any
-		if err := rows.Scan(&appID, &userID, &container, &cpuCores, &memoryMiB, &runtimeSpec); err != nil {
+		if err := rows.Scan(&appID, &userID, &container, &cpuCores, &memoryMiB); err != nil {
 			logger.Error("usage scan failed", "error", err)
 			continue
 		}
 		if executor == nil || container == "" {
 			continue
 		}
-		if total, totalErr := runtimepolicy.RuntimeTotalResources(runtimeSpec); totalErr == nil {
-			cpuCores = formatQuantity(total.CPUCores)
-			memoryMiB = formatQuantity(total.MemoryMiB)
-		}
 		cpuUsage, memoryUsage, statsErr := executor.Stats(ctx, container)
 		if statsErr != nil {
 			logger.Warn("runtime usage interval not confirmed", "app", appID, "container", container, "error", statsErr)
 			continue
-		}
-		// A combination is billed as one application. Aggregate live usage from
-		// every container in the active release while retaining one metrics row.
-		for _, companionContainer := range releaseContainerNames(ctx, db, appID, "", container) {
-			if companionContainer == container {
-				continue
-			}
-			companionCPU, companionMemory, companionErr := executor.Stats(ctx, companionContainer)
-			if companionErr == nil {
-				cpuUsage += companionCPU
-				memoryUsage += companionMemory
-			}
 		}
 		if _, err := db.Exec(ctx, `INSERT INTO app_runtime_metrics(user_app_id,cpu_usage_cores,memory_usage_bytes,sampled_at)
 			VALUES($1,$2,$3,now())
