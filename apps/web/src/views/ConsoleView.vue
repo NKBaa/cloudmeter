@@ -37,6 +37,7 @@ import {
 import { api, logout, openApp } from "../api";
 import BrandMark from "../components/BrandMark.vue";
 import { usageCodeLabel, usageUnitLabel } from "../billing-labels";
+import { directPortURL, useSiteConfig } from "../site-config";
 
 type Dependency = {
   key: string;
@@ -343,7 +344,7 @@ const props = defineProps<{
 }>();
 const router = useRouter();
 const page = computed(() => props.page || "overview");
-const locationHost = window.location.hostname;
+const { fullSettings } = useSiteConfig();
 const pageTitle = computed(
   () =>
     ({
@@ -1718,7 +1719,7 @@ async function exitImpersonation() {
                     <template v-if="app.hostPort">
                       <a
                         class="direct-access"
-                        :href="'http://' + locationHost + ':' + app.hostPort"
+                        :href="directPortURL(fullSettings, app.hostPort)"
                         target="_blank"
                         rel="noopener"
                         @click.stop

@@ -15,6 +15,7 @@ import {
   ChevronRight,
 } from "@lucide/vue";
 import { api, openApp } from "../api";
+import { directPortURL, useSiteConfig } from "../site-config";
 
 type App = {
   id: string;
@@ -79,7 +80,7 @@ type Configuration = {
 
 const route = useRoute(),
   router = useRouter();
-const windowHost = window.location.hostname;
+const { fullSettings } = useSiteConfig();
 const loading = ref(true),
   updating = ref(false),
   error = ref(""),
@@ -489,7 +490,7 @@ onMounted(async () => {
               <a
                 v-if="app.hostPort"
                 class="direct-access"
-                :href="'http://' + windowHost + ':' + app.hostPort"
+                :href="directPortURL(fullSettings, app.hostPort)"
                 target="_blank"
                 rel="noopener"
                 @click.stop

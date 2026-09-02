@@ -20,3 +20,21 @@ func TestNormalizeAppBaseDomain(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizePortMappingHost(t *testing.T) {
+	for input, want := range map[string]string{
+		"":                      "",
+		" Direct.Example.COM. ": "direct.example.com",
+		"ports.example.test":    "ports.example.test",
+	} {
+		got, err := normalizePortMappingHost(input)
+		if err != nil || got != want {
+			t.Fatalf("normalizePortMappingHost(%q)=%q,%v want %q,nil", input, got, err, want)
+		}
+	}
+	for _, input := range []string{"https://direct.example.com", "*.example.com", "example.com:30000", "bad_label.example.com"} {
+		if _, err := normalizePortMappingHost(input); err == nil {
+			t.Fatalf("normalizePortMappingHost(%q) unexpectedly succeeded", input)
+		}
+	}
+}

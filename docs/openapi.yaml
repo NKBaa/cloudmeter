@@ -884,7 +884,7 @@ paths:
       security: [{bearerAuth: []}]
       responses:
         '200': {description: Platform settings saved and application public routes synchronized}
-        '400': {description: "Invalid platform URL, application domain, or system name"}
+        '400': {description: "Invalid platform URL, application domain, port mapping domain, port range, or system name"}
   /admin/settings/llm-api-key:
     get:
       operationId: getLLMAPIKey

@@ -17,6 +17,7 @@ const form = ref<SystemSettings>({
   privacyPolicy: "",
   hostPortMin: 30000,
   hostPortMax: 40000,
+  portMappingHost: "",
 });
 
 const loading = ref(false);
@@ -188,6 +189,11 @@ onMounted(() => { Promise.all([load(), loadLLMKey()]); });
               <input v-model.number="form.hostPortMax" type="number" min="1" max="65535" step="1" placeholder="结束端口" />
             </div>
             <em>启用端口映射时，系统只会从此范围自动分配宿主机端口。</em>
+          </div>
+          <div class="log-field mt-5">
+            <label>端口映射域名</label>
+            <input v-model="form.portMappingHost" inputmode="url" placeholder="direct.example.com" />
+            <em>应用直连地址使用此域名和分配端口；留空时使用当前控制台访问域名。无需填写协议和端口。</em>
           </div>
         </div>
       </section>

@@ -13,6 +13,7 @@ export interface SystemSettings {
   privacyPolicy: string;
   hostPortMin: number;
   hostPortMax: number;
+  portMappingHost: string;
   updatedAt?: string;
 }
 
@@ -49,4 +50,9 @@ export function useSiteConfig() {
     fetchSiteConfig,
     setSystemName,
   };
+}
+
+export function directPortURL(settings: SystemSettings | null, port: number): string {
+  const host = settings?.portMappingHost?.trim() || window.location.hostname;
+  return `http://${host}:${port}`;
 }
