@@ -1872,7 +1872,7 @@ function dataPolicyLabel(value?: string) {
                   >
                 </div>
               </div>
-              <div class="config-grid three">
+              <div class="config-grid route-fields-grid">
                 <label class="aligned-config-field"
                   ><span>容器内网监听端口</span
                   ><input
@@ -1904,7 +1904,7 @@ function dataPolicyLabel(value?: string) {
                 公网访问使用应用泛域名（每个应用独立子域名），由平台网关统一转发。开启端口映射后，
                 系统会额外分配宿主机端口提供直连访问；泛域名与端口直连两种方式并存。
               </p>
-              <div class="toggle-grid">
+              <div class="toggle-grid route-toggle-grid">
                 <div class="switch-setting">
                   <div><strong>允许 WebSocket</strong></div>
                   <label class="switch"
@@ -1919,9 +1919,7 @@ function dataPolicyLabel(value?: string) {
                     ><input v-model="versionForm.sse" type="checkbox" /><span
                   /></label>
                 </div>
-              </div>
-              <div class="port-mapping-row">
-                <div class="switch-setting">
+                <div class="switch-setting route-port-mapping">
                   <div>
                     <strong>允许用户开启端口映射</strong
                     ><small

@@ -1,0 +1,66 @@
+{
+  "product": {
+    "name": "AstrBot",
+    "slug": "astrbot",
+    "iconUrl": "https://astrbot.app/favicon.ico"
+  },
+  "version": {
+    "versionLabel": "官方稳定版",
+    "imageDigest": "soulter/astrbot:latest",
+    "runtimeSpec": {
+      "cpuCores": 1,
+      "memoryMiB": 1024,
+      "dataVolumeGiB": 10,
+      "editableOptions": {
+        "cpu": true,
+        "memory": true,
+        "dataVolume": true,
+        "command": false,
+        "dependencies": false,
+        "environment": true
+      },
+      "env": {
+        "TZ": "Asia/Shanghai"
+      },
+      "envDescriptions": {
+        "TZ": "容器时区，用于日志和定时任务"
+      },
+      "editableEnvKeys": [
+        "TZ"
+      ],
+      "secretKeys": [],
+      "secretDescriptions": {},
+      "editableSecretKeys": [],
+      "command": [],
+      "volumes": [
+        {
+          "name": "data",
+          "mountPath": "/AstrBot/data",
+          "sizeGiB": 10
+        }
+      ],
+      "dependencies": []
+    },
+    "routeSpec": {
+      "containerPort": 6185,
+      "basePath": "/",
+      "websocket": true,
+      "sse": true,
+      "portMapping": {
+        "available": true
+      }
+    },
+    "healthSpec": {
+      "path": "/",
+      "intervalSeconds": 30,
+      "timeoutSeconds": 10,
+      "acceptedStatusCodes": [
+        200,
+        302
+      ]
+    },
+    "updateSpec": {
+      "dataPolicy": "volume_compatible"
+    }
+  }
+}

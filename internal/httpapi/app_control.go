@@ -202,7 +202,7 @@ func (s *Server) startApp(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, err)
 		return
 	}
-	if status == "suspended" {
+	if status == "suspended" && suspensionReason != "billing_insufficient" {
 		writeError(w, http.StatusConflict, "app_suspended", "application is suspended by platform policy: "+suspensionReason)
 		return
 	}
@@ -210,12 +210,19 @@ func (s *Server) startApp(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "app_stop_in_progress", "wait for the stop task to complete before starting")
 		return
 	}
-	if status != "stopped" && status != "failed" {
+	if status != "stopped" && status != "failed" && !(status == "suspended" && suspensionReason == "billing_insufficient") {
 		writeError(w, http.StatusConflict, "app_not_stopped", "only a stopped or failed application can be started")
 		return
 	}
 	if sourceReleaseID == "" {
 		writeError(w, http.StatusConflict, "successful_release_required", "application has no successful release to start")
+		return
+	}
+	if err = enforceMinimumStartupBalance(r.Context(), tx, p.ID); err != nil {
+		if writeStartupBalanceError(w, err) {
+			return
+		}
+		s.internalError(w, err)
 		return
 	}
 
@@ -266,7 +273,7 @@ func (s *Server) startApp(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, err)
 		return
 	}
-	if _, err = tx.Exec(r.Context(), `UPDATE user_apps SET status='updating',suspension_reason=NULL WHERE id=$1`, appID); err != nil {
+	if _, err = tx.Exec(r.Context(), `UPDATE user_apps SET status='updating',suspension_reason=NULL,billing_suspended_at=NULL WHERE id=$1`, appID); err != nil {
 		s.internalError(w, err)
 		return
 	}

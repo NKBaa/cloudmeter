@@ -2681,6 +2681,9 @@ textarea {
 .config-grid.four {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
+.config-grid.route-fields-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
 .product-icon, .catalog-icon { position: relative; }
 .product-icon img, .catalog-icon img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; border-radius: 10px; background: var(--soft); }
 .catalog-icon { width: 34px; height: 34px; display: grid; place-items: center; flex: 0 0 auto; border-radius: 10px; overflow: hidden; background: var(--soft); }
@@ -2837,6 +2840,26 @@ input.field-invalid, select.field-invalid, textarea.field-invalid {
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
 }
+.route-toggle-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.route-port-mapping {
+  grid-column: 1 / -1;
+}
+.deploy-access-field {
+  display: grid;
+  grid-template-rows: 20px 44px minmax(34px, auto);
+  align-content: start;
+  align-self: stretch;
+}
+.deploy-access-field > input {
+  height: 44px;
+}
+.deploy-access-field > small {
+  display: block;
+  min-height: 34px;
+  line-height: 17px;
+}
 .port-mapping-row {
   display: grid;
   grid-template-columns: 1fr;
@@ -2866,6 +2889,10 @@ input.field-invalid, select.field-invalid, textarea.field-invalid {
   line-height: 1.5;
 }
 @media (max-width: 700px) {
+  .config-grid.route-fields-grid,
+  .route-toggle-grid {
+    grid-template-columns: 1fr;
+  }
   .port-mapping-row {
     grid-template-columns: 1fr;
   }

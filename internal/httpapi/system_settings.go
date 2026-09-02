@@ -11,25 +11,27 @@ import (
 var appBaseDomainLabelPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
 
 type SystemSettingsResponse struct {
-	SystemName      string    `json:"systemName"`
-	ServerURL       string    `json:"serverUrl"`
-	AppBaseDomain   string    `json:"appBaseDomain"`
-	LogoURL         string    `json:"logoUrl"`
-	FooterText      string    `json:"footerText"`
-	AboutContent    string    `json:"aboutContent"`
-	HomepageContent string    `json:"homepageContent"`
-	TermsOfService  string    `json:"termsOfService"`
-	PrivacyPolicy   string    `json:"privacyPolicy"`
-	HostPortMin     int       `json:"hostPortMin"`
-	HostPortMax     int       `json:"hostPortMax"`
-	PortMappingHost string    `json:"portMappingHost"`
-	UpdatedAt       time.Time `json:"updatedAt"`
+	SystemName                 string    `json:"systemName"`
+	ServerURL                  string    `json:"serverUrl"`
+	AppBaseDomain              string    `json:"appBaseDomain"`
+	LogoURL                    string    `json:"logoUrl"`
+	FooterText                 string    `json:"footerText"`
+	AboutContent               string    `json:"aboutContent"`
+	HomepageContent            string    `json:"homepageContent"`
+	TermsOfService             string    `json:"termsOfService"`
+	PrivacyPolicy              string    `json:"privacyPolicy"`
+	HostPortMin                int       `json:"hostPortMin"`
+	HostPortMax                int       `json:"hostPortMax"`
+	PortMappingHost            string    `json:"portMappingHost"`
+	StartupBalanceReserveCents int64     `json:"startupBalanceReserveCents"`
+	BillingSuspendedDeleteDays int       `json:"billingSuspendedDeleteDays"`
+	UpdatedAt                  time.Time `json:"updatedAt"`
 }
 
 func (s *Server) getSystemSettingsPublic(w http.ResponseWriter, r *http.Request) {
 	var res SystemSettingsResponse
-	err := s.db.QueryRow(r.Context(), "SELECT system_name, server_url, coalesce(app_base_domain, ''), logo_url, footer_text, about_content, homepage_content, terms_of_service, privacy_policy, host_port_min, host_port_max, coalesce(port_mapping_host, ''), updated_at FROM system_settings WHERE singleton").
-		Scan(&res.SystemName, &res.ServerURL, &res.AppBaseDomain, &res.LogoURL, &res.FooterText, &res.AboutContent, &res.HomepageContent, &res.TermsOfService, &res.PrivacyPolicy, &res.HostPortMin, &res.HostPortMax, &res.PortMappingHost, &res.UpdatedAt)
+	err := s.db.QueryRow(r.Context(), "SELECT system_name, server_url, coalesce(app_base_domain, ''), logo_url, footer_text, about_content, homepage_content, terms_of_service, privacy_policy, host_port_min, host_port_max, coalesce(port_mapping_host, ''), startup_balance_reserve_cents, billing_suspended_delete_days, updated_at FROM system_settings WHERE singleton").
+		Scan(&res.SystemName, &res.ServerURL, &res.AppBaseDomain, &res.LogoURL, &res.FooterText, &res.AboutContent, &res.HomepageContent, &res.TermsOfService, &res.PrivacyPolicy, &res.HostPortMin, &res.HostPortMax, &res.PortMappingHost, &res.StartupBalanceReserveCents, &res.BillingSuspendedDeleteDays, &res.UpdatedAt)
 
 	if err != nil {
 		res.SystemName = "CloudMeter"
@@ -41,8 +43,8 @@ func (s *Server) getSystemSettingsPublic(w http.ResponseWriter, r *http.Request)
 
 func (s *Server) getSystemSettings(w http.ResponseWriter, r *http.Request) {
 	var res SystemSettingsResponse
-	err := s.db.QueryRow(r.Context(), "SELECT system_name, server_url, coalesce(app_base_domain, ''), logo_url, footer_text, about_content, homepage_content, terms_of_service, privacy_policy, host_port_min, host_port_max, coalesce(port_mapping_host, ''), updated_at FROM system_settings WHERE singleton").
-		Scan(&res.SystemName, &res.ServerURL, &res.AppBaseDomain, &res.LogoURL, &res.FooterText, &res.AboutContent, &res.HomepageContent, &res.TermsOfService, &res.PrivacyPolicy, &res.HostPortMin, &res.HostPortMax, &res.PortMappingHost, &res.UpdatedAt)
+	err := s.db.QueryRow(r.Context(), "SELECT system_name, server_url, coalesce(app_base_domain, ''), logo_url, footer_text, about_content, homepage_content, terms_of_service, privacy_policy, host_port_min, host_port_max, coalesce(port_mapping_host, ''), startup_balance_reserve_cents, billing_suspended_delete_days, updated_at FROM system_settings WHERE singleton").
+		Scan(&res.SystemName, &res.ServerURL, &res.AppBaseDomain, &res.LogoURL, &res.FooterText, &res.AboutContent, &res.HomepageContent, &res.TermsOfService, &res.PrivacyPolicy, &res.HostPortMin, &res.HostPortMax, &res.PortMappingHost, &res.StartupBalanceReserveCents, &res.BillingSuspendedDeleteDays, &res.UpdatedAt)
 
 	if err != nil {
 		s.internalError(w, err)
@@ -57,18 +59,20 @@ func (s *Server) getSystemSettings(w http.ResponseWriter, r *http.Request) {
 func (s *Server) updateSystemSettings(w http.ResponseWriter, r *http.Request) {
 	p, _ := r.Context().Value(principalKey).(principal)
 	var q struct {
-		SystemName      string `json:"systemName"`
-		ServerURL       string `json:"serverUrl"`
-		AppBaseDomain   string `json:"appBaseDomain"`
-		LogoURL         string `json:"logoUrl"`
-		FooterText      string `json:"footerText"`
-		AboutContent    string `json:"aboutContent"`
-		HomepageContent string `json:"homepageContent"`
-		TermsOfService  string `json:"termsOfService"`
-		PrivacyPolicy   string `json:"privacyPolicy"`
-		HostPortMin     int    `json:"hostPortMin"`
-		HostPortMax     int    `json:"hostPortMax"`
-		PortMappingHost string `json:"portMappingHost"`
+		SystemName                 string `json:"systemName"`
+		ServerURL                  string `json:"serverUrl"`
+		AppBaseDomain              string `json:"appBaseDomain"`
+		LogoURL                    string `json:"logoUrl"`
+		FooterText                 string `json:"footerText"`
+		AboutContent               string `json:"aboutContent"`
+		HomepageContent            string `json:"homepageContent"`
+		TermsOfService             string `json:"termsOfService"`
+		PrivacyPolicy              string `json:"privacyPolicy"`
+		HostPortMin                int    `json:"hostPortMin"`
+		HostPortMax                int    `json:"hostPortMax"`
+		PortMappingHost            string `json:"portMappingHost"`
+		StartupBalanceReserveCents int64  `json:"startupBalanceReserveCents"`
+		BillingSuspendedDeleteDays int    `json:"billingSuspendedDeleteDays"`
 	}
 	if err := decodeJSON(r, &q); err != nil {
 		writeError(w, 400, "invalid_request", err.Error())
@@ -105,6 +109,14 @@ func (s *Server) updateSystemSettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "validation_failed", "应用分配端口范围必须是 1 到 65535，且起始端口不得大于结束端口")
 		return
 	}
+	if q.StartupBalanceReserveCents < 0 || q.StartupBalanceReserveCents > 1000000000000 {
+		writeError(w, 400, "validation_failed", "开机最低余额必须在 0 到 100 亿元之间")
+		return
+	}
+	if q.BillingSuspendedDeleteDays < 0 || q.BillingSuspendedDeleteDays > 3650 {
+		writeError(w, 400, "validation_failed", "余额不足应用保留天数必须在 0 到 3650 天之间")
+		return
+	}
 
 	tx, err := s.db.Begin(r.Context())
 	if err != nil {
@@ -119,12 +131,12 @@ func (s *Server) updateSystemSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if _, err = tx.Exec(r.Context(), `
-		INSERT INTO system_settings(singleton, system_name, server_url, app_base_domain, logo_url, footer_text, about_content, homepage_content, terms_of_service, privacy_policy, host_port_min, host_port_max, port_mapping_host, updated_at, updated_by)
-		VALUES (true, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now(), $13)
+		INSERT INTO system_settings(singleton, system_name, server_url, app_base_domain, logo_url, footer_text, about_content, homepage_content, terms_of_service, privacy_policy, host_port_min, host_port_max, port_mapping_host, startup_balance_reserve_cents, billing_suspended_delete_days, updated_at, updated_by)
+		VALUES (true, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, now(), $15)
 		ON CONFLICT (singleton) DO UPDATE SET
 			system_name=$1, server_url=$2, app_base_domain=$3, logo_url=$4, footer_text=$5, about_content=$6, homepage_content=$7, terms_of_service=$8, privacy_policy=$9,
-			host_port_min=$10, host_port_max=$11, port_mapping_host=$12, updated_at=now(), updated_by=$13
-	`, q.SystemName, q.ServerURL, q.AppBaseDomain, q.LogoURL, q.FooterText, q.AboutContent, q.HomepageContent, q.TermsOfService, q.PrivacyPolicy, q.HostPortMin, q.HostPortMax, q.PortMappingHost, p.ID); err != nil {
+			host_port_min=$10, host_port_max=$11, port_mapping_host=$12, startup_balance_reserve_cents=$13, billing_suspended_delete_days=$14, updated_at=now(), updated_by=$15
+	`, q.SystemName, q.ServerURL, q.AppBaseDomain, q.LogoURL, q.FooterText, q.AboutContent, q.HomepageContent, q.TermsOfService, q.PrivacyPolicy, q.HostPortMin, q.HostPortMax, q.PortMappingHost, q.StartupBalanceReserveCents, q.BillingSuspendedDeleteDays, p.ID); err != nil {
 		s.internalError(w, err)
 		return
 	}
@@ -153,19 +165,21 @@ func (s *Server) updateSystemSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, SystemSettingsResponse{
-		SystemName:      q.SystemName,
-		ServerURL:       q.ServerURL,
-		AppBaseDomain:   q.AppBaseDomain,
-		LogoURL:         q.LogoURL,
-		FooterText:      q.FooterText,
-		AboutContent:    q.AboutContent,
-		HomepageContent: q.HomepageContent,
-		TermsOfService:  q.TermsOfService,
-		PrivacyPolicy:   q.PrivacyPolicy,
-		HostPortMin:     q.HostPortMin,
-		HostPortMax:     q.HostPortMax,
-		PortMappingHost: q.PortMappingHost,
-		UpdatedAt:       time.Now(),
+		SystemName:                 q.SystemName,
+		ServerURL:                  q.ServerURL,
+		AppBaseDomain:              q.AppBaseDomain,
+		LogoURL:                    q.LogoURL,
+		FooterText:                 q.FooterText,
+		AboutContent:               q.AboutContent,
+		HomepageContent:            q.HomepageContent,
+		TermsOfService:             q.TermsOfService,
+		PrivacyPolicy:              q.PrivacyPolicy,
+		HostPortMin:                q.HostPortMin,
+		HostPortMax:                q.HostPortMax,
+		PortMappingHost:            q.PortMappingHost,
+		StartupBalanceReserveCents: q.StartupBalanceReserveCents,
+		BillingSuspendedDeleteDays: q.BillingSuspendedDeleteDays,
+		UpdatedAt:                  time.Now(),
 	})
 }
 

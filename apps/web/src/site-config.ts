@@ -14,6 +14,8 @@ export interface SystemSettings {
   hostPortMin: number;
   hostPortMax: number;
   portMappingHost?: string;
+  startupBalanceReserveCents: number;
+  billingSuspendedDeleteDays: number;
   updatedAt?: string;
 }
 

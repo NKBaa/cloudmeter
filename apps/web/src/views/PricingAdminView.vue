@@ -43,7 +43,6 @@ const pricingPresets = [
   { code: "product.authorization", unit: "authorization" },
   { code: "network.public_ingress", unit: "ingress" },
   { code: "backup.operation", unit: "operation" },
-  { code: "backup.storage.gib_days", unit: "GiB_day" },
 ];
 const item = reactive({ code: "", unit: "" });
 const availablePresets = computed(() => {
@@ -110,7 +109,9 @@ async function load() {
   try {
     const prices = await api<{ items: Item[] }>("/admin/pricing");
     items.value = prices.items.filter(
-      (entry) => entry.code !== "storage.system.gib_days",
+      (entry) =>
+        entry.code !== "storage.system.gib_days" &&
+        entry.code !== "backup.storage.gib_days",
     );
     if (selected.value && !items.value.some((entry) => entry.id === selected.value))
       selected.value = "";

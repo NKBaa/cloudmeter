@@ -1276,6 +1276,13 @@ func (s *Server) createApp(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, err)
 		return
 	}
+	if err = enforceMinimumStartupBalance(r.Context(), tx, p.ID); err != nil {
+		if writeStartupBalanceError(w, err) {
+			return
+		}
+		s.internalError(w, err)
+		return
+	}
 	if err = enforceDeploymentConcurrency(r.Context(), tx, p.ID); err != nil {
 		if quota, ok := err.(resourceQuotaError); ok {
 			writeError(w, 409, quota.Code, quota.Message)

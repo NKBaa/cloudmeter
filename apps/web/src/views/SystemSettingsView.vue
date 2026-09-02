@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { Save, CheckCircle2, RotateCcw, KeyRound, Copy, Trash2, BookOpen, X } from "@lucide/vue";
 import { api } from "../api";
 import { useSiteConfig, type SystemSettings } from "../site-config";
@@ -17,6 +17,12 @@ const form = ref<SystemSettings>({
   privacyPolicy: "",
   hostPortMin: 30000,
   hostPortMax: 40000,
+  startupBalanceReserveCents: 0,
+  billingSuspendedDeleteDays: 30,
+});
+const startupBalanceReserveYuan = computed({
+  get: () => form.value.startupBalanceReserveCents / 100,
+  set: (value: number) => { form.value.startupBalanceReserveCents = Math.round((Number(value) || 0) * 100); },
 });
 
 const loading = ref(false);
@@ -115,6 +121,8 @@ async function save() {
       hostPortMin: current.hostPortMin,
       hostPortMax: current.hostPortMax,
     };
+    payload.startupBalanceReserveCents = Math.round(payload.startupBalanceReserveCents);
+    payload.billingSuspendedDeleteDays = Math.round(payload.billingSuspendedDeleteDays);
     delete payload.updatedAt;
     const res = await api<SystemSettings>("/admin/settings/system", {
       method: "PUT",
@@ -184,6 +192,28 @@ onMounted(() => { Promise.all([load(), loadLLMKey()]); });
             <input v-model="form.logoUrl" placeholder="您的徽标图片 URL（可选）" />
             <em>自定义您的平台展示 Logo</em>
           </div>
+        </div>
+      </section>
+
+      <section class="nextdev-card p-0">
+        <div class="card-header-bar">
+          <div class="card-title-group">
+            <span class="eyebrow">BILLING · 余额运行策略</span>
+            <h3>开机余额与停机清理</h3>
+          </div>
+        </div>
+        <div class="card-divider"></div>
+        <div class="p-6 policy-grid">
+          <label class="log-field">
+            <span>开机最低可用余额（元）</span>
+            <input v-model.number="startupBalanceReserveYuan" type="number" min="0" max="10000000000" step="0.01" />
+            <em>钱包余额与有效赠送额度合计不足时，无法新建或启动应用；填 0 不限制开机。</em>
+          </label>
+          <label class="log-field">
+            <span>余额不足应用保留天数</span>
+            <input v-model.number="form.billingSuspendedDeleteDays" type="number" min="0" max="3650" step="1" />
+            <em>因余额不足停机超过此天数后，自动删除应用、数据盘与备份；填 0 关闭自动删除。</em>
+          </label>
         </div>
       </section>
 
@@ -337,6 +367,7 @@ onMounted(() => { Promise.all([load(), loadLLMKey()]); });
 .grid {
   display: grid;
 }
+.policy-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
 .grid-cols-1 {
   grid-template-columns: minmax(0, 1fr);
 }
@@ -376,6 +407,7 @@ onMounted(() => { Promise.all([load(), loadLLMKey()]); });
 .api-dialog-close { width: 34px; height: 34px; flex: 0 0 auto; display: grid; place-items: center; padding: 0; color: var(--text-muted); background: var(--surface); border: 1px solid var(--line); border-radius: 7px; }
 .api-reference-body { display: grid; gap: 16px; max-height: calc(100vh - 190px); padding: 20px 24px 24px; overflow-y: auto; }
 @media (max-width: 680px) { .llm-card-actions { align-items: flex-end; flex-direction: column-reverse; } .api-reference-dialog { width: 100%; max-height: 100vh; border-radius: 0; } .api-reference-body { max-height: calc(100vh - 130px); padding: 18px 16px; } }
+@media (max-width: 680px) { .policy-grid { grid-template-columns: minmax(0, 1fr); } }
 @media (min-width: 768px) {
   .md\:grid-cols-2 {
     grid-template-columns: repeat(2, minmax(0, 1fr));

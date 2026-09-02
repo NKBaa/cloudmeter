@@ -261,6 +261,13 @@ func (s *Server) createReleaseJob(w http.ResponseWriter, r *http.Request, actorI
 		s.internalError(w, err)
 		return
 	}
+	if err = enforceMinimumStartupBalance(r.Context(), tx, userID); err != nil {
+		if writeStartupBalanceError(w, err) {
+			return
+		}
+		s.internalError(w, err)
+		return
+	}
 	if err = enforceDeploymentConcurrency(r.Context(), tx, userID); err != nil {
 		if quota, ok := err.(resourceQuotaError); ok {
 			writeError(w, 409, quota.Code, quota.Message)

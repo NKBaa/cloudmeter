@@ -40,6 +40,7 @@ const errorMessages: Record<string, string> = {
   app_configuration_not_found: '应用还没有成功发布的配置，暂时不能编辑',
   invalid_deployment_configuration: '部署配置无效，请检查标红字段后重试',
   insufficient_balance: '钱包余额不足，请先充值后再继续',
+  insufficient_startup_balance: '可用余额低于平台设置的开机最低余额，请先充值',
   refund_in_progress: '退款正在处理，请稍后刷新查看结果',
   order_not_refundable: '只有已入账且未退款的订单可以退款',
   payment_provider_refund_unconfigured: '该支付渠道尚未配置服务商退款接口，订单和钱包均未变更',

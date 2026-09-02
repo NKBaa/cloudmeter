@@ -2855,8 +2855,8 @@ async function exitImpersonation() {
               <label class="switch"><input v-model="deployPasswordAccess" type="checkbox" /><span /></label>
             </div>
             <template v-if="deployPasswordAccess">
-              <label>访问用户名<input v-model="deployAccessUsername" maxlength="64" autocomplete="off" required /></label>
-              <label>访问密码<input v-model="deployAccessPassword" type="password" :required="!deployAccessPasswordConfigured" :placeholder="deployAccessPasswordConfigured ? '已配置，留空保持不变' : '至少 8 个字符'" autocomplete="new-password" /><small>仅保存加密哈希，不会显示或返回原密码</small></label>
+              <label class="deploy-access-field">访问用户名<input v-model="deployAccessUsername" maxlength="64" autocomplete="off" required /><small>用于浏览器 HTTP Basic Auth 登录</small></label>
+              <label class="deploy-access-field">访问密码<input v-model="deployAccessPassword" type="password" :required="!deployAccessPasswordConfigured" :placeholder="deployAccessPasswordConfigured ? '已配置，留空保持不变' : '至少 8 个字符'" autocomplete="new-password" /><small>仅保存加密哈希，不会显示或返回原密码</small></label>
             </template>
           </div>
           <label v-if="deployProduct.runtimeSpec?.volumes?.length"

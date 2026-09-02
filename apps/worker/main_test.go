@@ -144,6 +144,23 @@ func TestRecoveryOperation(t *testing.T) {
 	}
 }
 
+func TestBelowStartupReserve(t *testing.T) {
+	for _, test := range []struct {
+		available int64
+		reserve   int64
+		want      bool
+	}{
+		{available: 0, reserve: 0, want: false},
+		{available: 999, reserve: 1000, want: true},
+		{available: 1000, reserve: 1000, want: false},
+		{available: 1001, reserve: 1000, want: false},
+	} {
+		if got := belowStartupReserve(test.available, test.reserve); got != test.want {
+			t.Fatalf("belowStartupReserve(%d, %d)=%v, want %v", test.available, test.reserve, got, test.want)
+		}
+	}
+}
+
 func TestRestoreFailureBeforeStopKeepsAppRunning(t *testing.T) {
 	status, appStatus := restoreResult(fmt.Errorf("helper image pull failed"), true)
 	if status != "failed" || appStatus != "running" {

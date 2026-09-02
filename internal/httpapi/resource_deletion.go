@@ -55,7 +55,7 @@ func (s *Server) deleteApp(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, err)
 		return
 	}
-	if _, err = tx.Exec(r.Context(), `UPDATE user_apps SET deleted_at=now(),status='stopped',suspension_reason=NULL WHERE id=$1`, appID); err != nil {
+	if _, err = tx.Exec(r.Context(), `UPDATE user_apps SET deleted_at=now(),status='stopped',suspension_reason=NULL,billing_suspended_at=NULL WHERE id=$1`, appID); err != nil {
 		s.internalError(w, err)
 		return
 	}

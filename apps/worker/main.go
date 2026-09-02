@@ -41,6 +41,10 @@ var productTestOperations sync.Map
 
 const deploymentMaxHealthAttempts = 8
 
+func belowStartupReserve(availableCents, reserveCents int64) bool {
+	return availableCents < reserveCents
+}
+
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	cfg, err := config.Load()
@@ -87,11 +91,16 @@ func main() {
 	lastHostMetricSync := time.Time{}
 	lastLogPrune := time.Time{}
 	lastRouteRefresh := time.Time{}
+	lastBillingCleanup := time.Time{}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			if time.Since(lastBillingCleanup) >= 60*time.Second {
+				queueExpiredBillingSuspendedAppDeletionOne(ctx, db, logger)
+				lastBillingCleanup = time.Now()
+			}
 			if time.Since(lastRouteRefresh) >= 60*time.Second {
 				processDomainRefreshOne(ctx, db, logger)
 				lastRouteRefresh = time.Now()
@@ -351,6 +360,67 @@ func processAppDeletionOne(ctx context.Context, db *pgxpool.Pool, logger *slog.L
 		rows.Close()
 	}
 	_, _ = db.Exec(ctx, `UPDATE app_deletion_jobs SET status='succeeded',completed_at=now(),updated_at=now() WHERE id=$1`, id)
+}
+
+func queueExpiredBillingSuspendedAppDeletionOne(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		return
+	}
+	defer tx.Rollback(ctx)
+
+	var appID, userID, slug string
+	var suspendedAt time.Time
+	var retentionDays int
+	err = tx.QueryRow(ctx, `SELECT app.id::text,app.user_id::text,app.slug,app.billing_suspended_at,settings.billing_suspended_delete_days
+		FROM user_apps app CROSS JOIN system_settings settings
+		WHERE settings.singleton AND settings.billing_suspended_delete_days>0
+		  AND app.deleted_at IS NULL AND app.status='suspended' AND app.suspension_reason='billing_insufficient'
+		  AND app.billing_suspended_at IS NOT NULL
+		  AND app.billing_suspended_at<=now()-make_interval(days=>settings.billing_suspended_delete_days)
+		  AND NOT EXISTS (SELECT 1 FROM deployment_jobs WHERE user_app_id=app.id AND state NOT IN ('succeeded','failed'))
+		  AND NOT EXISTS (SELECT 1 FROM app_stop_jobs WHERE user_app_id=app.id AND status IN ('queued','running'))
+		  AND NOT EXISTS (SELECT 1 FROM app_restore_jobs WHERE user_app_id=app.id AND status IN ('queued','running'))
+		  AND NOT EXISTS (SELECT 1 FROM app_backups WHERE user_app_id=app.id AND status IN ('queued','running'))
+		ORDER BY app.billing_suspended_at,app.id FOR UPDATE OF app SKIP LOCKED LIMIT 1`).Scan(&appID, &userID, &slug, &suspendedAt, &retentionDays)
+	if err == pgx.ErrNoRows {
+		return
+	}
+	if err != nil {
+		logger.Error("billing suspended application cleanup lookup failed", "error", err)
+		return
+	}
+	if _, err = tx.Exec(ctx, `DELETE FROM app_routes WHERE user_app_id=$1`, appID); err == nil {
+		_, err = tx.Exec(ctx, `UPDATE user_apps SET deleted_at=now(),status='stopped',suspension_reason=NULL,billing_suspended_at=NULL WHERE id=$1`, appID)
+	}
+	if err == nil {
+		_, err = tx.Exec(ctx, `INSERT INTO app_deletion_jobs(user_app_id) VALUES($1) ON CONFLICT(user_app_id) DO NOTHING`, appID)
+	}
+	if err == nil {
+		_, err = tx.Exec(ctx, `INSERT INTO app_backup_deletion_jobs(backup_id,requested_by)
+			SELECT backup.id,$2 FROM app_backups backup
+			WHERE backup.user_app_id=$1 AND backup.status IN ('succeeded','failed')
+			ON CONFLICT(backup_id) DO UPDATE SET status='queued',attempts=0,available_at=now(),updated_at=now(),last_error=NULL,completed_at=NULL
+			WHERE app_backup_deletion_jobs.status='failed'`, appID, userID)
+	}
+	if err == nil {
+		_, err = tx.Exec(ctx, `INSERT INTO user_notifications(user_id,event_key,kind,severity,title,content,metadata)
+			VALUES($1,'billing-app-deleted/'||$2,'billing_app_deleted','critical','余额不足应用已自动删除','应用因余额不足停机超过保留期限，应用、数据盘和备份已进入删除队列。',jsonb_build_object('app_id',$2::text,'slug',$3::text,'retention_days',$4::integer,'suspended_at',$5::timestamptz))
+			ON CONFLICT(user_id,event_key) DO NOTHING`, userID, appID, slug, retentionDays, suspendedAt)
+	}
+	if err == nil {
+		_, err = tx.Exec(ctx, `INSERT INTO audit_logs(actor_user_id,subject_user_id,action,resource_type,resource_id,request_id,metadata)
+			VALUES(NULL,$1,'app.auto_delete.billing_insufficient','user_app',$2,'worker/billing-cleanup/'||$2,jsonb_build_object('slug',$3::text,'retention_days',$4::integer,'suspended_at',$5::timestamptz,'data_deleted',true))`, userID, appID, slug, retentionDays, suspendedAt)
+	}
+	if err != nil {
+		logger.Error("billing suspended application cleanup queue failed", "app", appID, "error", err)
+		return
+	}
+	if err = tx.Commit(ctx); err != nil {
+		logger.Error("billing suspended application cleanup commit failed", "app", appID, "error", err)
+		return
+	}
+	logger.Info("billing suspended application queued for deletion", "app", appID, "retention_days", retentionDays)
 }
 
 func processStopOne(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
@@ -1270,7 +1340,7 @@ func billUsage(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
 			_, err = tx.Exec(ctx, `INSERT INTO user_notifications(user_id,event_key,kind,severity,title,content,metadata) VALUES($1,$2,'billing_suspended','critical','余额不足，应用已暂停','赠送额度抵扣后钱包余额仍不足，请充值或联系管理员发放额度。',jsonb_build_object('usage_code',$3::text,'gross_amount_cents',$4::bigint,'credit_available_cents',$5::bigint,'required_wallet_cents',$6::bigint,'balance_cents',$7::bigint)) ON CONFLICT(user_id,event_key) DO NOTHING`, userID, fmt.Sprintf("billing-suspended/%d", aggregateID), usageCode, amountCents, creditBalance, walletCharge, balance)
 		}
 		if err == nil {
-			_, err = tx.Exec(ctx, "UPDATE user_apps SET status='suspended',suspension_reason='billing_insufficient' WHERE user_id=$1 AND status='running'", userID)
+			_, err = tx.Exec(ctx, "UPDATE user_apps SET status='suspended',suspension_reason='billing_insufficient',billing_suspended_at=coalesce(billing_suspended_at,now()) WHERE user_id=$1 AND status='running'", userID)
 		}
 		if err == nil {
 			_, err = tx.Exec(ctx, `DELETE FROM app_routes WHERE user_app_id IN (SELECT id FROM user_apps WHERE user_id=$1 AND status='suspended' AND suspension_reason='billing_insufficient')`, userID)
@@ -1367,13 +1437,47 @@ func billUsage(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
 	if err == nil {
 		_, err = tx.Exec(ctx, `INSERT INTO usage_billing_attempts(user_id,user_app_id,usage_code,window_start,window_end,pricing_version_id,amount_cents,status,balance_cents,credit_balance_cents) VALUES($1,$2,$3,$4,$5,$6,$7,'charged',$8,$9) ON CONFLICT DO NOTHING`, userID, appID, usageCode, windowStart, windowEnd, pricingVersionID, amountCents, newBalance, creditBalance-creditUsed)
 	}
+	containersToStop := []string{}
+	var reserveCents int64
+	availableAfterCharge := newBalance + creditBalance - creditUsed
+	if err == nil {
+		err = tx.QueryRow(ctx, `SELECT startup_balance_reserve_cents FROM system_settings WHERE singleton`).Scan(&reserveCents)
+	}
+	if err == nil && belowStartupReserve(availableAfterCharge, reserveCents) {
+		containerRows, queryErr := tx.Query(ctx, `SELECT route.upstream_container FROM app_routes route JOIN user_apps app ON app.id=route.user_app_id WHERE app.user_id=$1 AND app.status='running' AND route.upstream_container<>''`, userID)
+		if queryErr != nil {
+			err = queryErr
+		} else {
+			for containerRows.Next() {
+				var name string
+				if scanErr := containerRows.Scan(&name); scanErr != nil {
+					err = scanErr
+					break
+				}
+				containersToStop = append(containersToStop, name)
+			}
+			containerRows.Close()
+		}
+		if err == nil {
+			_, err = tx.Exec(ctx, `UPDATE user_apps SET status='suspended',suspension_reason='billing_insufficient',billing_suspended_at=coalesce(billing_suspended_at,now()) WHERE user_id=$1 AND status='running'`, userID)
+		}
+		if err == nil {
+			_, err = tx.Exec(ctx, `DELETE FROM app_routes WHERE user_app_id IN (SELECT id FROM user_apps WHERE user_id=$1 AND status='suspended' AND suspension_reason='billing_insufficient')`, userID)
+		}
+		if err == nil {
+			_, err = tx.Exec(ctx, `INSERT INTO user_notifications(user_id,event_key,kind,severity,title,content,metadata)
+				VALUES($1,'billing-reserve-suspended/'||$2::text,'billing_suspended','critical','可用余额低于开机保留额，应用已暂停','本次扣费后可用余额低于平台设置的开机最低余额，请充值后再开机。',jsonb_build_object('available_cents',$3::bigint,'reserve_cents',$4::bigint))
+				ON CONFLICT(user_id,event_key) DO NOTHING`, userID, aggregateID, availableAfterCharge, reserveCents)
+		}
+	}
 	if err == nil {
 		_, err = tx.Exec(ctx, `INSERT INTO deployment_jobs(user_app_id,release_id,idempotency_key,operation,source_release_id)
 			SELECT a.id,a.last_successful_release_id,'billing-resume/' || a.id::text || '/' || gen_random_uuid()::text,'billing_recovery',a.last_successful_release_id
 			FROM user_apps a WHERE a.user_id=$1 AND a.status='suspended' AND a.suspension_reason='billing_insufficient'
 			  AND a.last_successful_release_id IS NOT NULL
+			  AND $2::bigint >= (SELECT startup_balance_reserve_cents FROM system_settings WHERE singleton)
 			  AND NOT EXISTS (SELECT 1 FROM usage_aggregates ua WHERE ua.user_id=$1 AND ua.sealed_at IS NULL AND ua.billing_disposition='pending')
-			  AND NOT EXISTS (SELECT 1 FROM deployment_jobs j WHERE j.user_app_id=a.id AND j.state NOT IN ('succeeded','failed'))`, userID)
+			  AND NOT EXISTS (SELECT 1 FROM deployment_jobs j WHERE j.user_app_id=a.id AND j.state NOT IN ('succeeded','failed'))`, userID, availableAfterCharge)
 	}
 	if err == nil {
 		_, err = tx.Exec(ctx, `UPDATE user_apps a SET status='updating',suspension_reason=NULL
@@ -1389,6 +1493,16 @@ func billUsage(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
 		return
 	}
 	logger.Info("usage charged", "user", userID, "usage_code", usageCode, "amount_cents", amountCents)
+	if executor != nil {
+		for _, name := range containersToStop {
+			if stopErr := executor.Stop(ctx, name); stopErr != nil {
+				logger.Warn("billing reserve suspended app stop failed", "container", name, "error", stopErr)
+			}
+			if removeErr := executor.Remove(ctx, name); removeErr != nil {
+				logger.Warn("billing reserve suspended app cleanup failed", "container", name, "error", removeErr)
+			}
+		}
+	}
 }
 
 func meterRuntime(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
@@ -1941,7 +2055,7 @@ func processOne(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
 		message = "health check failed; route remains on previous release"
 	}
 	if next == domain.DeploymentSucceeded {
-		if _, err = tx.Exec(ctx, `UPDATE user_apps SET status='running',suspension_reason=NULL,last_successful_release_id=$2 WHERE id=$1`, appID, releaseID); err != nil {
+		if _, err = tx.Exec(ctx, `UPDATE user_apps SET status='running',suspension_reason=NULL,billing_suspended_at=NULL,last_successful_release_id=$2 WHERE id=$1`, appID, releaseID); err != nil {
 			logger.Error("app update failed", "error", err)
 			return
 		}

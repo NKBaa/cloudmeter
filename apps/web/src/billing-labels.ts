@@ -3,13 +3,13 @@ const usageLabels: Record<string, string> = {
   "cpu.core_hours": "CPU 核心用量",
   "memory.gib_hours": "内存用量",
   "storage.system.gib_days": "历史系统盘存储（已停用）",
-  "storage.data.gib_days": "数据盘存储",
+  "storage.data.gib_days": "共享数据存储",
   "network.egress_gib": "公网出站流量",
   "app.deployment": "应用部署",
   "product.authorization": "产品授权",
   "network.public_ingress": "公网入口",
   "backup.operation": "备份操作",
-  "backup.storage.gib_days": "备份存储",
+  "backup.storage.gib_days": "历史备份存储（已合并）",
 };
 
 const unitLabels: Record<string, string> = {
