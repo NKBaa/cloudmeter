@@ -5048,8 +5048,8 @@ input.field-invalid, select.field-invalid, textarea.field-invalid {
 }
 .deploy-network-section {
   display: grid;
-  gap: 16px;
-  padding-top: 18px;
+  gap: 12px;
+  padding-top: 14px;
   border-top: 1px solid var(--line);
 }
 .deploy-section-heading > div {
@@ -7212,22 +7212,39 @@ textarea:focus {
 .listener-add-action:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .deploy-listener-row {
   display: grid;
-  gap: 14px;
-  padding: 12px;
+  grid-template-columns: minmax(140px, 1fr) 104px 108px;
+  gap: 10px;
+  min-height: 58px;
+  padding: 8px 10px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--paper);
-  grid-template-columns: minmax(150px, 1fr) minmax(120px, 150px) minmax(118px, auto);
   align-items: center;
 }
-.deploy-listener-row small { color: var(--text-muted); }
-.deploy-listener-row input[type="number"] { width: 100%; }
+.deploy-listener-row > div:first-child { gap: 2px; }
+.deploy-listener-row strong {
+  font-size: 13px;
+  line-height: 1.35;
+}
+.deploy-listener-row small {
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+.deploy-listener-row input[type="number"] {
+  width: 104px;
+  height: 36px;
+  justify-self: end;
+  padding: 0 10px;
+  border-radius: 7px;
+  font-size: 13px;
+}
 .listener-map-control {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 10px;
-  min-height: 32px;
+  gap: 8px;
+  min-height: 28px;
   color: var(--text);
   font-size: 12px;
   font-weight: 600;
@@ -7242,7 +7259,7 @@ textarea:focus {
 @media (max-width: 900px) {
   .listener-fields { grid-template-columns: minmax(0, 1fr) minmax(140px, .7fr); }
   .listener-fields label:last-child { grid-column: 1 / -1; }
-  .deploy-listener-row { grid-template-columns: minmax(0, 1fr) minmax(120px, .65fr) auto; }
+  .deploy-listener-row { grid-template-columns: minmax(0, 1fr) 104px 108px; }
 }
 @media (max-width: 560px) {
   .listener-row { padding: 14px; }
@@ -7252,7 +7269,8 @@ textarea:focus {
   .listener-options { display: grid; gap: 8px; }
   .deploy-domain-settings,
   .deploy-access-grid { grid-template-columns: 1fr; }
-  .deploy-listener-row { grid-template-columns: minmax(0, 1fr) minmax(100px, .65fr); }
+  .deploy-listener-row { grid-template-columns: minmax(0, 1fr) 96px; }
+  .deploy-listener-row input[type="number"] { width: 96px; }
   .listener-map-control,
   .listener-internal-only { grid-column: 1 / -1; justify-self: stretch; justify-content: space-between; }
 }
