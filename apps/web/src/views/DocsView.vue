@@ -16,7 +16,7 @@ import { BookOpen, ExternalLink } from "@lucide/vue";
         <div>
           <h2>应用访问模型</h2>
           <p>
-            用户应用没有宿主机端口映射，通过实例路径和平台网关进行身份校验与反向代理。
+            应用泛域名默认公开访问，并通过平台网关反向代理；部署时可选开启独立的密码访问。
           </p>
         </div>
       </article>

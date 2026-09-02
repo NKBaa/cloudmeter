@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"crypto/sha256"
 	"net/http"
 	"strings"
 	"time"
@@ -38,34 +37,8 @@ func (s *Server) createAppAccess(w http.ResponseWriter, r *http.Request) {
 		} else {
 			publicPath = "http:" + publicPath
 		}
-		grant, err := randomToken(32)
-		if err != nil {
-			s.internalError(w, err)
-			return
-		}
-		grantHash := sha256.Sum256([]byte(grant))
-		expiresAt := time.Now().Add(appAccessGrantTTL)
-		tx, err := s.db.Begin(r.Context())
-		if err != nil {
-			s.internalError(w, err)
-			return
-		}
-		defer tx.Rollback(r.Context())
-		if _, err = tx.Exec(r.Context(), "DELETE FROM app_access_grants WHERE expires_at<=now()"); err != nil {
-			s.internalError(w, err)
-			return
-		}
-		if _, err = tx.Exec(r.Context(), `INSERT INTO app_access_grants(token_hash,user_id,user_app_id,expires_at) VALUES($1,$2,$3,$4)`, grantHash[:], p.ID, appID, expiresAt); err != nil {
-			s.internalError(w, err)
-			return
-		}
-		if err = tx.Commit(r.Context()); err != nil {
-			s.internalError(w, err)
-			return
-		}
-		launchURL := strings.TrimSuffix(publicPath, "/") + "/.cloudmeter/access?grant=" + grant
 		w.Header().Set("Cache-Control", "no-store")
-		writeJSON(w, http.StatusOK, map[string]any{"publicPath": launchURL, "expiresInSeconds": int(appAccessGrantTTL.Seconds())})
+		writeJSON(w, http.StatusOK, map[string]any{"publicPath": publicPath})
 		return
 	}
 

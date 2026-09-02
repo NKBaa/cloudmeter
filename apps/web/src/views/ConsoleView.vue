@@ -126,6 +126,7 @@ type AppConfiguration = {
     routeSpec: NonNullable<Product["routeSpec"]>;
   };
   configuredSecretKeys: string[];
+  access: { passwordEnabled: boolean; username: string; passwordConfigured: boolean };
 };
 type App = {
   id: string;
@@ -447,6 +448,10 @@ const deployPort = ref(8080);
 const deployDomainPermanent = ref(true);
 const deployDomainRefreshDays = ref(30);
 const deployPortMapping = ref(false);
+const deployPasswordAccess = ref(false);
+const deployAccessUsername = ref("");
+const deployAccessPassword = ref("");
+const deployAccessPasswordConfigured = ref(false);
 const deployPortMappingAvailable = computed(
   () => deployProduct.value?.routeSpec?.portMapping?.available === true,
 );
@@ -1051,6 +1056,10 @@ function openDeploy(p: Product) {
   deployDomainPermanent.value = true;
   deployDomainRefreshDays.value = 30;
   deployPortMapping.value = false;
+  deployPasswordAccess.value = false;
+  deployAccessUsername.value = "";
+  deployAccessPassword.value = "";
+  deployAccessPasswordConfigured.value = false;
   deployEnvironment.value = (p.runtimeSpec?.editableEnvKeys || []).map(
     (key) => ({ key, value: p.runtimeSpec?.env?.[key] || "" }),
   );
@@ -1105,6 +1114,10 @@ async function openEditApp(app: App) {
     deployDataVolumeGiB.value = Math.max(currentVolume, minimumVolume);
     deployVolumeFloorGiB.value = deployDataVolumeGiB.value;
     deployPortMapping.value = app.portMappingEnabled === true;
+    deployPasswordAccess.value = configuration.access?.passwordEnabled === true;
+    deployAccessUsername.value = configuration.access?.username || "";
+    deployAccessPassword.value = "";
+    deployAccessPasswordConfigured.value = configuration.access?.passwordConfigured === true;
     deployCommand.value = (
       current.command ||
       target.runtimeSpec?.command ||
@@ -1144,6 +1157,11 @@ function closeDeploy() {
   deployCommand.value = "";
   deployDomainPermanent.value = true;
   deployDomainRefreshDays.value = 30;
+  deployPortMapping.value = false;
+  deployPasswordAccess.value = false;
+  deployAccessUsername.value = "";
+  deployAccessPassword.value = "";
+  deployAccessPasswordConfigured.value = false;
   deployEnvironment.value = [];
   deployDependencies.value = [];
 }
@@ -1164,6 +1182,24 @@ async function deploy() {
   if (!Number.isInteger(deployPort.value) || deployPort.value < 1 || deployPort.value > 65535) {
     error.value = "应用监听端口必须是 1 到 65535 之间的整数";
     return;
+  }
+  if (deployPasswordAccess.value) {
+    if (!deployAccessUsername.value.trim() || deployAccessUsername.value.trim().length > 64) {
+      error.value = "密码访问用户名必须为 1 到 64 个字符";
+      return;
+    }
+    if (!deployAccessPasswordConfigured.value && deployAccessPassword.value.length < 8) {
+      error.value = "首次开启密码访问时，密码至少需要 8 个字符";
+      return;
+    }
+    if (new TextEncoder().encode(deployAccessPassword.value).length > 72) {
+      error.value = "密码访问的密码不能超过 72 字节";
+      return;
+    }
+    if (deployPortMapping.value) {
+      error.value = "密码访问不能与端口直连同时开启，端口直连会绕过域名网关";
+      return;
+    }
   }
   if (
     deployMode.value === "create" &&
@@ -1222,6 +1258,11 @@ async function deploy() {
           idempotencyKey: crypto.randomUUID(),
           resources,
           secrets: changedSecrets,
+          access: {
+            passwordEnabled: deployPasswordAccess.value,
+            username: deployAccessUsername.value.trim(),
+            password: deployAccessPassword.value,
+          },
         }),
       });
       message.value = `${editingApp.value.slug} 的配置更新任务已创建`;
@@ -1240,6 +1281,11 @@ async function deploy() {
           idempotencyKey: crypto.randomUUID(),
           secrets: deploySecrets.value,
           resources,
+          access: {
+            passwordEnabled: deployPasswordAccess.value,
+            username: deployAccessUsername.value.trim(),
+            password: deployAccessPassword.value,
+          },
         }),
       });
       sessionStorage.setItem(
@@ -2801,6 +2847,17 @@ async function exitImpersonation() {
                 ><input v-model="deployPortMapping" type="checkbox" /><span
               /></label>
             </div>
+            <div class="switch-setting deploy-password-access">
+              <div>
+                <strong>密码访问</strong>
+                <small>关闭时任何人都可访问应用域名；开启后浏览器会要求输入用户名和密码</small>
+              </div>
+              <label class="switch"><input v-model="deployPasswordAccess" type="checkbox" /><span /></label>
+            </div>
+            <template v-if="deployPasswordAccess">
+              <label>访问用户名<input v-model="deployAccessUsername" maxlength="64" autocomplete="off" required /></label>
+              <label>访问密码<input v-model="deployAccessPassword" type="password" :required="!deployAccessPasswordConfigured" :placeholder="deployAccessPasswordConfigured ? '已配置，留空保持不变' : '至少 8 个字符'" autocomplete="new-password" /><small>仅保存加密哈希，不会显示或返回原密码</small></label>
+            </template>
           </div>
           <label v-if="deployProduct.runtimeSpec?.volumes?.length"
             >共享数据卷容量 GiB<input

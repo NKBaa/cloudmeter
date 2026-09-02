@@ -321,6 +321,10 @@ powershell -ExecutionPolicy Bypass -File deploy/verify.ps1
 
 管理员可在“系统设置 → 基础信息”配置应用直连端口范围（默认 `30000–40000`）和端口映射域名。直连地址按 `http://端口映射域名:分配端口` 生成；域名留空时使用当前控制台访问域名。只有产品版本允许端口映射且用户主动开启“直连”时，Worker 才会从该范围分配一个宿主机端口；该端口需在宿主机防火墙放行。备份恢复后 Worker 会重新读取 Docker 的实际映射并同步活动 Release 与路由，详情页会自动刷新端口。未开启直连的应用仍只通过 Caddy 80/443 暴露。
 
+应用泛域名默认公开访问，不依赖 CloudMeter 控制台登录，适合在前方接入 CDN/WAF。用户部署或重新配置应用时可以开启“密码访问”，由应用路由使用 HTTP Basic Auth 校验，密码仅保存 bcrypt 哈希。密码访问不能与端口直连同时开启，因为宿主机直连端口会绕过域名网关。CDN 必须透传 `Authorization` 请求头，绕过带该请求头的缓存，并且不得缓存 `401` 响应；路由也会为受保护响应发送 `Cache-Control: private, no-store` 和 `Vary: Authorization`。
+
+控制台使用 Compose 的宿主机端口发布 `${PLATFORM_BIND_IP:-0.0.0.0}:${PLATFORM_PORT:-8080}:8080`，默认即为宿主机 TCP/8080，可直接使用宿主机防火墙管理。无需也不应把 `web` 改成 `network_mode: host`，否则会破坏 Compose 内部服务发现。Docker 发布端口的可靠访问控制建议配置在 `DOCKER-USER` 链。
+
 生产入口为 `Browser -> Caddy:80/443 -> 平台 Web/API 或应用 Router -> 用户应用容器`。管理员需要准备一个控制台主域名和一个独立的应用泛子域名；证书、HTTP 跳转、HSTS、HTTP/3 与反向代理均在“网站设置”统一管理。
 
 Compose 中 Caddy 固定发布 80/443，Web 仅额外发布模式 2 使用的 `PLATFORM_PORT`；PostgreSQL、Redis、API、Worker、应用路由器和用户应用容器均只在 Docker 内网可达。应用路由使用 `{app-slug}-{user-slug}.<应用泛子域名>`，具体 URL 与上游可在“网站设置”的应用路由表查看。

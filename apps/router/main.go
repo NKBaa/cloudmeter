@@ -3,10 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
-	"encoding/base64"
 	"fmt"
 	"io"
 	"log/slog"
@@ -24,6 +22,7 @@ import (
 	"cloudmeter/internal/config"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"golang.org/x/crypto/bcrypt"
 )
 
 const appAccessCookie = "cloudmeter_app_access"
@@ -121,71 +120,76 @@ func routeHandler(db *pgxpool.Pool, logger *slog.Logger) http.Handler {
 				http.Error(w, "misdirected request", http.StatusMisdirectedRequest)
 				return
 			}
-			if r.URL.Path == "/.cloudmeter/access" {
-				redeemAppAccessGrant(db, logger, w, r, hostMatch)
-				return
-			}
 		}
 
-		cookie, cookieErr := r.Cookie(appAccessCookie)
-		if cookieErr != nil || strings.TrimSpace(cookie.Value) == "" {
-			if acceptsHTML(r) {
-				redirectToConsole(w, r, serverURL, "/console/apps")
-				return
-			}
-			http.Error(w, "application sign-in required", http.StatusUnauthorized)
-			return
-		}
-		tokenHash := sha256.Sum256([]byte(cookie.Value))
 		var sessionUserID string
-		var authErr error
-		if routeMode == routeModeSubdomain {
-			authErr = db.QueryRow(r.Context(), `SELECT access_grant.user_id::text
-				FROM app_access_grants access_grant
-				JOIN users ON users.id=access_grant.user_id AND users.status='active'
-				JOIN user_apps app ON app.id=access_grant.user_app_id AND app.user_id=access_grant.user_id AND app.deleted_at IS NULL
-				WHERE access_grant.token_hash=$1 AND access_grant.expires_at>now() AND app.route_host_label=$2`, tokenHash[:], hostMatch).Scan(&sessionUserID)
-		} else {
-			authErr = db.QueryRow(r.Context(), `SELECT session.user_id::text FROM sessions session
-				JOIN users ON users.id=session.user_id AND users.status='active'
-				WHERE session.token_hash=$1 AND session.revoked_at IS NULL AND session.expires_at>now()`, tokenHash[:]).Scan(&sessionUserID)
-		}
-		if authErr != nil {
-			if authErr == pgx.ErrNoRows {
+		if routeMode == routeModeLegacy {
+			cookie, cookieErr := r.Cookie(appAccessCookie)
+			if cookieErr != nil || strings.TrimSpace(cookie.Value) == "" {
 				if acceptsHTML(r) {
 					redirectToConsole(w, r, serverURL, "/console/apps")
 					return
 				}
-				http.Error(w, "application session is invalid or expired", http.StatusUnauthorized)
+				http.Error(w, "application sign-in required", http.StatusUnauthorized)
 				return
 			}
-			logger.Error("application session lookup failed", "error", authErr)
-			http.Error(w, "session lookup failed", http.StatusBadGateway)
-			return
+			tokenHash := sha256.Sum256([]byte(cookie.Value))
+			authErr := db.QueryRow(r.Context(), `SELECT session.user_id::text FROM sessions session
+				JOIN users ON users.id=session.user_id AND users.status='active'
+				WHERE session.token_hash=$1 AND session.revoked_at IS NULL AND session.expires_at>now()`, tokenHash[:]).Scan(&sessionUserID)
+			if authErr != nil {
+				if authErr == pgx.ErrNoRows {
+					if acceptsHTML(r) {
+						redirectToConsole(w, r, serverURL, "/console/apps")
+						return
+					}
+					http.Error(w, "application session is invalid or expired", http.StatusUnauthorized)
+					return
+				}
+				logger.Error("application session lookup failed", "error", authErr)
+				http.Error(w, "session lookup failed", http.StatusBadGateway)
+				return
+			}
 		}
 		var prefix, host string
 		var port int
 		var routeSpec map[string]any
+		var passwordEnabled bool
+		var accessUsername, accessPasswordHash string
 
-		err := db.QueryRow(r.Context(), `SELECT
+		var err error
+		if routeMode == routeModeSubdomain {
+			err = db.QueryRow(r.Context(), `SELECT
+			'', 'release-'||left(replace(rel.id::text,'-',''),12), ar.upstream_port,
+			coalesce(rel.immutable_snapshot->'route_spec','{}'::jsonb),
+			a.access_password_enabled,a.access_username,a.access_password_hash
+			FROM app_routes ar
+			JOIN user_apps a ON a.id=ar.user_app_id AND a.instance_id=ar.instance_id
+			JOIN users u ON u.id=a.user_id AND u.status='active'
+			JOIN app_releases rel ON rel.id=ar.release_id AND rel.user_app_id=a.id
+			WHERE a.deleted_at IS NULL AND a.status IN ('running','updating')
+			  AND a.last_successful_release_id=rel.id AND rel.state='active' AND a.route_host_label=$1
+			LIMIT 1`, hostMatch).Scan(&prefix, &host, &port, &routeSpec, &passwordEnabled, &accessUsername, &accessPasswordHash)
+		} else {
+			err = db.QueryRow(r.Context(), `SELECT
 		'/apps/'||u.slug||'/'||a.slug,
 		'release-'||left(replace(rel.id::text,'-',''),12),
 		ar.upstream_port,
-		coalesce(rel.immutable_snapshot->'route_spec','{}'::jsonb)
+		coalesce(rel.immutable_snapshot->'route_spec','{}'::jsonb),false,'',''
 		FROM app_routes ar
 		JOIN user_apps a ON a.id=ar.user_app_id AND a.instance_id=ar.instance_id
 		JOIN users u ON u.id=a.user_id
 		JOIN app_releases rel ON rel.id=ar.release_id AND rel.user_app_id=a.id
 		WHERE a.user_id=$2 AND u.status='active' AND a.status IN ('running','updating') AND a.last_successful_release_id=rel.id AND rel.state='active'
-		  AND (($3='subdomain' AND $4<>'' AND $4=a.route_host_label)
-		       OR ($3='legacy' AND ($1='/apps/'||u.slug||'/'||a.slug OR $1 LIKE '/apps/'||u.slug||'/'||a.slug||'/%')))
-		ORDER BY length('/apps/'||u.slug||'/'||a.slug) DESC LIMIT 1`, r.URL.Path, sessionUserID, routeMode, hostMatch).Scan(&prefix, &host, &port, &routeSpec)
+		  AND ($1='/apps/'||u.slug||'/'||a.slug OR $1 LIKE '/apps/'||u.slug||'/'||a.slug||'/%')
+		ORDER BY length('/apps/'||u.slug||'/'||a.slug) DESC LIMIT 1`, r.URL.Path, sessionUserID).Scan(&prefix, &host, &port, &routeSpec, &passwordEnabled, &accessUsername, &accessPasswordHash)
+		}
 		if err == pgx.ErrNoRows {
 			// The application is not actively routable (stopped, failed, or the
 			// route is stale). Resolve the instance and send the user to the
 			// console detail page instead of a blank 404. Non-navigation
 			// requests keep the plain 404 so assets fail predictably.
-			if acceptsHTML(r) {
+			if routeMode == routeModeLegacy && acceptsHTML(r) {
 				var instanceID string
 				if lookupErr := db.QueryRow(r.Context(), `SELECT a.instance_id::text
 					FROM app_routes ar
@@ -205,6 +209,9 @@ func routeHandler(db *pgxpool.Pool, logger *slog.Logger) http.Handler {
 		if err != nil {
 			logger.Error("route lookup failed", "error", err)
 			http.Error(w, "route lookup failed", http.StatusBadGateway)
+			return
+		}
+		if !authorizeBasicAccess(w, r, passwordEnabled, accessUsername, accessPasswordHash) {
 			return
 		}
 		if routeMode == routeModeSubdomain {
@@ -231,6 +238,9 @@ func routeHandler(db *pgxpool.Pool, logger *slog.Logger) http.Handler {
 		proxy.Director = func(req *http.Request) {
 			original(req)
 			removeRequestCookie(req, appAccessCookie)
+			if passwordEnabled {
+				req.Header.Del("Authorization")
+			}
 			if routeBoolean(routeSpec, "stripPrefix", true) {
 				path := strings.TrimPrefix(req.URL.Path, prefix)
 				if path == "" {
@@ -251,6 +261,9 @@ func routeHandler(db *pgxpool.Pool, logger *slog.Logger) http.Handler {
 		}
 		cookiePath := routeString(routeSpec, "cookiePath", "")
 		proxy.ModifyResponse = func(response *http.Response) error {
+			if passwordEnabled {
+				setProtectedCacheHeaders(response.Header)
+			}
 			stripReservedResponseCookie(response.Header, appAccessCookie)
 			if prefix != "" && (cookiePath != "" || rootRequest) {
 				if rootRequest {
@@ -278,83 +291,32 @@ func routeHandler(db *pgxpool.Pool, logger *slog.Logger) http.Handler {
 	})
 }
 
-func redeemAppAccessGrant(db *pgxpool.Pool, logger *slog.Logger, w http.ResponseWriter, r *http.Request, hostMatch string) {
-	if r.Method != http.MethodGet {
-		w.Header().Set("Allow", http.MethodGet)
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
+func authorizeBasicAccess(w http.ResponseWriter, r *http.Request, enabled bool, expectedUsername, passwordHash string) bool {
+	if !enabled {
+		return true
 	}
-	grant := strings.TrimSpace(r.URL.Query().Get("grant"))
-	if grant == "" {
-		http.Error(w, "application access grant is required", http.StatusUnauthorized)
-		return
+	username, password, ok := r.BasicAuth()
+	usernameMatch := subtle.ConstantTimeCompare([]byte(username), []byte(expectedUsername)) == 1
+	passwordMatch := bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(password)) == nil
+	if ok && usernameMatch && passwordMatch {
+		return true
 	}
-	grantHash := sha256.Sum256([]byte(grant))
-	tx, err := db.Begin(r.Context())
-	if err != nil {
-		logger.Error("application access transaction failed", "error", err)
-		http.Error(w, "application access unavailable", http.StatusBadGateway)
-		return
-	}
-	defer tx.Rollback(r.Context())
-	var expiresAt time.Time
-	if err = tx.QueryRow(r.Context(), `SELECT access_grant.expires_at
-		FROM app_access_grants access_grant
-		JOIN users ON users.id=access_grant.user_id AND users.status='active'
-		JOIN user_apps app ON app.id=access_grant.user_app_id AND app.user_id=access_grant.user_id AND app.deleted_at IS NULL
-		WHERE access_grant.token_hash=$1 AND access_grant.expires_at>now() AND app.status IN ('running','updating')
-		  AND app.route_host_label=$2
-		FOR UPDATE OF access_grant`, grantHash[:], hostMatch).Scan(&expiresAt); err != nil {
-		if err == pgx.ErrNoRows {
-			http.Error(w, "application access grant is invalid or expired", http.StatusUnauthorized)
-			return
-		}
-		logger.Error("application access grant lookup failed", "error", err)
-		http.Error(w, "application access unavailable", http.StatusBadGateway)
-		return
-	}
-	cookieToken, err := newAccessToken()
-	if err != nil {
-		logger.Error("application cookie generation failed", "error", err)
-		http.Error(w, "application access unavailable", http.StatusInternalServerError)
-		return
-	}
-	cookieHash := sha256.Sum256([]byte(cookieToken))
-	if _, err = tx.Exec(r.Context(), `UPDATE app_access_grants SET token_hash=$1 WHERE token_hash=$2`, cookieHash[:], grantHash[:]); err != nil {
-		logger.Error("application access grant rotation failed", "error", err)
-		http.Error(w, "application access unavailable", http.StatusBadGateway)
-		return
-	}
-	if err = tx.Commit(r.Context()); err != nil {
-		logger.Error("application access grant commit failed", "error", err)
-		http.Error(w, "application access unavailable", http.StatusBadGateway)
-		return
-	}
-	maxAge := int(time.Until(expiresAt).Seconds())
-	if maxAge < 1 {
-		maxAge = 1
-	}
-	secure := strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https")
-	http.SetCookie(w, &http.Cookie{
-		Name:     appAccessCookie,
-		Value:    cookieToken,
-		Path:     "/",
-		HttpOnly: true,
-		Secure:   secure,
-		SameSite: http.SameSiteLaxMode,
-		MaxAge:   maxAge,
-		Expires:  expiresAt,
-	})
-	w.Header().Set("Cache-Control", "no-store")
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	setProtectedCacheHeaders(w.Header())
+	w.Header().Set("WWW-Authenticate", `Basic realm="Application", charset="UTF-8"`)
+	http.Error(w, "application authentication required", http.StatusUnauthorized)
+	return false
 }
 
-func newAccessToken() (string, error) {
-	raw := make([]byte, 32)
-	if _, err := rand.Read(raw); err != nil {
-		return "", err
+func setProtectedCacheHeaders(header http.Header) {
+	header.Set("Cache-Control", "private, no-store")
+	for _, value := range header.Values("Vary") {
+		for _, field := range strings.Split(value, ",") {
+			if strings.EqualFold(strings.TrimSpace(field), "Authorization") {
+				return
+			}
+		}
 	}
-	return base64.RawURLEncoding.EncodeToString(raw), nil
+	header.Add("Vary", "Authorization")
 }
 
 func requestHostname(value string) string {

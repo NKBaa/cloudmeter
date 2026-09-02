@@ -414,6 +414,8 @@ paths:
                   type: object
                   additionalProperties: {type: string, minLength: 1, maxLength: 65536}
                   description: Values for every Secret key declared by the selected product version. Values are encrypted and never returned.
+                access:
+                  $ref: '#/components/schemas/AppAccessSettings'
                 resources:
                   type: object
                   description: User-selected overrides. The API accepts only fields explicitly enabled by the immutable product version.
@@ -830,6 +832,19 @@ paths:
       security: [{bearerAuth: []}]
       parameters:
         - {name: appID, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [versionId, idempotencyKey]
+              properties:
+                versionId: {type: string, format: uuid}
+                idempotencyKey: {type: string, minLength: 1, maxLength: 128}
+                resources: {type: object}
+                secrets: {type: object, additionalProperties: {type: string}}
+                access: {$ref: '#/components/schemas/AppAccessSettings'}
       responses:
         '202': {description: Update deployment queued}
         '404': {description: App or version not found}
@@ -1745,6 +1760,15 @@ components:
     bearerAuth: {type: http, scheme: bearer}
     llmApiKey: {type: http, scheme: bearer, bearerFormat: CloudMeter system API key}
   schemas:
+    AppAccessSettings:
+      type: object
+      additionalProperties: false
+      required: [passwordEnabled]
+      description: Optional HTTP Basic Auth for the application wildcard domain. Disabled applications are publicly accessible. It cannot be combined with direct host-port mapping.
+      properties:
+        passwordEnabled: {type: boolean}
+        username: {type: string, minLength: 1, maxLength: 64}
+        password: {type: string, minLength: 8, maxLength: 72, writeOnly: true, description: Required when first enabling password access; omit or leave empty on update to preserve the existing password.}
     TicketStatus:
       type: string
       enum: [open, in_progress, waiting_user, resolved, closed]

@@ -108,6 +108,8 @@ func (s *Server) appConfiguration(w http.ResponseWriter, r *http.Request) {
 	p, _ := r.Context().Value(principalKey).(principal)
 	appID := r.PathValue("appID")
 	var appSlug, appStatus, productID, productSlug, productName, iconURL string
+	var accessEnabled bool
+	var accessUsername, accessHash string
 	var currentVersionID, targetVersionID string
 	var targetVersion int
 	var currentRuntime, currentRoute, targetRuntime, targetRoute map[string]any
@@ -115,7 +117,8 @@ func (s *Server) appConfiguration(w http.ResponseWriter, r *http.Request) {
 		current_release.product_version_id::text,current_release.immutable_snapshot->'runtime_spec',current_release.immutable_snapshot->'route_spec',
 		coalesce(target.id,current_version.id)::text,coalesce(target.version,current_version.version),
 		coalesce(target.runtime_spec,current_release.immutable_snapshot->'runtime_spec'),
-		coalesce(target.route_spec,current_release.immutable_snapshot->'route_spec')
+		coalesce(target.route_spec,current_release.immutable_snapshot->'route_spec'),
+		app.access_password_enabled,app.access_username,app.access_password_hash
 		FROM user_apps app
 		JOIN app_products product ON product.id=app.product_id
 		JOIN app_releases current_release ON current_release.id=app.last_successful_release_id
@@ -125,6 +128,7 @@ func (s *Server) appConfiguration(w http.ResponseWriter, r *http.Request) {
 		WHERE app.id=$1 AND app.user_id=$2 AND app.deleted_at IS NULL`, appID, p.ID).Scan(
 		&appSlug, &appStatus, &productID, &productSlug, &productName, &iconURL,
 		&currentVersionID, &currentRuntime, &currentRoute, &targetVersionID, &targetVersion, &targetRuntime, &targetRoute,
+		&accessEnabled, &accessUsername, &accessHash,
 	)
 	if err == pgx.ErrNoRows {
 		writeError(w, http.StatusNotFound, "app_configuration_not_found", "application has no successful configuration")
@@ -161,6 +165,7 @@ func (s *Server) appConfiguration(w http.ResponseWriter, r *http.Request) {
 		"current":              map[string]any{"versionId": currentVersionID, "runtimeSpec": currentRuntime, "routeSpec": currentRoute},
 		"target":               map[string]any{"productId": productID, "productSlug": productSlug, "name": productName, "iconUrl": iconURL, "versionId": targetVersionID, "version": targetVersion, "runtimeSpec": targetRuntime, "routeSpec": targetRoute},
 		"configuredSecretKeys": configuredKeys,
+		"access":               map[string]any{"passwordEnabled": accessEnabled, "username": accessUsername, "passwordConfigured": accessHash != ""},
 	})
 }
 
@@ -183,10 +188,11 @@ func (s *Server) appRoute(w http.ResponseWriter, r *http.Request) {
 }
 
 type appReleaseRequest struct {
-	VersionID      string             `json:"versionId"`
-	IdempotencyKey string             `json:"idempotencyKey"`
-	Resources      *selectedResources `json:"resources"`
-	Secrets        map[string]string  `json:"secrets"`
+	VersionID      string                    `json:"versionId"`
+	IdempotencyKey string                    `json:"idempotencyKey"`
+	Resources      *selectedResources        `json:"resources"`
+	Secrets        map[string]string         `json:"secrets"`
+	Access         *appAccessSettingsRequest `json:"access"`
 }
 
 func (s *Server) createAppRelease(w http.ResponseWriter, r *http.Request) {
@@ -203,7 +209,7 @@ func (s *Server) createAppRelease(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "validation_failed", "versionId and idempotencyKey are required")
 		return
 	}
-	s.createReleaseJob(w, r, p.auditActorID(), p.ID, appID, req.VersionID, req.IdempotencyKey, "", "update", req.Resources, req.Secrets)
+	s.createReleaseJob(w, r, p.auditActorID(), p.ID, appID, req.VersionID, req.IdempotencyKey, "", "update", req.Resources, req.Secrets, req.Access)
 }
 func (s *Server) rollbackApp(w http.ResponseWriter, r *http.Request) {
 	p, _ := r.Context().Value(principalKey).(principal)
@@ -231,9 +237,9 @@ func (s *Server) rollbackApp(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, err)
 		return
 	}
-	s.createReleaseJob(w, r, p.auditActorID(), p.ID, appID, versionID, q.IdempotencyKey, q.ReleaseID, "rollback", nil, nil)
+	s.createReleaseJob(w, r, p.auditActorID(), p.ID, appID, versionID, q.IdempotencyKey, q.ReleaseID, "rollback", nil, nil, nil)
 }
-func (s *Server) createReleaseJob(w http.ResponseWriter, r *http.Request, actorID, userID, appID, versionID, key, rollbackReleaseID, operation string, selected *selectedResources, providedSecrets map[string]string) {
+func (s *Server) createReleaseJob(w http.ResponseWriter, r *http.Request, actorID, userID, appID, versionID, key, rollbackReleaseID, operation string, selected *selectedResources, providedSecrets map[string]string, requestedAccess *appAccessSettingsRequest) {
 	tx, err := s.db.Begin(r.Context())
 	if err != nil {
 		s.internalError(w, err)
@@ -266,9 +272,11 @@ func (s *Server) createReleaseJob(w http.ResponseWriter, r *http.Request, actorI
 	var currentSnapshot map[string]any
 	var currentReleaseCreated *time.Time
 	var appStatus, suspensionReason string
-	if err = tx.QueryRow(r.Context(), `SELECT coalesce(rel.immutable_snapshot,'{}'::jsonb),rel.created_at,app.status,coalesce(app.suspension_reason,'')
+	var currentAccess appAccessPolicy
+	var currentPortMapping bool
+	if err = tx.QueryRow(r.Context(), `SELECT coalesce(rel.immutable_snapshot,'{}'::jsonb),rel.created_at,app.status,coalesce(app.suspension_reason,''),app.access_password_enabled,app.access_username,app.access_password_hash,app.port_mapping_enabled
 		FROM user_apps app LEFT JOIN app_releases rel ON rel.id=app.last_successful_release_id
-		WHERE app.id=$1 AND app.user_id=$2 FOR UPDATE OF app`, appID, userID).Scan(&currentSnapshot, &currentReleaseCreated, &appStatus, &suspensionReason); err != nil {
+		WHERE app.id=$1 AND app.user_id=$2 FOR UPDATE OF app`, appID, userID).Scan(&currentSnapshot, &currentReleaseCreated, &appStatus, &suspensionReason, &currentAccess.Enabled, &currentAccess.Username, &currentAccess.Hash, &currentPortMapping); err != nil {
 		if err == pgx.ErrNoRows {
 			writeError(w, 404, "app_not_found", "application not found")
 			return
@@ -282,6 +290,19 @@ func (s *Server) createReleaseJob(w http.ResponseWriter, r *http.Request, actorI
 	}
 	if appStatus != "running" && appStatus != "failed" && appStatus != "stopped" {
 		writeError(w, http.StatusConflict, "app_invalid_status", "application must be running, failed, or stopped to be updated or rolled back")
+		return
+	}
+	accessPolicy, accessErr := resolveAppAccessPolicy(requestedAccess, currentAccess)
+	if accessErr != nil {
+		writeError(w, http.StatusBadRequest, "invalid_access_settings", accessErr.Error())
+		return
+	}
+	desiredPortMapping := currentPortMapping
+	if selected != nil && selected.PortMappingEnabled != nil {
+		desiredPortMapping = *selected.PortMappingEnabled
+	}
+	if desiredPortMapping && accessPolicy.Enabled {
+		writeError(w, http.StatusBadRequest, "invalid_access_settings", "密码访问不能与端口直连同时开启，端口直连会绕过域名网关")
 		return
 	}
 	var activeJobID string
@@ -345,6 +366,12 @@ func (s *Server) createReleaseJob(w http.ResponseWriter, r *http.Request, actorI
 				return
 			}
 			if _, err = tx.Exec(r.Context(), "UPDATE user_apps SET port_mapping_enabled=$2 WHERE id=$1 AND user_id=$3", appID, *selected.PortMappingEnabled, userID); err != nil {
+				s.internalError(w, err)
+				return
+			}
+		}
+		if requestedAccess != nil {
+			if _, err = tx.Exec(r.Context(), `UPDATE user_apps SET access_password_enabled=$2,access_username=$3,access_password_hash=$4 WHERE id=$1 AND user_id=$5`, appID, accessPolicy.Enabled, accessPolicy.Username, accessPolicy.Hash, userID); err != nil {
 				s.internalError(w, err)
 				return
 			}

@@ -76,6 +76,7 @@ type Version = {
 type Configuration = {
   current?: { runtimeSpec?: RuntimeSpec };
   configuredSecretKeys: string[];
+  access: { passwordEnabled: boolean; username: string; passwordConfigured: boolean };
 };
 
 const route = useRoute(),
@@ -154,6 +155,10 @@ const portMappingAvailable = computed(() => {
   return pm.available === true;
 });
 const portMapping = ref(false);
+const passwordAccess = ref(false);
+const accessUsername = ref("");
+const accessPassword = ref("");
+const accessPasswordConfigured = ref(false);
 
 function versionName(item: Version) {
   return item.versionLabel
@@ -233,6 +238,10 @@ async function load() {
     versions.value = versionResult.versions;
     currentRuntime.value = configuration.current?.runtimeSpec || {};
     configuredSecretKeys.value = configuration.configuredSecretKeys || [];
+    passwordAccess.value = configuration.access?.passwordEnabled === true;
+    accessUsername.value = configuration.access?.username || "";
+    accessPassword.value = "";
+    accessPasswordConfigured.value = configuration.access?.passwordConfigured === true;
     selectedVersionID.value =
       (versions.value.find((item) => item.current) || versions.value[0])?.id ||
       "";
@@ -247,6 +256,24 @@ async function updateApp() {
   if (!app.value || !selectedVersion.value || updating.value) return;
   error.value = "";
   message.value = "";
+  if (passwordAccess.value) {
+    if (!accessUsername.value.trim() || accessUsername.value.trim().length > 64) {
+      error.value = "密码访问用户名必须为 1 到 64 个字符";
+      return;
+    }
+    if (!accessPasswordConfigured.value && accessPassword.value.length < 8) {
+      error.value = "首次开启密码访问时，密码至少需要 8 个字符";
+      return;
+    }
+    if (new TextEncoder().encode(accessPassword.value).length > 72) {
+      error.value = "密码访问的密码不能超过 72 字节";
+      return;
+    }
+    if (portMapping.value) {
+      error.value = "密码访问不能与端口直连同时开启，端口直连会绕过域名网关";
+      return;
+    }
+  }
   updating.value = true;
   try {
     const spec = selectedVersion.value.runtimeSpec,
@@ -284,6 +311,11 @@ async function updateApp() {
         idempotencyKey: crypto.randomUUID(),
         resources,
         secrets: changedSecrets,
+        access: {
+          passwordEnabled: passwordAccess.value,
+          username: accessUsername.value.trim(),
+          password: accessPassword.value,
+        },
       }),
     });
     message.value = "更新任务已创建，系统正在重新部署。现有数据卷会继续保留。";
@@ -592,6 +624,17 @@ onMounted(async () => {
             <label class="switch"
               ><input v-model="portMapping" type="checkbox" /><span
             /></label>
+          </div>
+          <div class="switch-setting app-detail-portmapping">
+            <div>
+              <strong>密码访问</strong>
+              <small>关闭时任何人都可访问应用域名；开启后需要 HTTP 用户名和密码</small>
+            </div>
+            <label class="switch"><input v-model="passwordAccess" type="checkbox" /><span /></label>
+          </div>
+          <div v-if="passwordAccess" class="field-grid access-fields">
+            <label><span>访问用户名</span><input v-model="accessUsername" maxlength="64" autocomplete="off" /></label>
+            <label><span>访问密码</span><input v-model="accessPassword" type="password" :placeholder="accessPasswordConfigured ? '已配置，留空保持不变' : '至少 8 个字符'" autocomplete="new-password" /></label>
           </div>
           <p
             class="field-note"

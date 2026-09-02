@@ -848,13 +848,14 @@ func (s *Server) listProducts(w http.ResponseWriter, r *http.Request) {
 }
 
 type createAppRequest struct {
-	ProductID         string            `json:"productId"`
-	VersionID         string            `json:"versionId"`
-	Slug              string            `json:"slug"`
-	DomainRefreshDays *int              `json:"domainRefreshDays"`
-	IdempotencyKey    string            `json:"idempotencyKey"`
-	Secrets           map[string]string `json:"secrets"`
-	Resources         selectedResources `json:"resources"`
+	ProductID         string                   `json:"productId"`
+	VersionID         string                   `json:"versionId"`
+	Slug              string                   `json:"slug"`
+	DomainRefreshDays *int                     `json:"domainRefreshDays"`
+	IdempotencyKey    string                   `json:"idempotencyKey"`
+	Secrets           map[string]string        `json:"secrets"`
+	Resources         selectedResources        `json:"resources"`
+	Access            appAccessSettingsRequest `json:"access"`
 }
 
 type selectedResources struct {
@@ -1346,8 +1347,17 @@ func (s *Server) createApp(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "invalid_deployment_configuration", "port mapping is not available for this product version")
 		return
 	}
+	accessPolicy, accessErr := resolveAppAccessPolicy(&req.Access, appAccessPolicy{})
+	if accessErr != nil {
+		writeError(w, 400, "invalid_access_settings", accessErr.Error())
+		return
+	}
+	if portMappingEnabled && accessPolicy.Enabled {
+		writeError(w, 400, "invalid_access_settings", "密码访问不能与端口直连同时开启，端口直连会绕过域名网关")
+		return
+	}
 	var appID string
-	err = tx.QueryRow(r.Context(), `INSERT INTO user_apps(user_id,product_id,slug,service_slug,status,port_mapping_enabled,route_host_label,domain_refresh_days,domain_next_refresh_at) VALUES($1,$2,$3,$4,'deploying',$5,$6,$7,CASE WHEN $7::integer IS NULL THEN NULL ELSE now()+make_interval(days=>$7::integer) END) RETURNING id`, p.ID, req.ProductID, appSlug, appSlug, portMappingEnabled, routeHostLabel, req.DomainRefreshDays).Scan(&appID)
+	err = tx.QueryRow(r.Context(), `INSERT INTO user_apps(user_id,product_id,slug,service_slug,status,port_mapping_enabled,route_host_label,domain_refresh_days,domain_next_refresh_at,access_password_enabled,access_username,access_password_hash) VALUES($1,$2,$3,$4,'deploying',$5,$6,$7,CASE WHEN $7::integer IS NULL THEN NULL ELSE now()+make_interval(days=>$7::integer) END,$8,$9,$10) RETURNING id`, p.ID, req.ProductID, appSlug, appSlug, portMappingEnabled, routeHostLabel, req.DomainRefreshDays, accessPolicy.Enabled, accessPolicy.Username, accessPolicy.Hash).Scan(&appID)
 	if err != nil {
 		if strings.Contains(err.Error(), "user_apps_user_id_slug_key") || strings.Contains(err.Error(), "user_apps_user_id_service_slug_key") {
 			writeError(w, 409, "slug_contention", "并发部署发生应用标识冲突，请重试")
