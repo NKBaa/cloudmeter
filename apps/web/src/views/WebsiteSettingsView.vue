@@ -24,6 +24,7 @@ import {
   Zap,
 } from "@lucide/vue";
 import { api } from "../api";
+import { useSiteConfig } from "../site-config";
 
 type CaddyUpstream = {
   address: string;
@@ -125,6 +126,7 @@ const form = ref<GatewaySettings>({
   renewIntervalMinutes: 10,
   accessModeManagedByEnvironment: false,
 });
+const { fetchSiteConfig } = useSiteConfig();
 type DNSCredentialField = { key: string; label: string; placeholder: string; secret?: boolean };
 const dnsProviderPresets: Array<{ id: GatewaySettings["acmeDnsProvider"]; label: string; detail: string; fields: DNSCredentialField[] }> = [
   { id: "cloudflare", label: "Cloudflare", detail: "API Token（Zone:Read + DNS:Edit）", fields: [
@@ -425,7 +427,7 @@ async function save(): Promise<{ ok: true } | { ok: false; message: string }> {
     certificates.value = res.certificates || [];
     updatedAt.value = new Date(res.settings.updatedAt || Date.now()).toLocaleString("zh-CN");
     message.value = "网站入口已保存并完成 Caddy 无中断重载";
-    await Promise.all([loadRuntime(), loadRoutes()]);
+    await Promise.all([loadRuntime(), loadRoutes(), fetchSiteConfig()]);
     window.setTimeout(() => {
       message.value = "";
     }, 3000);

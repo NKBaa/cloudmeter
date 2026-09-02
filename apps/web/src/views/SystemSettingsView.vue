@@ -111,6 +111,9 @@ async function save() {
       ...form.value,
       serverUrl: current.serverUrl,
       appBaseDomain: current.appBaseDomain,
+      portMappingHost: current.portMappingHost,
+      hostPortMin: current.hostPortMin,
+      hostPortMax: current.hostPortMax,
     };
     delete payload.updatedAt;
     const res = await api<SystemSettings>("/admin/settings/system", {
