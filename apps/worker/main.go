@@ -385,16 +385,20 @@ func processStopOne(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) 
 
 	var instanceID string
 	_ = db.QueryRow(ctx, "SELECT instance_id::text FROM user_apps WHERE id=$1", appID).Scan(&instanceID)
-	if container != "" {
-		if !stopContainerMatches(instanceID, releaseID, container) && !stopContainerMatches(appID, releaseID, container) {
+	containers := releaseContainerNames(ctx, db, appID, releaseID, container)
+	for _, name := range containers {
+		if !stopContainerMatches(instanceID, releaseID, name) && !stopContainerMatches(appID, releaseID, name) && name != container {
 			err = fmt.Errorf("stop job container identity is invalid")
 		} else if executor == nil {
 			err = fmt.Errorf("docker executor is unavailable")
 		} else {
-			err = executor.StopIfExists(ctx, container)
+			err = executor.StopIfExists(ctx, name)
 			if err == nil {
-				err = executor.RemoveIfExists(ctx, container)
+				err = executor.RemoveIfExists(ctx, name)
 			}
+		}
+		if err != nil {
+			break
 		}
 	}
 	if err != nil {
@@ -1695,6 +1699,19 @@ func processOne(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
 			markJobError(ctx, db, id, err, logger)
 			return
 		}
+		if companions, companionErr := runtimepolicy.RuntimeCompanions(snap.Runtime); companionErr != nil {
+			tx.Rollback(ctx)
+			markJobError(ctx, db, id, companionErr, logger)
+			return
+		} else {
+			for _, companion := range companions {
+				if _, pullErr := pullConfiguredProductImage(ctx, db, companion.Image); pullErr != nil {
+					tx.Rollback(ctx)
+					markJobError(ctx, db, id, fmt.Errorf("pull companion %s: %w", companion.Name, pullErr), logger)
+					return
+				}
+			}
+		}
 		var healthSnapshot struct {
 			Health map[string]any `json:"health_spec"`
 		}
@@ -1786,6 +1803,45 @@ func processOne(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
 		}
 		snap.Runtime["appId"] = appID
 		name := containerName(instanceID, releaseID)
+		companions, companionErr := runtimepolicy.RuntimeCompanions(snap.Runtime)
+		if companionErr != nil {
+			tx.Rollback(ctx)
+			markJobError(ctx, db, id, companionErr, logger)
+			return
+		}
+		networkName := runtimepolicy.UserNetworkName(runtimeOwner, userID)
+		for _, companion := range companions {
+			companionImage, imageErr := configuredProductImage(ctx, db, companion.Image)
+			if imageErr != nil {
+				tx.Rollback(ctx)
+				markJobError(ctx, db, id, imageErr, logger)
+				return
+			}
+			companionRuntime := runtimepolicy.CompanionRuntimeSpec(appID, companion, runtimepolicy.VolumeMounts(snap.Runtime))
+			companionRuntime["releaseId"] = releaseID
+			companionName := companionContainerName(instanceID, releaseID, companion.Key)
+			if removeErr := executor.RemoveIfExists(ctx, companionName); removeErr != nil {
+				tx.Rollback(ctx)
+				markJobError(ctx, db, id, removeErr, logger)
+				return
+			}
+			companionID, createErr := executor.Create(ctx, companionName, companionImage, networkName, []string{companion.ServiceName, releaseAlias(releaseID) + "-" + companion.Key}, companionRuntime, nil)
+			if createErr != nil {
+				tx.Rollback(ctx)
+				markJobError(ctx, db, id, fmt.Errorf("create companion %s: %w", companion.Name, createErr), logger)
+				return
+			}
+			if _, err = tx.Exec(ctx, `INSERT INTO app_release_containers(release_id,user_app_id,service_key,service_name,container_name,container_id,is_primary) VALUES($1,$2,$3,$4,$5,$6,false) ON CONFLICT(release_id,service_key) DO UPDATE SET container_name=EXCLUDED.container_name,container_id=EXCLUDED.container_id`, releaseID, appID, companion.Key, companion.ServiceName, companionName, companionID); err != nil {
+				tx.Rollback(ctx)
+				markJobError(ctx, db, id, err, logger)
+				return
+			}
+			if err = executor.Start(ctx, companionName); err != nil {
+				tx.Rollback(ctx)
+				markJobError(ctx, db, id, fmt.Errorf("start companion %s: %w", companion.Name, err), logger)
+				return
+			}
+		}
 		routePort := routePort(snap.Route)
 		mapping := routePortMapping(snap.Route, routePort, portMappingEnabled)
 		if mapping != nil {
@@ -1812,6 +1868,12 @@ func processOne(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
 			}
 		}
 		if err = executor.Start(ctx, name); err != nil {
+			tx.Rollback(ctx)
+			markJobError(ctx, db, id, err, logger)
+			return
+		}
+		// Register the primary container alongside any companion services.
+		if _, err = tx.Exec(ctx, `INSERT INTO app_release_containers(release_id,user_app_id,service_key,service_name,container_name,container_id,is_primary) VALUES($1,$2,'primary',$3,$4,$5,true) ON CONFLICT(release_id,service_key) DO UPDATE SET container_name=EXCLUDED.container_name,container_id=EXCLUDED.container_id`, releaseID, appID, serviceSlug, name, containerID); err != nil {
 			tx.Rollback(ctx)
 			markJobError(ctx, db, id, err, logger)
 			return
@@ -1843,6 +1905,24 @@ func processOne(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
 		}
 		if !healthy {
 			healthFailure = "application container is not ready"
+		}
+		if healthy {
+			var runtimeSnapshot struct {
+				Runtime map[string]any `json:"runtime_spec"`
+			}
+			if json.Unmarshal(snapshot, &runtimeSnapshot) == nil {
+				companions, parseErr := runtimepolicy.RuntimeCompanions(runtimeSnapshot.Runtime)
+				if parseErr != nil {
+					healthy, healthFailure = false, parseErr.Error()
+				}
+				for _, companion := range companions {
+					ready, readyErr := executor.Healthy(ctx, companionContainerName(instanceID, releaseID, companion.Key))
+					if readyErr != nil || !ready {
+						healthy, healthFailure = false, "companion "+companion.Name+" is not ready"
+						break
+					}
+				}
+			}
 		}
 		if healthy {
 			var probe struct {
@@ -2223,6 +2303,37 @@ func containerName(instanceID, releaseID string) string {
 		return "cm-" + instanceID + "-" + releaseID
 	}
 	return "cm-" + runtimeScope + "-" + instanceID + "-" + releaseID
+}
+
+func companionContainerName(instanceID, releaseID, key string) string {
+	return containerName(instanceID, releaseID) + "-" + key
+}
+
+func releaseContainerNames(ctx context.Context, db *pgxpool.Pool, appID, releaseID, fallback string) []string {
+	query := `SELECT container_name FROM app_release_containers WHERE user_app_id=$1`
+	args := []any{appID}
+	if releaseID != "" {
+		query += ` AND release_id=$2`
+		args = append(args, releaseID)
+	} else if fallback != "" {
+		query += ` AND release_id=(SELECT release_id FROM app_release_containers WHERE user_app_id=$1 AND container_name=$2 LIMIT 1)`
+		args = append(args, fallback)
+	}
+	query += ` ORDER BY is_primary DESC,service_key`
+	values := []string{}
+	if rows, err := db.Query(ctx, query, args...); err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var name string
+			if rows.Scan(&name) == nil && name != "" {
+				values = append(values, name)
+			}
+		}
+	}
+	if len(values) == 0 && fallback != "" {
+		values = append(values, fallback)
+	}
+	return uniqueStrings(values...)
 }
 func healthProbeName(jobID string) string {
 	compact := strings.ReplaceAll(jobID, "-", "")

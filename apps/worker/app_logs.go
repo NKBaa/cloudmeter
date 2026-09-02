@@ -52,10 +52,15 @@ func processLogFetchOne(ctx context.Context, db *pgxpool.Pool, logger *slog.Logg
 		markLogFetchRetry(ctx, db, id, attempts, fmt.Errorf("application has no running container"), logger)
 		return
 	}
-	logs, err := executor.ContainerDiagnostics(ctx, container, 300)
-	if err != nil {
-		markLogFetchRetry(ctx, db, id, attempts, err, logger)
-		return
+	containers := releaseContainerNames(ctx, db, appID, "", container)
+	logs := ""
+	for _, name := range containers {
+		diagnostics, logErr := executor.ContainerDiagnostics(ctx, name, 300)
+		if logErr != nil {
+			markLogFetchRetry(ctx, db, id, attempts, logErr, logger)
+			return
+		}
+		logs += "[" + name + "]\n" + diagnostics + "\n"
 	}
 	if _, err = db.Exec(ctx, `INSERT INTO app_runtime_logs(user_app_id,log_text,sampled_at,updated_at)
 		VALUES($1,$2,now(),now())

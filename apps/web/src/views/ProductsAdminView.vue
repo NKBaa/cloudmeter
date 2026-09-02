@@ -39,6 +39,7 @@ import { api, logout } from "../api";
 import BrandMark from "../components/BrandMark.vue";
 
 type Volume = { name: string; mountPath: string; sizeGiB: number };
+type Companion = { key: string; name: string; image: string; serviceName: string; cpuCores: number; memoryMiB: number; ports: number[]; environment: any; command: any; volumes: { volumeKey: string; mountPath: string }[]; healthPort?: number; healthPath?: string; health?: { containerPort?: number; path?: string } };
 type Dependency = {
   key: string;
   productId: string;
@@ -59,6 +60,7 @@ type RuntimeSpec = {
   dependencies?: Dependency[];
   dataVolumeGiB?: number;
   editableOptions?: EditableOptions;
+  companions?: Companion[];
 };
 type EditableOptions = {
   cpu: boolean;
@@ -142,6 +144,7 @@ type VersionForm = {
   dataPolicy: "stateless" | "volume_compatible" | "backup_required";
   dataVolumeGiB: number;
   editableOptions: EditableOptions;
+  companions: Companion[];
 };
 
 const products = ref<Product[]>([]);
@@ -281,6 +284,7 @@ function defaultVersionForm(): VersionForm {
       dependencies: false,
       environment: false,
     },
+    companions: [],
   };
 }
 function resetVersionForm() {
@@ -905,6 +909,13 @@ async function createVersion() {
       secretDescriptions: secretDescriptions(),
       editableSecretKeys: editableSecretKeys(),
       dependencies: dependencies(),
+      companions: versionForm.companions.map((companion) => ({
+        key: companion.key.trim().toLowerCase(), name: companion.name.trim(), image: companion.image.trim(), serviceName: companion.serviceName.trim().toLowerCase(), cpuCores: companion.cpuCores, memoryMiB: companion.memoryMiB, ports: companion.ports,
+        environment: uniqueEntries(companion.environment),
+        command: companion.command.map((item: any) => typeof item === "string" ? item.trim() : String(item.value || "").trim()).filter(Boolean),
+        volumes: companion.volumes,
+        health: companion.healthPort ? { containerPort: companion.healthPort, path: companion.healthPath || "", timeoutSeconds: 5 } : undefined,
+      })),
     };
     if (versionForm.volumes.length)
       runtimeSpec.dataVolumeGiB = versionForm.dataVolumeGiB;
@@ -974,6 +985,14 @@ async function createVersion() {
     busy.value = "";
   }
 }
+function applyAstrBotNapCatPreset() {
+  versionForm.imageDigest = "soulter/astrbot:v4.0.0";
+  versionForm.containerPort = 6185;
+  versionForm.environment = [{ key: "TZ", value: "Asia/Shanghai", editable: false, description: "时区" }];
+  versionForm.volumes = [{ name: "data", mountPath: "/AstrBot/data", sizeGiB: 10 }, { name: "napcat-config", mountPath: "/app/napcat/config", sizeGiB: 10 }, { name: "ntqq", mountPath: "/app/.config/QQ", sizeGiB: 10 }];
+  versionForm.companions = [{ key: "napcat", name: "NapCat", image: "mlikiowa/napcat-docker:v4.8.1", serviceName: "napcat", cpuCores: 0.5, memoryMiB: 512, ports: [6099], environment: [{ key: "MODE", value: "astrbot", editable: false, description: "AstrBot 连接模式" }, { key: "NAPCAT_UID", value: "1000", editable: false, description: "运行用户" }, { key: "NAPCAT_GID", value: "1000", editable: false, description: "运行组" }], command: [], volumes: [{ volumeKey: "data", mountPath: "/AstrBot/data" }, { volumeKey: "napcat-config", mountPath: "/app/napcat/config" }, { volumeKey: "ntqq", mountPath: "/app/.config/QQ" }], healthPort: 6099, healthPath: "" }];
+  done("已套用 AstrBot + NapCat 组合预设，请确认镜像版本后创建");
+}
 function versionFormFromItem(item: Version): VersionForm {
   const runtime = item.runtimeSpec || {};
   const volumes = (runtime.volumes || []).map((volume) => ({ ...volume }));
@@ -1030,6 +1049,17 @@ function versionFormFromItem(item: Version): VersionForm {
     )
       ? (item.updateSpec?.dataPolicy as VersionForm["dataPolicy"])
       : "volume_compatible",
+    companions: (runtime.companions || []).map((companion) => ({
+      ...companion,
+      cpuCores: numberValue(companion.cpuCores, 0.5),
+      memoryMiB: numberValue(companion.memoryMiB, 512),
+      ports: (companion.ports || []).map(Number),
+      environment: Array.isArray(companion.environment) ? companion.environment : importedEnvironment(companion.environment || {}, new Set(), {}),
+      command: (companion.command || []).map((value: any) => ({ value: typeof value === "string" ? value : String(value?.value || "") })),
+      volumes: (companion.volumes || []).map((volume: any) => ({ volumeKey: String(volume.volumeKey || volume.name || "data"), mountPath: String(volume.mountPath || "/data") })),
+      healthPort: numberValue(companion.health?.containerPort, 0),
+      healthPath: String(companion.health?.path || ""),
+    })),
   };
 }
 async function loadVersionIntoEditor(item: Version) {
@@ -1483,6 +1513,27 @@ function dataPolicyLabel(value?: string) {
                     ><em>允许用户提高配置</em></span
                   ></label
                 >
+              </div>
+            </section>
+            <section class="config-section" v-if="versionForm.companions.length || selectedProduct">
+              <div class="config-heading with-action">
+                <Network :size="18" />
+                <div><strong>组合容器</strong><small>与主容器一起发布、更新和回滚；仅主容器接入公网</small></div>
+                <button type="button" class="secondary compact" @click="applyAstrBotNapCatPreset">AstrBot + NapCat 预设</button>
+              </div>
+              <div class="repeat-list">
+                <div v-for="(companion, index) in versionForm.companions" :key="index" class="repeat-row">
+                  <input v-model="companion.name" placeholder="显示名称" />
+                  <input v-model="companion.key" placeholder="服务标识，如 napcat" pattern="[a-z][a-z0-9-]{0,31}" />
+                  <input v-model="companion.serviceName" placeholder="内网服务名" pattern="[a-z0-9][a-z0-9-]{0,62}" />
+                  <input v-model="companion.image" placeholder="镜像:版本" required />
+                  <input v-model.number="companion.cpuCores" type="number" min="0.1" step="0.1" placeholder="CPU" />
+                  <input v-model.number="companion.memoryMiB" type="number" min="64" step="64" placeholder="内存 MiB" />
+                  <input :value="companion.ports.join(', ')" @change="companion.ports = ($event.target as HTMLInputElement).value.split(/[,\s]+/).filter(Boolean).map(Number)" placeholder="内网端口，如 6099" />
+                  <button type="button" class="icon-action" title="删除组合容器" @click="removeAt(versionForm.companions, index)"><Trash2 :size="16" /></button>
+                </div>
+                <button type="button" class="secondary compact" @click="versionForm.companions.push({ key: 'service', name: '组合服务', image: '', serviceName: 'service', cpuCores: 0.5, memoryMiB: 512, ports: [8080], environment: [], command: [], volumes: [], healthPort: 8080, healthPath: '' })"><Plus :size="15" />添加组合容器</button>
+                <p v-if="!versionForm.companions.length" class="quiet empty-inline">当前版本为单容器应用</p>
               </div>
             </section>
             <section class="config-section">

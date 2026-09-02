@@ -379,4 +379,6 @@ wsl -d Ubuntu-24.04 -e bash -lc "cd '/mnt/c/Users/www34/Desktop/云部署' && ba
 
 ---
 
+组合部署版本可在 `runtimeSpec.companions` 中声明私有伴随容器。所有容器加入同一用户网络，使用 `serviceName` 互访；只有主容器连接 App Router 和公网域名，伴随容器端口不会映射到宿主机。共享数据请通过主版本卷键挂载，平台不接受宿主机路径。
+
 祝使用愉快！如遇到问题欢迎在 GitHub 仓库提交 [Issue](https://github.com/NKBaa/cloudmeter/issues)。

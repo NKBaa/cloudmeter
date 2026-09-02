@@ -89,8 +89,8 @@ func (e *DockerExecutor) Images(ctx context.Context) ([]DockerImage, error) {
 // cached image instead of re-pulling it.
 func (e *DockerExecutor) ImageExists(ctx context.Context, reference string) bool {
 	var rawImages []struct {
-		ID       string   `json:"Id"`
-		RepoTags []string `json:"RepoTags"`
+		ID          string   `json:"Id"`
+		RepoTags    []string `json:"RepoTags"`
 		RepoDigests []string `json:"RepoDigests"`
 	}
 	if err := e.request(ctx, http.MethodGet, "/images/json?all=false", nil, &rawImages); err != nil {
@@ -111,7 +111,8 @@ func (e *DockerExecutor) ImageExists(ctx context.Context, reference string) bool
 
 func (e *DockerExecutor) RemoveImage(ctx context.Context, imageID string) error {
 	if !strings.HasPrefix(imageID, "sha256:") || len(imageID) != 71 {
-		return fmt.Errorf("invalid docker image ID")	}
+		return fmt.Errorf("invalid docker image ID")
+	}
 	return e.request(ctx, http.MethodDelete, "/images/"+urlEscape(imageID)+"?force=false&noprune=false", nil, nil)
 }
 
@@ -582,7 +583,7 @@ func (e *DockerExecutor) Create(ctx context.Context, name, image, network string
 		// while the app keeps its service aliases on the user network.
 		endpoints["bridge"] = map[string]any{}
 	}
-	body := containerCreate{Image: image, Env: env, Cmd: command, Labels: e.managedLabels(map[string]string{"cloudmeter.app_id": fmt.Sprint(spec["appId"])}), ExposedPorts: exposed, HostConfig: hostConfig, NetworkingConfig: map[string]any{"EndpointsConfig": endpoints}}
+	body := containerCreate{Image: image, Env: env, Cmd: command, Labels: e.managedLabels(map[string]string{"cloudmeter.app_id": fmt.Sprint(spec["appId"]), "cloudmeter.release_id": fmt.Sprint(spec["releaseId"]), "cloudmeter.service_key": fmt.Sprint(spec["serviceKey"])}), ExposedPorts: exposed, HostConfig: hostConfig, NetworkingConfig: map[string]any{"EndpointsConfig": endpoints}}
 	var out struct {
 		ID string `json:"Id"`
 	}
