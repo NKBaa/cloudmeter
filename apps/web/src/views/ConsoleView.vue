@@ -2817,44 +2817,52 @@ async function exitImpersonation() {
                 }}</small
               ></label
             >
-            <div class="deploy-listeners">
-              <span class="ro-label">应用监听端口</span>
-              <div v-for="listener in deployListenerPorts" :key="listener.key" class="deploy-listener-row">
-                <div><strong>{{ listener.remark || listener.key }}</strong><small>{{ listener.primary ? "域名网关主入口" : listener.key }}</small></div>
-                <input v-model.number="listener.containerPort" type="number" min="1" max="65535" :readonly="!listener.userEditable" />
-                <label v-if="listener.mappingAvailable" class="listener-map-toggle"><input v-model="listener.mappingEnabled" type="checkbox" /><span>端口直连</span></label>
-                <span v-else class="quiet">仅内网</span>
+            <section class="deploy-network-section">
+              <div class="deploy-listeners">
+                <div class="deploy-section-heading">
+                  <div><strong>应用监听端口</strong><small>配置容器端口及需要开放的直连入口</small></div>
+                </div>
+                <div v-for="listener in deployListenerPorts" :key="listener.key" class="deploy-listener-row">
+                  <div><strong>{{ listener.remark || listener.key }}</strong><small>{{ listener.primary ? "域名网关主入口" : listener.key }}</small></div>
+                  <input v-model.number="listener.containerPort" type="number" min="1" max="65535" :readonly="!listener.userEditable" />
+                  <div v-if="listener.mappingAvailable" class="listener-map-control"><span>端口直连</span><label class="switch" title="端口直连"><input v-model="listener.mappingEnabled" type="checkbox" /><span /></label></div>
+                  <span v-else class="listener-internal-only">仅内网</span>
+                </div>
+                <small class="deploy-section-note">每个直连端口由系统独立分配宿主机端口；直连不会经过域名密码保护。</small>
               </div>
-              <small>每个直连端口由系统独立分配宿主机端口；直连不会经过域名密码保护。</small>
-            </div>
-            <label v-if="deployMode === 'create'"
-              >独立子域名刷新方式<select v-model="deployDomainPermanent">
-                <option :value="true">永久不变</option>
-                <option :value="false">按天自动刷新</option>
-              </select><small
-                >每个应用使用独立子域名；刷新后旧地址立即失效</small
-              ></label
-            >
-            <label v-if="deployMode === 'create' && !deployDomainPermanent"
-              >刷新周期（天）<input
-                v-model.number="deployDomainRefreshDays"
-                type="number"
-                min="1"
-                step="1"
-                required
-              /><small>最低 1 天；如需长期固定，请选择“永久不变”</small></label
-            >
-            <div class="switch-setting deploy-password-access">
-              <div>
-                <strong>密码访问</strong>
-                <small>仅保护应用域名入口；开启的端口直连仍可同时使用，且不会经过此密码验证</small>
+              <div v-if="deployMode === 'create'" class="deploy-domain-settings">
+                <label
+                  >独立子域名刷新方式<select v-model="deployDomainPermanent">
+                    <option :value="true">永久不变</option>
+                    <option :value="false">按天自动刷新</option>
+                  </select><small
+                    >每个应用使用独立子域名；刷新后旧地址立即失效</small
+                  ></label
+                >
+                <label v-if="!deployDomainPermanent"
+                  >刷新周期（天）<input
+                    v-model.number="deployDomainRefreshDays"
+                    type="number"
+                    min="1"
+                    step="1"
+                    required
+                  /><small>最低 1 天；如需长期固定，请选择“永久不变”</small></label
+                >
               </div>
-              <label class="switch"><input v-model="deployPasswordAccess" type="checkbox" /><span /></label>
-            </div>
-            <template v-if="deployPasswordAccess">
-              <label class="deploy-access-field">访问用户名<input v-model="deployAccessUsername" maxlength="64" autocomplete="off" required /><small>用于浏览器 HTTP Basic Auth 登录</small></label>
-              <label class="deploy-access-field">访问密码<input v-model="deployAccessPassword" type="password" :required="!deployAccessPasswordConfigured" :placeholder="deployAccessPasswordConfigured ? '已配置，留空保持不变' : '至少 8 个字符'" autocomplete="new-password" /><small>仅保存加密哈希，不会显示或返回原密码</small></label>
-            </template>
+            </section>
+            <section class="deploy-access-section">
+              <div class="switch-setting deploy-password-access">
+                <div>
+                  <strong>密码访问</strong>
+                  <small>仅保护应用域名入口；端口直连仍可同时使用，且不会经过此密码验证</small>
+                </div>
+                <label class="switch"><input v-model="deployPasswordAccess" type="checkbox" /><span /></label>
+              </div>
+              <div v-if="deployPasswordAccess" class="deploy-access-grid">
+                <label class="deploy-access-field">访问用户名<input v-model="deployAccessUsername" maxlength="64" autocomplete="off" required /><small>用于浏览器 HTTP Basic Auth 登录</small></label>
+                <label class="deploy-access-field">访问密码<input v-model="deployAccessPassword" type="password" :required="!deployAccessPasswordConfigured" :placeholder="deployAccessPasswordConfigured ? '已配置，留空保持不变' : '至少 8 个字符'" autocomplete="new-password" /><small>仅保存加密哈希，不会显示或返回原密码</small></label>
+              </div>
+            </section>
           </div>
           <label v-if="deployProduct.runtimeSpec?.volumes?.length"
             >共享数据卷容量 GiB<input
