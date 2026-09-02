@@ -13,7 +13,7 @@ export interface SystemSettings {
   privacyPolicy: string;
   hostPortMin: number;
   hostPortMax: number;
-  portMappingHost: string;
+  portMappingHost?: string;
   updatedAt?: string;
 }
 
