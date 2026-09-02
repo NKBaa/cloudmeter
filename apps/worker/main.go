@@ -194,8 +194,8 @@ func processDomainRefreshOne(ctx context.Context, db *pgxpool.Pool, logger *slog
 		return
 	}
 	baseDomain = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(baseDomain)), ".")
-	if _, err = tx.Exec(ctx, `UPDATE app_routes route SET public_path=CASE WHEN $2='' THEN '/apps/'||users.slug||'/'||app.slug ELSE '//'||app.route_host_label||'.'||$2||'/' END,updated_at=now()
-		FROM user_apps app JOIN users ON users.id=app.user_id WHERE route.user_app_id=app.id AND app.id=$1`, appID, baseDomain); err != nil {
+	if _, err = tx.Exec(ctx, `UPDATE app_routes route SET public_path='//'||app.route_host_label||'.'||$2||'/',updated_at=now()
+		FROM user_apps app WHERE route.user_app_id=app.id AND app.id=$1`, appID, baseDomain); err != nil {
 		logger.Warn("application route refresh failed", "app", appID, "error", err)
 		return
 	}
@@ -1980,8 +1980,8 @@ func processOne(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
 			logger.Error("public ingress usage insert failed", "error", err)
 			return
 		}
-		var slug, serviceSlug, userSlug, routeHostLabel, userID, releaseContainerID string
-		if err = tx.QueryRow(ctx, `SELECT u.slug,a.slug,a.service_slug,a.route_host_label,a.user_id::text FROM user_apps a JOIN users u ON u.id=a.user_id WHERE a.id=$1`, appID).Scan(&userSlug, &slug, &serviceSlug, &routeHostLabel, &userID); err != nil {
+		var serviceSlug, routeHostLabel, userID, releaseContainerID string
+		if err = tx.QueryRow(ctx, `SELECT a.service_slug,a.route_host_label,a.user_id::text FROM user_apps a WHERE a.id=$1`, appID).Scan(&serviceSlug, &routeHostLabel, &userID); err != nil {
 			logger.Error("route slug lookup failed", "error", err)
 			return
 		}
@@ -2010,10 +2010,11 @@ func processOne(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
 		var cloudDomain string
 		_ = tx.QueryRow(ctx, "SELECT app_base_domain FROM system_settings WHERE singleton").Scan(&cloudDomain)
 		cloudDomain = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(cloudDomain)), ".")
-		publicPath := "/apps/" + userSlug + "/" + slug
-		if cloudDomain != "" {
-			publicPath = "//" + routeHostLabel + "." + cloudDomain + "/"
+		if cloudDomain == "" {
+			logger.Error("application domain is not configured", "app", appID)
+			return
 		}
+		publicPath := "//" + routeHostLabel + "." + cloudDomain + "/"
 		routeArgs := []any{appID, instanceID, releaseID, publicPath, releaseAlias(releaseID), port, containerName(instanceID, releaseID), networkName, releaseContainerID}
 		if routeHostPort >= 1 && routeHostPort <= 65535 {
 			hostPortColumn = "$10"

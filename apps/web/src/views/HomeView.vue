@@ -300,7 +300,7 @@ onMounted(async () => {
                     <strong>open-webui-prod</strong>
                     <span class="status-pill status-running">Running</span>
                   </div>
-                  <small class="mono-data">https://cloud.local/apps/demo/open-webui/</small>
+                  <small class="mono-data">https://open-webui-demo.apps.cloud.local/</small>
                 </div>
                 <span class="app-action-badge">访问网关</span>
               </div>

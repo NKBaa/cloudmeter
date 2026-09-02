@@ -9,7 +9,7 @@ import (
 
 func TestNormalizeGatewaySettingsAppliesModeOrigin(t *testing.T) {
 	standalone := gatewaySettings{
-		AccessMode: "apps_only", ServerURL: "https://console.example.com:9999", StandalonePort: 8080,
+		AccessMode: "apps_only", ServerURL: "https://console.example.com:9999", AppBaseDomain: "apps.example.com", StandalonePort: 8080,
 		HTTPPolicy: "redirect", ConsoleCertificateMode: "automatic", AppCertificateMode: "automatic",
 		ACMECA: defaultACMEDirectory,
 	}
@@ -21,7 +21,7 @@ func TestNormalizeGatewaySettingsAppliesModeOrigin(t *testing.T) {
 	}
 
 	managed := gatewaySettings{
-		AccessMode: "all_caddy", ServerURL: "http://console.example.com:8080", StandalonePort: 8080,
+		AccessMode: "all_caddy", ServerURL: "http://console.example.com:8080", AppBaseDomain: "apps.example.com", StandalonePort: 8080,
 		TLSEnabled: true, HTTPPolicy: "redirect", ConsoleCertificateMode: "automatic", AppCertificateMode: "automatic",
 		ACMEEmail: "ops@example.com", ACMECA: defaultACMEDirectory, ACMEKeyType: "p256", RenewIntervalMinutes: 10,
 		ACMEDNSProvider: "cloudflare", ACMEDNSCredentials: map[string]string{"apiToken": "test-token"},
@@ -72,7 +72,7 @@ func TestRenderGatewayCaddyfileModes(t *testing.T) {
 
 func TestNormalizeGatewaySettingsRequiresDNSProviderCredentials(t *testing.T) {
 	settings := gatewaySettings{
-		AccessMode: "all_caddy", ServerURL: "https://console.example.com", TLSEnabled: true, HTTPPolicy: "redirect",
+		AccessMode: "all_caddy", ServerURL: "https://console.example.com", AppBaseDomain: "apps.example.com", TLSEnabled: true, HTTPPolicy: "redirect",
 		ConsoleCertificateMode: "automatic", AppCertificateMode: "automatic", ACMEEmail: "ops@example.com",
 		ACMECA: defaultACMEDirectory, ACMEKeyType: "p256", RenewIntervalMinutes: 10, ACMEDNSProvider: "cloudflare",
 	}

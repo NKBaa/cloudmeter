@@ -45,7 +45,7 @@ cleanup(){
 trap cleanup EXIT
 
 product="$(api_json POST /admin/products "$admin_token" "$(jq -cn --arg slug "verify-billing-$marker" --arg name "Billing recovery $marker" '{slug:$slug,name:$name}')")"; product_id="$(jq -r .id <<<"$product")"
-version_body="$(jq -cn --arg image "$IMAGE" '{imageDigest:$image,runtimeSpec:{cpuCores:0.25,memoryMiB:128,systemDiskGiB:1,env:{},secretKeys:[],dependencies:[],volumes:[]},routeSpec:{containerPort:80,basePath:"/",stripPrefix:true,websocket:true,sse:true,cookiePath:"/"},healthSpec:{path:"/",intervalSeconds:2,timeoutSeconds:3},updateSpec:{dataPolicy:"stateless"}}')"
+version_body="$(jq -cn --arg image "$IMAGE" '{imageDigest:$image,runtimeSpec:{cpuCores:0.25,memoryMiB:128,systemDiskGiB:1,env:{},secretKeys:[],dependencies:[],volumes:[]},routeSpec:{containerPort:80,basePath:"/",websocket:true,sse:true},healthSpec:{path:"/",intervalSeconds:2,timeoutSeconds:3},updateSpec:{dataPolicy:"stateless"}}')"
 version="$(api_json POST "/admin/products/$product_id/versions" "$admin_token" "$version_body")"; version_id="$(jq -r .id <<<"$version")"
 test="$(api_json POST "/admin/products/$product_id/versions/$version_id/tests" "$admin_token" '{"secrets":{}}')"; wait_product_test "$(jq -r .testId <<<"$test")"
 api_json POST "/admin/products/$product_id/versions/$version_id/publish" "$admin_token" | jq -e '.published==true' >/dev/null

@@ -100,7 +100,7 @@ function New-VersionBody([array]$Dependencies = @()) {
             cpuCores = 0.25; memoryMiB = 128; systemDiskGiB = 1
             env = @{}; secretKeys = @(); volumes = @(); dependencies = $Dependencies
         }
-        routeSpec = @{ containerPort = 80; basePath = '/'; stripPrefix = $true; websocket = $true; sse = $true; cookiePath = '/' }
+        routeSpec = @{ containerPort = 80; basePath = '/'; websocket = $true; sse = $true }
         healthSpec = @{ path = '/'; intervalSeconds = 5; timeoutSeconds = 3 }
         updateSpec = @{ dataPolicy = 'stateless' }
     } | ConvertTo-Json -Depth 10 -Compress

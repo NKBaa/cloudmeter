@@ -71,10 +71,8 @@ type EditableOptions = {
 type RouteSpec = {
   containerPort?: number;
   basePath?: string;
-  stripPrefix?: boolean;
   websocket?: boolean;
   sse?: boolean;
-  cookiePath?: string;
   portMapping?: { available?: boolean };
 };
 type HealthSpec = {
@@ -130,10 +128,8 @@ type VersionForm = {
   dependencies: Dependency[];
   containerPort: number;
   basePath: string;
-  stripPrefix: boolean;
   websocket: boolean;
   sse: boolean;
-  cookiePath: string;
   portMappingAvailable: boolean;
   healthPath: string;
   intervalSeconds: number;
@@ -205,10 +201,8 @@ const templateExample = JSON.stringify(
       routeSpec: {
         containerPort: 3000,
         basePath: "/",
-        stripPrefix: true,
         websocket: true,
         sse: true,
-        cookiePath: "/",
       },
       healthSpec: {
         path: "/health",
@@ -262,10 +256,8 @@ function defaultVersionForm(): VersionForm {
     dependencies: [],
     containerPort: 8080,
     basePath: "/",
-    stripPrefix: true,
     websocket: true,
     sse: true,
-    cookiePath: "/",
     portMappingAvailable: false,
     healthPath: "/health",
     intervalSeconds: 10,
@@ -544,11 +536,9 @@ async function importTemplate(event: Event) {
         8080,
       ),
       basePath: String(route.basePath || "/"),
-      stripPrefix: route.stripPrefix !== false,
       websocket: route.websocket !== false,
       sse: route.sse !== false,
       portMappingAvailable: Boolean(route.portMapping?.available),
-      cookiePath: String(route.cookiePath ?? "/"),
       healthPath: String(health.path ?? "/health"),
       intervalSeconds: numberValue(health.intervalSeconds, 10),
       timeoutSeconds: numberValue(health.timeoutSeconds, 5),
@@ -796,9 +786,6 @@ function addDependency() {
 function applyDataPolicy() {
   if (versionForm.dataPolicy === "stateless") versionForm.volumes.splice(0);
 }
-function applyPrefixMode() {
-  if (!versionForm.stripPrefix) versionForm.basePath = "/";
-}
 function uniqueEntries(entries: KeyValue[]) {
   const values: Record<string, string> = {};
   for (const entry of entries) {
@@ -921,10 +908,8 @@ async function createVersion() {
         routeSpec: {
           containerPort: versionForm.containerPort,
           basePath: versionForm.basePath.trim() || "/",
-          stripPrefix: versionForm.stripPrefix,
           websocket: versionForm.websocket,
           sse: versionForm.sse,
-          cookiePath: versionForm.cookiePath.trim(),
           portMapping: versionForm.portMappingAvailable
             ? { available: true }
             : undefined,
@@ -1014,10 +999,8 @@ function versionFormFromItem(item: Version): VersionForm {
     },
     containerPort: numberValue(item.routeSpec?.containerPort, 8080),
     basePath: item.routeSpec?.basePath ?? "/",
-    stripPrefix: item.routeSpec?.stripPrefix !== false,
     websocket: item.routeSpec?.websocket !== false,
     sse: item.routeSpec?.sse !== false,
-    cookiePath: item.routeSpec?.cookiePath ?? "",
     portMappingAvailable: Boolean(item.routeSpec?.portMapping?.available),
     healthPath: item.healthSpec?.path ?? "",
     intervalSeconds: numberValue(item.healthSpec?.intervalSeconds, 5),
@@ -1915,29 +1898,13 @@ function dataPolicyLabel(value?: string) {
                     required
                     placeholder="/"
                   /><small>应用在容器内部响应请求的基础路径</small></label
-                ><label class="aligned-config-field"
-                  ><span>Cookie Path</span
-                  ><input
-                    v-model="versionForm.cookiePath"
-                    placeholder="/"
-                  /><small>留空不改写 Cookie Path</small></label
                 >
               </div>
               <p class="network-notice">
-                公网访问路径固定为
-                /apps/{user_slug}/{app_slug}/*，由平台网关统一转发。开启端口映射后，
-                同时会在宿主机直接发布容器内网端口，两种访问方式并存。
+                公网访问使用应用泛域名（每个应用独立子域名），由平台网关统一转发。开启端口映射后，
+                系统会额外分配宿主机端口提供直连访问；泛域名与端口直连两种方式并存。
               </p>
               <div class="toggle-grid">
-                <div class="switch-setting">
-                  <div><strong>移除平台应用前缀</strong></div>
-                  <label class="switch"
-                    ><input
-                      v-model="versionForm.stripPrefix"
-                      type="checkbox"
-                      @change="applyPrefixMode" /><span
-                  /></label>
-                </div>
                 <div class="switch-setting">
                   <div><strong>允许 WebSocket</strong></div>
                   <label class="switch"

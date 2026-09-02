@@ -313,7 +313,7 @@ product_id="$(response_value .id)"
 version_body="$(jq -cn --arg image "$IMAGE" '{
   imageDigest:$image,
   runtimeSpec:{cpuCores:0.25,memoryMiB:128,systemDiskGiB:1,env:{},secretKeys:["ROTATION_KEY"],dependencies:[],volumes:[{name:"data",mountPath:"/data",sizeGiB:1}]},
-  routeSpec:{containerPort:80,basePath:"/",stripPrefix:true,websocket:true,sse:true,cookiePath:"/"},
+  routeSpec:{containerPort:80,basePath:"/",websocket:true,sse:true},
   healthSpec:{path:"/",intervalSeconds:2,timeoutSeconds:3},
   updateSpec:{dataPolicy:"volume_compatible"}
 }')"

@@ -91,6 +91,10 @@ func (s *Server) updateSystemSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q.AppBaseDomain = appBaseDomain
+	if q.AppBaseDomain == "" {
+		writeError(w, 400, "validation_failed", "应用泛子域名不能为空")
+		return
+	}
 	portMappingHost, err := normalizePortMappingHost(q.PortMappingHost)
 	if err != nil {
 		writeError(w, 400, "validation_failed", err.Error())
@@ -125,11 +129,8 @@ func (s *Server) updateSystemSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err = tx.Exec(r.Context(), `UPDATE app_routes route
-		SET public_path=CASE
-			WHEN $1='' THEN '/apps/'||users.slug||'/'||app.slug
-			ELSE '//'||app.route_host_label||'.'||$1||'/'
-		END
-		FROM user_apps app JOIN users ON users.id=app.user_id
+		SET public_path='//'||app.route_host_label||'.'||$1||'/'
+		FROM user_apps app
 		WHERE route.user_app_id=app.id`, q.AppBaseDomain); err != nil {
 		s.internalError(w, err)
 		return

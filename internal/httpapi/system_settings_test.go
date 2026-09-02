@@ -4,7 +4,6 @@ import "testing"
 
 func TestNormalizeAppBaseDomain(t *testing.T) {
 	tests := map[string]string{
-		"":                         "",
 		" Apps.Example.COM. ":      "apps.example.com",
 		"tenant-apps.example.test": "tenant-apps.example.test",
 	}

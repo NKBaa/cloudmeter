@@ -43,24 +43,14 @@ func normalizeRouteSpec(spec map[string]any) error {
 		basePath = "/"
 	}
 	spec["basePath"] = basePath
-	stripPrefix, err := normalizedBoolean(spec, "stripPrefix", true)
-	if err != nil {
-		return err
-	}
-	if !stripPrefix && basePath != "/" {
-		return fmt.Errorf("route basePath must be / when stripPrefix is disabled")
-	}
+	delete(spec, "stripPrefix")
 	if _, err = normalizedBoolean(spec, "websocket", true); err != nil {
 		return err
 	}
 	if _, err = normalizedBoolean(spec, "sse", true); err != nil {
 		return err
 	}
-	cookiePath, err := normalizedAbsolutePath(spec["cookiePath"], "route cookiePath", true)
-	if err != nil {
-		return err
-	}
-	spec["cookiePath"] = cookiePath
+	delete(spec, "cookiePath")
 	// Optional direct host-port mapping capability. When available, users can
 	// opt in per instance; the Worker then auto-assigns a free host port on
 	// every deployment so direct access works alongside the platform gateway.

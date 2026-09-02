@@ -2059,14 +2059,12 @@ components:
     ProductRouteSpec:
       type: object
       additionalProperties: false
-      required: [containerPort, basePath, stripPrefix, websocket, sse, cookiePath]
+      required: [containerPort, basePath, websocket, sse]
       properties:
         containerPort: {type: integer, minimum: 1, maximum: 65535}
         basePath: {type: string, pattern: '^/', maxLength: 512}
-        stripPrefix: {type: boolean}
         websocket: {type: boolean}
         sse: {type: boolean}
-        cookiePath: {type: string, pattern: '^/|^$', maxLength: 512}
     ProductHealthSpec:
       type: object
       additionalProperties: false

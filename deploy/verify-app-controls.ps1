@@ -293,7 +293,7 @@ try {
             env = @{}; secretKeys = @('ROTATION_KEY'); dependencies = @()
             volumes = @(@{ name = 'data'; mountPath = '/data'; sizeGiB = 1 })
         }
-        routeSpec = @{ containerPort = 80; basePath = '/'; stripPrefix = $true; websocket = $true; sse = $true; cookiePath = '/' }
+        routeSpec = @{ containerPort = 80; basePath = '/'; websocket = $true; sse = $true }
         healthSpec = @{ path = '/'; intervalSeconds = 2; timeoutSeconds = 3 }
         updateSpec = @{ dataPolicy = 'volume_compatible' }
     } | ConvertTo-Json -Depth 10 -Compress

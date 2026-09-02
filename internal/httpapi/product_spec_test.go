@@ -10,7 +10,7 @@ func TestNormalizeProductVersionSpecs(t *testing.T) {
 	if err := normalizeProductVersionSpecs(runtimeSpec, routeSpec, healthSpec, updateSpec); err != nil {
 		t.Fatal(err)
 	}
-	if routeSpec["basePath"] != "/ui" || routeSpec["stripPrefix"] != true || routeSpec["websocket"] != true || routeSpec["sse"] != true {
+	if routeSpec["basePath"] != "/ui" || routeSpec["websocket"] != true || routeSpec["sse"] != true {
 		t.Fatalf("routeSpec=%v", routeSpec)
 	}
 	if healthSpec["intervalSeconds"] != 5.0 || updateSpec["dataPolicy"] != "backup_required" {
@@ -44,7 +44,6 @@ func TestNormalizeProductVersionSpecsRejectsInvalidCombinations(t *testing.T) {
 		update  map[string]any
 	}{
 		{"invalid port", map[string]any{}, map[string]any{"containerPort": 0.0}, map[string]any{}, map[string]any{}},
-		{"base path without stripping", map[string]any{}, map[string]any{"containerPort": 80.0, "basePath": "/ui", "stripPrefix": false}, map[string]any{}, map[string]any{}},
 		{"stateless volume", map[string]any{"volumes": []any{map[string]any{"name": "data"}}}, map[string]any{"containerPort": 80.0}, map[string]any{}, map[string]any{"dataPolicy": "stateless"}},
 		{"health traversal", map[string]any{}, map[string]any{"containerPort": 80.0}, map[string]any{"path": "/../health"}, map[string]any{}},
 		{"health statuses not array", map[string]any{}, map[string]any{"containerPort": 80.0}, map[string]any{"acceptedStatusCodes": "401"}, map[string]any{}},

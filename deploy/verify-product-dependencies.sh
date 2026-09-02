@@ -66,7 +66,7 @@ version_body() {
   jq -cn --arg image "$IMAGE" --argjson dependencies "$dependencies" '{
     imageDigest:$image,
     runtimeSpec:{cpuCores:0.25,memoryMiB:128,systemDiskGiB:1,env:{},secretKeys:[],volumes:[],dependencies:$dependencies},
-    routeSpec:{containerPort:80,basePath:"/",stripPrefix:true,websocket:true,sse:true,cookiePath:"/"},
+    routeSpec:{containerPort:80,basePath:"/",websocket:true,sse:true},
     healthSpec:{path:"/",intervalSeconds:5,timeoutSeconds:3},
     updateSpec:{dataPolicy:"stateless"}
   }'

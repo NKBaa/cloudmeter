@@ -159,7 +159,7 @@ expect_db_failure 'BEGIN; TRUNCATE app_products CASCADE; ROLLBACK;' 'immutable h
 version_body="$(jq -cn --arg image "$IMAGE" '{
   imageDigest:$image,
   runtimeSpec:{cpuCores:0.25,memoryMiB:128,systemDiskGiB:1,env:{VERIFY_MODE:"acceptance"},secretKeys:["VERIFY_SECRET"],volumes:[{name:"data",mountPath:"/data",sizeGiB:1}]},
-  routeSpec:{containerPort:80,basePath:"/",stripPrefix:true,websocket:true,sse:true,cookiePath:"/"},
+  routeSpec:{containerPort:80,basePath:"/",websocket:true,sse:true},
   healthSpec:{path:"/",intervalSeconds:10,timeoutSeconds:3},
   updateSpec:{dataPolicy:"volume_compatible"}
 }')"

@@ -124,7 +124,7 @@ try {
     $versionBody = @{
         imageDigest = $Image
         runtimeSpec = @{ cpuCores = 0.25; memoryMiB = 128; systemDiskGiB = 1; env = @{}; secretKeys = @(); dependencies = @(); volumes = @() }
-        routeSpec = @{ containerPort = 80; basePath = '/'; stripPrefix = $true; websocket = $true; sse = $true; cookiePath = '/' }
+        routeSpec = @{ containerPort = 80; basePath = '/'; websocket = $true; sse = $true }
         healthSpec = @{ path = '/'; intervalSeconds = 2; timeoutSeconds = 3 }
         updateSpec = @{ dataPolicy = 'stateless' }
     } | ConvertTo-Json -Depth 10 -Compress
