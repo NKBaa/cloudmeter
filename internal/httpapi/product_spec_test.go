@@ -35,6 +35,16 @@ func TestNormalizeRouteSpecPortConfiguration(t *testing.T) {
 	}
 }
 
+func TestNormalizeRouteSpecRejectsDuplicateListenerPorts(t *testing.T) {
+	spec := map[string]any{"containerPort": 8080.0, "listeners": []any{
+		map[string]any{"key": "web", "containerPort": 8080.0, "primary": true},
+		map[string]any{"key": "api", "containerPort": 8080.0},
+	}}
+	if err := normalizeRouteSpec(spec); err == nil {
+		t.Fatal("duplicate listener port accepted")
+	}
+}
+
 func TestNormalizeProductVersionSpecsRejectsInvalidCombinations(t *testing.T) {
 	tests := []struct {
 		name    string

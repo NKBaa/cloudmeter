@@ -184,7 +184,23 @@ func (s *Server) appRoute(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"publicPath": path, "upstreamHost": host, "upstreamPort": port, "hostPort": hostPort, "releaseId": releaseID})
+	rows, err := s.db.Query(r.Context(), `SELECT port_key,container_port,host_port,remark FROM app_port_mappings WHERE user_app_id=$1 AND release_id=$2 ORDER BY container_port`, r.PathValue("appID"), releaseID)
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	defer rows.Close()
+	mappings := []map[string]any{}
+	for rows.Next() {
+		var key, remark string
+		var containerPort, publishedPort int
+		if err = rows.Scan(&key, &containerPort, &publishedPort, &remark); err != nil {
+			s.internalError(w, err)
+			return
+		}
+		mappings = append(mappings, map[string]any{"key": key, "containerPort": containerPort, "hostPort": publishedPort, "remark": remark})
+	}
+	writeJSON(w, 200, map[string]any{"publicPath": path, "upstreamHost": host, "upstreamPort": port, "hostPort": hostPort, "portMappings": mappings, "releaseId": releaseID})
 }
 
 type appReleaseRequest struct {
@@ -304,14 +320,7 @@ func (s *Server) createReleaseJob(w http.ResponseWriter, r *http.Request, actorI
 		writeError(w, http.StatusBadRequest, "invalid_access_settings", accessErr.Error())
 		return
 	}
-	desiredPortMapping := currentPortMapping
-	if selected != nil && selected.PortMappingEnabled != nil {
-		desiredPortMapping = *selected.PortMappingEnabled
-	}
-	if desiredPortMapping && accessPolicy.Enabled {
-		writeError(w, http.StatusBadRequest, "invalid_access_settings", "密码访问不能与端口直连同时开启，端口直连会绕过域名网关")
-		return
-	}
+	_ = currentPortMapping
 	var activeJobID string
 	if err = tx.QueryRow(r.Context(), `SELECT j.id FROM deployment_jobs j JOIN user_apps a ON a.id=j.user_app_id WHERE j.user_app_id=$1 AND a.user_id=$2 AND j.state NOT IN ('succeeded','failed') ORDER BY j.created_at DESC LIMIT 1 FOR UPDATE`, appID, userID).Scan(&activeJobID); err == nil {
 		writeError(w, 409, "deployment_in_progress", "application already has an active deployment")
@@ -348,7 +357,18 @@ func (s *Server) createReleaseJob(w http.ResponseWriter, r *http.Request, actorI
 				return
 			}
 			if selected != nil {
-				routeSpec, err = selectedRouteSpec(routeSpec, *selected)
+				routeSelection := *selected
+				if routeSelection.ListenerPorts == nil {
+					if currentRoute, ok := currentSnapshot["route_spec"].(map[string]any); ok {
+						if currentListeners, listenerErr := routeListeners(currentRoute); listenerErr == nil {
+							routeSelection.ListenerPorts = make([]selectedListenerPort, 0, len(currentListeners))
+							for _, listener := range currentListeners {
+								routeSelection.ListenerPorts = append(routeSelection.ListenerPorts, selectedListenerPort{Key: listener.Key, ContainerPort: listener.ContainerPort, MappingEnabled: listener.MappingEnabled})
+							}
+						}
+					}
+				}
+				routeSpec, err = selectedRouteSpec(routeSpec, routeSelection)
 				if err != nil {
 					writeError(w, http.StatusBadRequest, "invalid_deployment_configuration", err.Error())
 					return
@@ -367,15 +387,9 @@ func (s *Server) createReleaseJob(w http.ResponseWriter, r *http.Request, actorI
 				return
 			}
 		}
-		if selected != nil && selected.PortMappingEnabled != nil {
-			if *selected.PortMappingEnabled && !routePortMappingAvailable(routeSpec) {
-				writeError(w, http.StatusBadRequest, "invalid_deployment_configuration", "port mapping is not available for this product version")
-				return
-			}
-			if _, err = tx.Exec(r.Context(), "UPDATE user_apps SET port_mapping_enabled=$2 WHERE id=$1 AND user_id=$3", appID, *selected.PortMappingEnabled, userID); err != nil {
-				s.internalError(w, err)
-				return
-			}
+		if _, err = tx.Exec(r.Context(), "UPDATE user_apps SET port_mapping_enabled=$2 WHERE id=$1 AND user_id=$3", appID, routeHasEnabledMapping(routeSpec), userID); err != nil {
+			s.internalError(w, err)
+			return
 		}
 		if requestedAccess != nil {
 			if _, err = tx.Exec(r.Context(), `UPDATE user_apps SET access_password_enabled=$2,access_username=$3,access_password_hash=$4 WHERE id=$1 AND user_id=$5`, appID, accessPolicy.Enabled, accessPolicy.Username, accessPolicy.Hash, userID); err != nil {

@@ -859,15 +859,22 @@ type createAppRequest struct {
 }
 
 type selectedResources struct {
-	CPUCores           *float64             `json:"cpuCores"`
-	MemoryMiB          *float64             `json:"memoryMiB"`
-	DataVolumeGiB      *float64             `json:"dataVolumeGiB"`
-	VolumeSizes        map[string]float64   `json:"volumeSizes"`
-	Command            []string             `json:"command"`
-	Environment        map[string]string    `json:"environment"`
-	Dependencies       []selectedDependency `json:"dependencies"`
-	PortMappingEnabled *bool                `json:"portMappingEnabled"`
-	ContainerPort      *int                 `json:"containerPort"`
+	CPUCores           *float64               `json:"cpuCores"`
+	MemoryMiB          *float64               `json:"memoryMiB"`
+	DataVolumeGiB      *float64               `json:"dataVolumeGiB"`
+	VolumeSizes        map[string]float64     `json:"volumeSizes"`
+	Command            []string               `json:"command"`
+	Environment        map[string]string      `json:"environment"`
+	Dependencies       []selectedDependency   `json:"dependencies"`
+	PortMappingEnabled *bool                  `json:"portMappingEnabled"`
+	ContainerPort      *int                   `json:"containerPort"`
+	ListenerPorts      []selectedListenerPort `json:"listenerPorts"`
+}
+
+type selectedListenerPort struct {
+	Key            string `json:"key"`
+	ContainerPort  int    `json:"containerPort"`
+	MappingEnabled bool   `json:"mappingEnabled"`
 }
 
 func editableRuntimeOption(spec map[string]any, key string, legacyDefault bool) bool {
@@ -1022,6 +1029,52 @@ func selectedRouteSpec(template map[string]any, selected selectedResources) (map
 	// User resource overrides may not change the port used by Gateway/health checks.
 	if err = normalizeRouteSpec(result); err != nil {
 		return nil, err
+	}
+	listeners, err := routeListeners(result)
+	if err != nil {
+		return nil, err
+	}
+	requested := map[string]selectedListenerPort{}
+	for _, item := range selected.ListenerPorts {
+		if _, exists := requested[item.Key]; exists {
+			return nil, fmt.Errorf("listener port %s is duplicated", item.Key)
+		}
+		requested[item.Key] = item
+	}
+	for index := range listeners {
+		listener := &listeners[index]
+		choice, provided := requested[listener.Key]
+		if !provided && selected.PortMappingEnabled != nil && listener.Primary && listener.MappingAvailable {
+			choice = selectedListenerPort{Key: listener.Key, ContainerPort: listener.ContainerPort, MappingEnabled: *selected.PortMappingEnabled}
+			provided = true
+		}
+		if provided {
+			delete(requested, listener.Key)
+			if choice.ContainerPort != listener.ContainerPort && !listener.UserEditable {
+				return nil, fmt.Errorf("listener port %s is not editable", listener.Key)
+			}
+			if choice.ContainerPort < 1 || choice.ContainerPort > 65535 {
+				return nil, fmt.Errorf("listener port %s must be between 1 and 65535", listener.Key)
+			}
+			if choice.MappingEnabled && !listener.MappingAvailable {
+				return nil, fmt.Errorf("listener port %s does not allow direct mapping", listener.Key)
+			}
+			listener.ContainerPort = choice.ContainerPort
+			listener.MappingEnabled = choice.MappingEnabled
+		}
+	}
+	if len(requested) > 0 {
+		return nil, fmt.Errorf("request contains an unknown listener port")
+	}
+	result["listeners"] = encodeRouteListeners(listeners)
+	if _, err = routeListeners(result); err != nil {
+		return nil, err
+	}
+	for _, listener := range listeners {
+		if listener.Primary {
+			result["containerPort"] = float64(listener.ContainerPort)
+			break
+		}
 	}
 	return result, nil
 }
@@ -1346,21 +1399,10 @@ func (s *Server) createApp(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, labelErr)
 		return
 	}
-	portMappingEnabled := false
-	if req.Resources.PortMappingEnabled != nil {
-		portMappingEnabled = *req.Resources.PortMappingEnabled
-	}
-	if portMappingEnabled && !routePortMappingAvailable(routeSpec) {
-		writeError(w, 400, "invalid_deployment_configuration", "port mapping is not available for this product version")
-		return
-	}
+	portMappingEnabled := routeHasEnabledMapping(routeSpec)
 	accessPolicy, accessErr := resolveAppAccessPolicy(&req.Access, appAccessPolicy{})
 	if accessErr != nil {
 		writeError(w, 400, "invalid_access_settings", accessErr.Error())
-		return
-	}
-	if portMappingEnabled && accessPolicy.Enabled {
-		writeError(w, 400, "invalid_access_settings", "密码访问不能与端口直连同时开启，端口直连会绕过域名网关")
 		return
 	}
 	var appID string

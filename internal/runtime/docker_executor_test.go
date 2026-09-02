@@ -328,6 +328,29 @@ func TestCreatePassesStructuredCommandToDocker(t *testing.T) {
 	}
 }
 
+func TestCreatePublishesMultiplePorts(t *testing.T) {
+	executor := &DockerExecutor{client: &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		var body containerCreate
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		bindings, ok := body.HostConfig["PortBindings"].(map[string]any)
+		if !ok || len(bindings) != 2 || bindings["8080/tcp"] == nil || bindings["9000/tcp"] == nil {
+			t.Fatalf("port bindings=%#v", body.HostConfig["PortBindings"])
+		}
+		if len(body.ExposedPorts) != 2 {
+			t.Fatalf("exposed ports=%#v", body.ExposedPorts)
+		}
+		return &http.Response{StatusCode: http.StatusCreated, Body: io.NopCloser(strings.NewReader(`{"Id":"container"}`)), Header: make(http.Header)}, nil
+	})}}
+	_, err := executor.Create(context.Background(), "test", "example@sha256:"+strings.Repeat("a", 64), "user_net_test", nil, map[string]any{
+		"appId": "app-id", "cpuCores": 1.0, "memoryMiB": 512.0, "systemDiskGiB": 5.0,
+	}, []PortMapping{{Enabled: true, InternalPort: 8080, HostPort: 30000}, {Enabled: true, InternalPort: 9000, HostPort: 30001}})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestCreateProductTestUsesDisposableStorage(t *testing.T) {
 	executor := &DockerExecutor{owner: "stack-a", client: &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
 		if request.Method == http.MethodGet && request.URL.Path == "/networks/test_net" {

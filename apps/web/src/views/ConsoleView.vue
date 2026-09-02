@@ -82,9 +82,11 @@ type Product = {
   };
   routeSpec?: {
     containerPort?: number;
+    listeners?: ListenerPort[];
     portMapping?: { available?: boolean };
   };
 };
+type ListenerPort = { key: string; containerPort: number; remark: string; primary: boolean; userEditable: boolean; mappingAvailable: boolean; mappingEnabled?: boolean };
 type ProductGroup = Omit<
   Product,
   | "versionId"
@@ -445,6 +447,7 @@ const deployProduct = ref<Product | null>(null),
 const deployVolumeFloorGiB = ref(0);
 const deployCommand = ref("");
 const deployPort = ref(8080);
+const deployListenerPorts = ref<ListenerPort[]>([]);
 const deployDomainPermanent = ref(true);
 const deployDomainRefreshDays = ref(30);
 const deployPortMapping = ref(false);
@@ -453,8 +456,12 @@ const deployAccessUsername = ref("");
 const deployAccessPassword = ref("");
 const deployAccessPasswordConfigured = ref(false);
 const deployPortMappingAvailable = computed(
-  () => deployProduct.value?.routeSpec?.portMapping?.available === true,
+  () => deployListenerPorts.value.some((item) => item.mappingAvailable),
 );
+function selectedDeployListeners(route?: Product["routeSpec"]): ListenerPort[] {
+  if (route?.listeners?.length) return route.listeners.map((item) => ({ ...item, mappingEnabled: item.mappingEnabled === true }));
+  return [{ key: "web", containerPort: route?.containerPort || 8080, remark: "Web 入口", primary: true, userEditable: false, mappingAvailable: route?.portMapping?.available === true, mappingEnabled: false }];
+}
 const deployEnvironment = ref<{ key: string; value: string }[]>([]);
 const deployDependencies = ref<Dependency[]>([]);
 const deployPricePrediction = computed(() => {
@@ -1053,6 +1060,7 @@ function openDeploy(p: Product) {
   deployVolumeFloorGiB.value = deployDataVolumeGiB.value;
   deployCommand.value = (p.runtimeSpec?.command || []).join(" ");
   deployPort.value = p.routeSpec?.containerPort || 8080;
+  deployListenerPorts.value = selectedDeployListeners(p.routeSpec);
   deployDomainPermanent.value = true;
   deployDomainRefreshDays.value = 30;
   deployPortMapping.value = false;
@@ -1127,6 +1135,11 @@ async function openEditApp(app: App) {
       configuration.current.routeSpec?.containerPort ||
       target.routeSpec?.containerPort ||
       8080;
+    const currentListeners = selectedDeployListeners(configuration.current.routeSpec);
+    deployListenerPorts.value = selectedDeployListeners(target.routeSpec).map((listener) => {
+      const previous = currentListeners.find((item) => item.key === listener.key);
+      return { ...listener, containerPort: previous && listener.userEditable ? previous.containerPort : listener.containerPort, mappingEnabled: previous?.mappingEnabled === true };
+    });
     deployEnvironment.value = (target.runtimeSpec?.editableEnvKeys || []).map(
       (key) => ({
         key,
@@ -1179,7 +1192,7 @@ async function deploy() {
     error.value = `新版本需要先配置 Secret：${missingDeploySecretKeys.value.join("、")}`;
     return;
   }
-  if (!Number.isInteger(deployPort.value) || deployPort.value < 1 || deployPort.value > 65535) {
+  if (deployListenerPorts.value.some((item) => !Number.isInteger(item.containerPort) || item.containerPort < 1 || item.containerPort > 65535)) {
     error.value = "应用监听端口必须是 1 到 65535 之间的整数";
     return;
   }
@@ -1194,10 +1207,6 @@ async function deploy() {
     }
     if (new TextEncoder().encode(deployAccessPassword.value).length > 72) {
       error.value = "密码访问的密码不能超过 72 字节";
-      return;
-    }
-    if (deployPortMapping.value) {
-      error.value = "密码访问不能与端口直连同时开启，端口直连会绕过域名网关";
       return;
     }
   }
@@ -1240,10 +1249,8 @@ async function deploy() {
       dependencies: p.runtimeSpec?.editableOptions?.dependencies
         ? deployDependencies.value
         : undefined,
-      portMappingEnabled: deployPortMappingAvailable.value
-        ? deployPortMapping.value
-        : undefined,
       containerPort: deployPort.value,
+      listenerPorts: deployListenerPorts.value.map((item) => ({ key: item.key, containerPort: item.containerPort, mappingEnabled: item.mappingEnabled === true })),
     };
     const changedSecrets = Object.fromEntries(
       Object.entries(deploySecrets.value).filter(
@@ -2810,12 +2817,16 @@ async function exitImpersonation() {
                 }}</small
               ></label
             >
-            <label class="readonly-field">
-              <span class="readonly-tag">模板固定</span>
+            <div class="deploy-listeners">
               <span class="ro-label">应用监听端口</span>
-              <strong>{{ deployPort }}</strong>
-              <small>由产品模板声明；Gateway、健康检查和端口映射会统一使用此端口</small>
-            </label>
+              <div v-for="listener in deployListenerPorts" :key="listener.key" class="deploy-listener-row">
+                <div><strong>{{ listener.remark || listener.key }}</strong><small>{{ listener.primary ? "域名网关主入口" : listener.key }}</small></div>
+                <input v-model.number="listener.containerPort" type="number" min="1" max="65535" :readonly="!listener.userEditable" />
+                <label v-if="listener.mappingAvailable" class="listener-map-toggle"><input v-model="listener.mappingEnabled" type="checkbox" /><span>端口直连</span></label>
+                <span v-else class="quiet">仅内网</span>
+              </div>
+              <small>每个直连端口由系统独立分配宿主机端口；直连不会经过域名密码保护。</small>
+            </div>
             <label v-if="deployMode === 'create'"
               >独立子域名刷新方式<select v-model="deployDomainPermanent">
                 <option :value="true">永久不变</option>
@@ -2833,24 +2844,10 @@ async function exitImpersonation() {
                 required
               /><small>最低 1 天；如需长期固定，请选择“永久不变”</small></label
             >
-            <div
-              v-if="deployPortMappingAvailable"
-              class="switch-setting deploy-port-mapping"
-            >
-              <div>
-                <strong>开启端口映射（直连）</strong
-                ><small
-                  >在宿主机直接发布端口，绕过网关直连；端口由系统自动分配</small
-                >
-              </div>
-              <label class="switch"
-                ><input v-model="deployPortMapping" type="checkbox" /><span
-              /></label>
-            </div>
             <div class="switch-setting deploy-password-access">
               <div>
                 <strong>密码访问</strong>
-                <small>关闭时任何人都可访问应用域名；开启后浏览器会要求输入用户名和密码</small>
+                <small>仅保护应用域名入口；开启的端口直连仍可同时使用，且不会经过此密码验证</small>
               </div>
               <label class="switch"><input v-model="deployPasswordAccess" type="checkbox" /><span /></label>
             </div>

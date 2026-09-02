@@ -73,11 +73,13 @@ type Version = {
   routeSpec: Record<string, unknown>;
   healthSpec: Record<string, unknown>;
 };
+type ListenerPort = { key: string; containerPort: number; remark: string; primary: boolean; userEditable: boolean; mappingAvailable: boolean; mappingEnabled?: boolean };
 type Configuration = {
-  current?: { runtimeSpec?: RuntimeSpec };
+  current?: { runtimeSpec?: RuntimeSpec; routeSpec?: Record<string, unknown> };
   configuredSecretKeys: string[];
   access: { passwordEnabled: boolean; username: string; passwordConfigured: boolean };
 };
+type PublishedPortMapping = { key: string; containerPort: number; hostPort: number; remark: string };
 
 const route = useRoute(),
   router = useRouter();
@@ -92,6 +94,7 @@ const app = ref<App | null>(null),
   versions = ref<Version[]>([]),
   configuredSecretKeys = ref<string[]>([]);
 const currentRuntime = ref<RuntimeSpec>({});
+const currentRouteSpec = ref<Record<string, unknown>>({});
 const selectedVersionID = ref(""),
   cpu = ref(1),
   memory = ref(512),
@@ -100,6 +103,8 @@ const selectedVersionID = ref(""),
 const envValues = ref<Record<string, string>>({});
 const commandText = ref("");
 const dependencies = ref<Dependency[]>([]);
+const listenerPorts = ref<ListenerPort[]>([]);
+const publishedPortMappings = ref<PublishedPortMapping[]>([]);
 const selectedVersion = computed(
   () =>
     versions.value.find((item) => item.id === selectedVersionID.value) || null,
@@ -127,6 +132,13 @@ const currentVersion = computed(() =>
 const containerPort = computed(() =>
   Number(selectedVersion.value?.routeSpec?.containerPort || 0),
 );
+function listenersForVersion(version: Version | null): ListenerPort[] {
+  const raw = version?.routeSpec?.listeners;
+  if (Array.isArray(raw) && raw.length) return (raw as ListenerPort[]).map((item) => ({ ...item }));
+  const port = Number(version?.routeSpec?.containerPort || 8080);
+  const mapping = (version?.routeSpec?.portMapping || {}) as Record<string, unknown>;
+  return [{ key: "web", containerPort: port, remark: "Web 入口", primary: true, userEditable: false, mappingAvailable: mapping.available === true, mappingEnabled: false }];
+}
 const volumeFloor = computed(() =>
   Number(
     selectedVersion.value?.runtimeSpec?.dataVolumeGiB ||
@@ -211,6 +223,16 @@ function applyVersion() {
     serviceSlug: d.serviceSlug,
     required: d.required,
   }));
+  const targetListeners = listenersForVersion(selectedVersion.value);
+  if (selectedVersion.value?.current) {
+    const current = listenersForVersion({ ...selectedVersion.value, routeSpec: currentRouteSpec.value });
+    listenerPorts.value = targetListeners.map((listener) => {
+      const previous = current.find((item) => item.key === listener.key);
+      return { ...listener, containerPort: previous && listener.userEditable ? previous.containerPort : listener.containerPort, mappingEnabled: previous?.mappingEnabled === true };
+    });
+  } else {
+    listenerPorts.value = targetListeners;
+  }
 }
 watch(selectedVersionID, applyVersion);
 async function load() {
@@ -237,6 +259,7 @@ async function load() {
     releases.value = releaseResult.releases;
     versions.value = versionResult.versions;
     currentRuntime.value = configuration.current?.runtimeSpec || {};
+    currentRouteSpec.value = configuration.current?.routeSpec || {};
     configuredSecretKeys.value = configuration.configuredSecretKeys || [];
     passwordAccess.value = configuration.access?.passwordEnabled === true;
     accessUsername.value = configuration.access?.username || "";
@@ -246,6 +269,15 @@ async function load() {
       (versions.value.find((item) => item.current) || versions.value[0])?.id ||
       "";
     applyVersion();
+    publishedPortMappings.value = [];
+    if (app.value.status === "running") {
+      try {
+        const routeInfo = await api<{ portMappings?: PublishedPortMapping[] }>("/apps/" + app.value.id + "/route");
+        publishedPortMappings.value = routeInfo.portMappings || [];
+      } catch {
+        publishedPortMappings.value = [];
+      }
+    }
   } catch (e) {
     error.value = (e as Error).message;
   } finally {
@@ -267,10 +299,6 @@ async function updateApp() {
     }
     if (new TextEncoder().encode(accessPassword.value).length > 72) {
       error.value = "密码访问的密码不能超过 72 字节";
-      return;
-    }
-    if (portMapping.value) {
-      error.value = "密码访问不能与端口直连同时开启，端口直连会绕过域名网关";
       return;
     }
   }
@@ -299,8 +327,7 @@ async function updateApp() {
       if (Object.keys(environment).length) resources.environment = environment;
     }
     if (dependenciesEditable.value) resources.dependencies = dependencies.value;
-    if (portMappingAvailable.value)
-      resources.portMappingEnabled = portMapping.value;
+    resources.listenerPorts = listenerPorts.value.map((item) => ({ key: item.key, containerPort: item.containerPort, mappingEnabled: item.mappingEnabled === true }));
     const changedSecrets = Object.fromEntries(
       Object.entries(secrets.value).filter(([, value]) => value.trim()),
     );
@@ -528,6 +555,7 @@ onMounted(async () => {
                 @click.stop
                 >直连 :{{ app.hostPort }}<ExternalLink :size="12"
               /></a>
+              <a v-for="mapping in publishedPortMappings.filter((item) => item.hostPort !== app?.hostPort)" :key="mapping.key" class="direct-access" :href="directPortURL(fullSettings, mapping.hostPort)" target="_blank" rel="noopener" :title="mapping.remark || mapping.key">{{ mapping.remark || mapping.key }} :{{ mapping.hostPort }}<ExternalLink :size="12" /></a>
             </div>
           </div>
         </article>
@@ -604,31 +632,12 @@ onMounted(async () => {
                   false
                 "
             /></label>
-            <div class="readonly-field">
-              <span class="readonly-tag">只读</span
-              ><span class="ro-label">容器内网端口</span
-              ><strong>{{ containerPort || "未声明" }}</strong
-              ><small>由内部网关反向代理，不映射宿主机</small>
-            </div>
           </div>
-          <div
-            v-if="portMappingAvailable"
-            class="switch-setting app-detail-portmapping"
-          >
-            <div>
-              <strong>开启端口映射（直连）</strong
-              ><small
-                >在宿主机发布端口直连访问，端口每次部署自动分配；网关转发仍然有效</small
-              >
-            </div>
-            <label class="switch"
-              ><input v-model="portMapping" type="checkbox" /><span
-            /></label>
-          </div>
+          <div class="deploy-listeners"><div v-for="listener in listenerPorts" :key="listener.key" class="deploy-listener-row"><div><strong>{{ listener.remark || listener.key }}</strong><small>{{ listener.primary ? "域名主入口" : listener.key }}</small></div><input v-model.number="listener.containerPort" type="number" min="1" max="65535" :readonly="!listener.userEditable" /><label v-if="listener.mappingAvailable"><input v-model="listener.mappingEnabled" type="checkbox" /> 端口直连</label><span v-else class="quiet">仅内网</span></div><small>端口直连不经过域名密码验证。</small></div>
           <div class="switch-setting app-detail-portmapping">
             <div>
               <strong>密码访问</strong>
-              <small>关闭时任何人都可访问应用域名；开启后需要 HTTP 用户名和密码</small>
+              <small>仅保护应用域名；可与端口直连同时开启</small>
             </div>
             <label class="switch"><input v-model="passwordAccess" type="checkbox" /><span /></label>
           </div>

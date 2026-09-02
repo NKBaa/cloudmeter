@@ -391,6 +391,9 @@ func queueExpiredBillingSuspendedAppDeletionOne(ctx context.Context, db *pgxpool
 		return
 	}
 	if _, err = tx.Exec(ctx, `DELETE FROM app_routes WHERE user_app_id=$1`, appID); err == nil {
+		_, err = tx.Exec(ctx, `DELETE FROM app_port_mappings WHERE user_app_id=$1`, appID)
+	}
+	if err == nil {
 		_, err = tx.Exec(ctx, `UPDATE user_apps SET deleted_at=now(),status='stopped',suspension_reason=NULL,billing_suspended_at=NULL WHERE id=$1`, appID)
 	}
 	if err == nil {
@@ -1034,40 +1037,66 @@ func processRestoreOne(ctx context.Context, db *pgxpool.Pool, logger *slog.Logge
 }
 
 func syncRestoredHostPort(ctx context.Context, db *pgxpool.Pool, appID, container string) error {
-	var enabled bool
+	var releaseID string
+	var legacyEnabled bool
 	var routeSpec map[string]any
-	if err := db.QueryRow(ctx, `SELECT app.port_mapping_enabled,release.immutable_snapshot->'route_spec'
+	if err := db.QueryRow(ctx, `SELECT release.id::text,app.port_mapping_enabled,release.immutable_snapshot->'route_spec'
 		FROM user_apps app JOIN app_releases release ON release.id=app.last_successful_release_id
-		WHERE app.id=$1`, appID).Scan(&enabled, &routeSpec); err != nil {
+		WHERE app.id=$1`, appID).Scan(&releaseID, &legacyEnabled, &routeSpec); err != nil {
 		return err
-	}
-	if !enabled || !routePortMappingAvailableWorker(routeSpec) {
-		return nil
-	}
-	hostPort, err := executor.PublishedPort(ctx, container, routePort(routeSpec))
-	if err != nil {
-		return fmt.Errorf("resolve restored host port: %w", err)
 	}
 	tx, err := db.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
-	result, err := tx.Exec(ctx, `UPDATE app_releases release SET host_port=$2
-		FROM user_apps app WHERE app.id=$1 AND release.id=app.last_successful_release_id AND release.user_app_id=app.id`, appID, hostPort)
+	rows, err := tx.Query(ctx, `SELECT port_key,container_port FROM app_port_mappings WHERE user_app_id=$1 AND release_id=$2 FOR UPDATE`, appID, releaseID)
 	if err != nil {
 		return err
 	}
-	if result.RowsAffected() != 1 {
-		return fmt.Errorf("active release not found while synchronizing restored host port")
+	type restoredMapping struct {
+		key                     string
+		containerPort, hostPort int
 	}
-	result, err = tx.Exec(ctx, `UPDATE app_routes route SET host_port=$2,updated_at=now()
-		FROM user_apps app WHERE app.id=$1 AND route.user_app_id=app.id AND route.release_id=app.last_successful_release_id`, appID, hostPort)
-	if err != nil {
-		return err
+	mappings := []restoredMapping{}
+	for rows.Next() {
+		var item restoredMapping
+		if err = rows.Scan(&item.key, &item.containerPort); err != nil {
+			rows.Close()
+			return err
+		}
+		item.hostPort, err = executor.PublishedPort(ctx, container, item.containerPort)
+		if err != nil {
+			rows.Close()
+			return fmt.Errorf("resolve restored host port %d: %w", item.containerPort, err)
+		}
+		mappings = append(mappings, item)
 	}
-	if result.RowsAffected() != 1 {
-		return fmt.Errorf("active route not found while synchronizing restored host port")
+	rows.Close()
+	if len(mappings) == 0 && legacyEnabled && routePortMappingAvailableWorker(routeSpec) {
+		port := routePort(routeSpec)
+		hostPort, lookupErr := executor.PublishedPort(ctx, container, port)
+		if lookupErr != nil {
+			return fmt.Errorf("resolve restored host port: %w", lookupErr)
+		}
+		mappings = append(mappings, restoredMapping{key: "web", containerPort: port, hostPort: hostPort})
+	}
+	for _, item := range mappings {
+		if _, err = tx.Exec(ctx, `UPDATE app_port_mappings SET host_port=$3 WHERE release_id=$1 AND port_key=$2`, releaseID, item.key, item.hostPort); err != nil {
+			return err
+		}
+	}
+	primaryPort := routePort(routeSpec)
+	for _, item := range mappings {
+		if item.containerPort != primaryPort {
+			continue
+		}
+		if _, err = tx.Exec(ctx, `UPDATE app_releases SET host_port=$2 WHERE id=$1`, releaseID, item.hostPort); err != nil {
+			return err
+		}
+		if _, err = tx.Exec(ctx, `UPDATE app_routes SET host_port=$2,updated_at=now() WHERE user_app_id=$1 AND release_id=$3`, appID, item.hostPort, releaseID); err != nil {
+			return err
+		}
 	}
 	return tx.Commit(ctx)
 }
@@ -1900,21 +1929,16 @@ func processOne(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
 		}
 		snap.Runtime["appId"] = appID
 		name := containerName(instanceID, releaseID)
-		routePort := routePort(snap.Route)
-		mapping := routePortMapping(snap.Route, routePort, portMappingEnabled)
-		if mapping != nil {
-			if hostPort, allocateErr := allocateConfiguredHostPort(ctx, tx); allocateErr != nil {
-				tx.Rollback(ctx)
-				markJobError(ctx, db, id, allocateErr, logger)
-				return
-			} else {
-				mapping.HostPort = hostPort
-			}
+		mappings, mappingMeta, mappingErr := routePortMappings(ctx, tx, snap.Route, portMappingEnabled)
+		if mappingErr != nil {
+			tx.Rollback(ctx)
+			markJobError(ctx, db, id, mappingErr, logger)
+			return
 		}
-		if mapping != nil {
-			logger.Info("port mapping enabled for deployment", "app", appID, "internal", mapping.InternalPort)
+		if len(mappings) > 0 {
+			logger.Info("port mappings enabled for deployment", "app", appID, "count", len(mappings))
 		}
-		containerID, err := executor.Create(ctx, name, image, runtimepolicy.UserNetworkName(runtimeOwner, userID), []string{serviceSlug, releaseAlias(releaseID)}, snap.Runtime, mapping)
+		containerID, err := executor.Create(ctx, name, image, runtimepolicy.UserNetworkName(runtimeOwner, userID), []string{serviceSlug, releaseAlias(releaseID)}, snap.Runtime, mappings)
 		if err != nil {
 			tx.Rollback(ctx)
 			markJobError(ctx, db, id, err, logger)
@@ -1930,15 +1954,22 @@ func processOne(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
 			markJobError(ctx, db, id, err, logger)
 			return
 		}
-		if mapping != nil && mapping.Enabled {
+		for index, mapping := range mappings {
 			publishedPort, publishedErr := executor.PublishedPort(ctx, containerID, mapping.InternalPort)
 			if publishedErr != nil {
 				tx.Rollback(ctx)
 				markJobError(ctx, db, id, fmt.Errorf("resolve published host port: %w", publishedErr), logger)
 				return
 			}
-			if _, err = tx.Exec(ctx, `UPDATE app_releases SET host_port=$2 WHERE id=$1 AND user_app_id=$3`, releaseID, publishedPort, appID); err != nil {
-				logger.Error("host port persistence failed", "error", err)
+			meta := mappingMeta[index]
+			if _, err = tx.Exec(ctx, `INSERT INTO app_port_mappings(user_app_id,release_id,port_key,container_port,host_port,remark) VALUES($1,$2,$3,$4,$5,$6)`, appID, releaseID, meta.Key, mapping.InternalPort, publishedPort, meta.Remark); err != nil {
+				logger.Error("port mapping persistence failed", "error", err)
+				return
+			}
+			if meta.Primary {
+				if _, err = tx.Exec(ctx, `UPDATE app_releases SET host_port=$2 WHERE id=$1 AND user_app_id=$3`, releaseID, publishedPort, appID); err != nil {
+					logger.Error("primary host port persistence failed", "error", err)
+				}
 			}
 		}
 	}
@@ -2138,6 +2169,14 @@ func processOne(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
 			logger.Error("route update failed", "error", err)
 			return
 		}
+		if _, err = tx.Exec(ctx, `DELETE FROM app_port_mappings WHERE user_app_id=$1 AND release_id<>$2`, appID, releaseID); err != nil {
+			logger.Error("old port mapping cleanup failed", "error", err)
+			return
+		}
+		if _, err = tx.Exec(ctx, `UPDATE user_apps SET port_mapping_enabled=$2 WHERE id=$1`, appID, routeHostPort > 0 || len(routeSnapshot.Route) > 0 && routeSpecHasEnabledMapping(routeSnapshot.Route)); err != nil {
+			logger.Error("application port mapping state update failed", "error", err)
+			return
+		}
 		message = "deployment completed"
 	}
 	if next == domain.DeploymentFailed {
@@ -2172,6 +2211,10 @@ func processOne(ctx context.Context, db *pgxpool.Pool, logger *slog.Logger) {
 				logger.Error("release failure update failed", "error", err)
 				return
 			}
+		}
+		if _, err = tx.Exec(ctx, `DELETE FROM app_port_mappings WHERE user_app_id=$1 AND release_id=$2`, appID, releaseID); err != nil {
+			logger.Error("failed port mapping cleanup failed", "error", err)
+			return
 		}
 		if state != domain.DeploymentRollingBack {
 			message = "deployment failed"
@@ -2375,6 +2418,18 @@ func routePortMappingAvailableWorker(routeSpec map[string]any) bool {
 	return available
 }
 
+func routeSpecHasEnabledMapping(routeSpec map[string]any) bool {
+	raw, _ := routeSpec["listeners"].([]any)
+	for _, value := range raw {
+		item, _ := value.(map[string]any)
+		enabled, _ := item["mappingEnabled"].(bool)
+		if enabled {
+			return true
+		}
+	}
+	return false
+}
+
 func healthPathOrRoot(health map[string]any) string {
 	if path, ok := health["path"].(string); ok && path != "" {
 		return path
@@ -2385,19 +2440,50 @@ func healthPathOrRoot(health map[string]any) string {
 // routePortMapping builds the direct host-port publish when the product
 // version makes it available and the user opted in for this instance. The host
 // port is always 0 so Docker scans for a free port and avoids conflicts.
-func routePortMapping(routeSpec map[string]any, internalPort int, userEnabled bool) *runtimepolicy.PortMapping {
-	raw, ok := routeSpec["portMapping"].(map[string]any)
-	if !ok {
-		return nil
-	}
-	available, _ := raw["available"].(bool)
-	if !available || !userEnabled {
-		return nil
-	}
-	return &runtimepolicy.PortMapping{Enabled: true, InternalPort: internalPort, HostPort: 0}
+type portMappingMeta struct {
+	Key, Remark string
+	Primary     bool
 }
 
-func allocateConfiguredHostPort(ctx context.Context, tx pgx.Tx) (int, error) {
+func routePortMappings(ctx context.Context, tx pgx.Tx, routeSpec map[string]any, legacyEnabled bool) ([]runtimepolicy.PortMapping, []portMappingMeta, error) {
+	raw, hasListeners := routeSpec["listeners"].([]any)
+	if !hasListeners || len(raw) == 0 {
+		if !legacyEnabled || !routePortMappingAvailableWorker(routeSpec) {
+			return nil, nil, nil
+		}
+		raw = []any{map[string]any{"key": "web", "containerPort": float64(routePort(routeSpec)), "remark": "Web 入口", "primary": true, "mappingEnabled": true}}
+	}
+	mappings := []runtimepolicy.PortMapping{}
+	meta := []portMappingMeta{}
+	reserved := []int{}
+	for _, value := range raw {
+		item, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		enabled, _ := item["mappingEnabled"].(bool)
+		if !enabled {
+			continue
+		}
+		portValue, ok := item["containerPort"].(float64)
+		if !ok || portValue < 1 || portValue > 65535 {
+			return nil, nil, fmt.Errorf("invalid listener port mapping")
+		}
+		hostPort, err := allocateConfiguredHostPort(ctx, tx, reserved)
+		if err != nil {
+			return nil, nil, err
+		}
+		reserved = append(reserved, hostPort)
+		key, _ := item["key"].(string)
+		remark, _ := item["remark"].(string)
+		primary, _ := item["primary"].(bool)
+		mappings = append(mappings, runtimepolicy.PortMapping{Enabled: true, InternalPort: int(portValue), HostPort: hostPort})
+		meta = append(meta, portMappingMeta{Key: key, Remark: remark, Primary: primary})
+	}
+	return mappings, meta, nil
+}
+
+func allocateConfiguredHostPort(ctx context.Context, tx pgx.Tx, reserved []int) (int, error) {
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, int64(918273645)); err != nil {
 		return 0, err
 	}
@@ -2408,7 +2494,9 @@ func allocateConfiguredHostPort(ctx context.Context, tx pgx.Tx) (int, error) {
 	var port int
 	err := tx.QueryRow(ctx, `SELECT candidate FROM generate_series($1::int,$2::int) candidate
 		WHERE NOT EXISTS (SELECT 1 FROM app_routes WHERE host_port=candidate)
-		ORDER BY candidate LIMIT 1`, minPort, maxPort).Scan(&port)
+		  AND NOT EXISTS (SELECT 1 FROM app_port_mappings WHERE host_port=candidate)
+		  AND NOT (candidate=ANY($3::int[]))
+		ORDER BY candidate LIMIT 1`, minPort, maxPort, reserved).Scan(&port)
 	if err == pgx.ErrNoRows {
 		return 0, fmt.Errorf("configured application port range is exhausted")
 	}

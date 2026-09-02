@@ -422,8 +422,17 @@ paths:
                   properties:
                     cpuCores: {type: number, minimum: 0.1, maximum: 64}
                     memoryMiB: {type: number, minimum: 64, maximum: 262144}
-                    containerPort: {type: integer, minimum: 1, maximum: 65535, description: Container application listening port used by health checks, gateway routing, and optional direct mapping.}
-                    portMappingEnabled: {type: boolean}
+                    listenerPorts:
+                      type: array
+                      maxItems: 16
+                      description: Per-listener user selections. Port changes and direct mappings are accepted only when enabled by the product version.
+                      items:
+                        type: object
+                        required: [key, containerPort, mappingEnabled]
+                        properties:
+                          key: {type: string, pattern: '^[a-z][a-z0-9-]{0,31}$'}
+                          containerPort: {type: integer, minimum: 1, maximum: 65535}
+                          mappingEnabled: {type: boolean}
                     dataVolumeGiB: {type: number, minimum: 1, maximum: 16384, description: One capacity shared by every persistent mount in this application and billed once.}
                     command: {type: array, items: {type: string}}
                     environment: {type: object, additionalProperties: {type: string}}
@@ -2062,6 +2071,22 @@ components:
       required: [containerPort, basePath, websocket, sse]
       properties:
         containerPort: {type: integer, minimum: 1, maximum: 65535}
+        listeners:
+          type: array
+          minItems: 1
+          maxItems: 16
+          items:
+            type: object
+            additionalProperties: false
+            required: [key, containerPort, remark, primary, userEditable, mappingAvailable, mappingEnabled]
+            properties:
+              key: {type: string, pattern: '^[a-z][a-z0-9-]{0,31}$'}
+              containerPort: {type: integer, minimum: 1, maximum: 65535}
+              remark: {type: string, maxLength: 120}
+              primary: {type: boolean, description: Exactly one listener is the wildcard-domain gateway and health-check port.}
+              userEditable: {type: boolean}
+              mappingAvailable: {type: boolean}
+              mappingEnabled: {type: boolean}
         basePath: {type: string, pattern: '^/', maxLength: 512}
         websocket: {type: boolean}
         sse: {type: boolean}

@@ -3,10 +3,85 @@ package httpapi
 import (
 	"fmt"
 	"math"
+	"regexp"
 	"strings"
 )
 
 const defaultDataPolicy = "volume_compatible"
+
+var listenerPortKeyPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
+
+type routeListener struct {
+	Key              string
+	ContainerPort    int
+	Remark           string
+	Primary          bool
+	UserEditable     bool
+	MappingAvailable bool
+	MappingEnabled   bool
+}
+
+func encodeRouteListeners(listeners []routeListener) []any {
+	items := make([]any, 0, len(listeners))
+	for _, listener := range listeners {
+		items = append(items, map[string]any{
+			"key": listener.Key, "containerPort": float64(listener.ContainerPort), "remark": listener.Remark,
+			"primary": listener.Primary, "userEditable": listener.UserEditable,
+			"mappingAvailable": listener.MappingAvailable, "mappingEnabled": listener.MappingEnabled,
+		})
+	}
+	return items
+}
+
+func routeListeners(spec map[string]any) ([]routeListener, error) {
+	raw, exists := spec["listeners"].([]any)
+	if !exists || len(raw) == 0 {
+		port, ok := exactInteger(spec["containerPort"])
+		if !ok || port < 1 || port > 65535 {
+			return nil, fmt.Errorf("route containerPort must be an integer from 1 to 65535")
+		}
+		return []routeListener{{Key: "web", ContainerPort: port, Remark: "Web 入口", Primary: true, MappingAvailable: routePortMappingAvailable(spec)}}, nil
+	}
+	if len(raw) > 16 {
+		return nil, fmt.Errorf("route listeners cannot exceed 16 ports")
+	}
+	listeners := make([]routeListener, 0, len(raw))
+	keys, ports, primaryCount := map[string]bool{}, map[int]bool{}, 0
+	for _, value := range raw {
+		item, ok := value.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("route listener must be an object")
+		}
+		key, _ := item["key"].(string)
+		port, portOK := exactInteger(item["containerPort"])
+		remark, _ := item["remark"].(string)
+		primary, _ := item["primary"].(bool)
+		editable, _ := item["userEditable"].(bool)
+		mappingAvailable, _ := item["mappingAvailable"].(bool)
+		mappingEnabled, _ := item["mappingEnabled"].(bool)
+		if !listenerPortKeyPattern.MatchString(key) || keys[key] {
+			return nil, fmt.Errorf("route listener key is invalid or duplicated")
+		}
+		if !portOK || port < 1 || port > 65535 || ports[port] {
+			return nil, fmt.Errorf("route listener port is invalid or duplicated")
+		}
+		if len([]rune(remark)) > 120 {
+			return nil, fmt.Errorf("route listener remark cannot exceed 120 characters")
+		}
+		if mappingEnabled && !mappingAvailable {
+			return nil, fmt.Errorf("route listener mapping cannot be enabled when unavailable")
+		}
+		if primary {
+			primaryCount++
+		}
+		keys[key], ports[port] = true, true
+		listeners = append(listeners, routeListener{key, port, remark, primary, editable, mappingAvailable, mappingEnabled})
+	}
+	if primaryCount != 1 {
+		return nil, fmt.Errorf("route listeners must contain exactly one primary port")
+	}
+	return listeners, nil
+}
 
 func normalizeProductVersionSpecs(runtimeSpec, routeSpec, healthSpec, updateSpec map[string]any) error {
 	if err := normalizeRouteSpec(routeSpec); err != nil {
@@ -28,11 +103,18 @@ func normalizeProductVersionSpecs(runtimeSpec, routeSpec, healthSpec, updateSpec
 }
 
 func normalizeRouteSpec(spec map[string]any) error {
-	port, ok := exactInteger(spec["containerPort"])
-	if !ok || port < 1 || port > 65535 {
-		return fmt.Errorf("route containerPort must be an integer from 1 to 65535")
+	listeners, err := routeListeners(spec)
+	if err != nil {
+		return err
 	}
-	spec["containerPort"] = float64(port)
+	primaryPort := 0
+	for _, listener := range listeners {
+		if listener.Primary {
+			primaryPort = listener.ContainerPort
+		}
+	}
+	spec["containerPort"] = float64(primaryPort)
+	spec["listeners"] = encodeRouteListeners(listeners)
 	delete(spec, "portEditable")
 	delete(spec, "portEnvVar")
 	basePath, err := normalizedAbsolutePath(spec["basePath"], "route basePath", false)
@@ -214,4 +296,17 @@ func routePortMappingAvailable(routeSpec map[string]any) bool {
 	}
 	available, _ := mapping["available"].(bool)
 	return available
+}
+
+func routeHasEnabledMapping(routeSpec map[string]any) bool {
+	listeners, err := routeListeners(routeSpec)
+	if err != nil {
+		return false
+	}
+	for _, listener := range listeners {
+		if listener.MappingEnabled {
+			return true
+		}
+	}
+	return false
 }

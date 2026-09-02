@@ -7065,3 +7065,47 @@ textarea:focus {
   color: var(--amber);
   border: 1px solid rgba(245, 158, 11, 0.25);
 }
+.listener-editor,
+.deploy-listeners {
+  display: grid;
+  gap: 10px;
+}
+.listener-row,
+.deploy-listener-row {
+  display: grid;
+  grid-template-columns: minmax(110px, .75fr) minmax(130px, .8fr) minmax(180px, 1.4fr) auto auto auto;
+  gap: 10px;
+  align-items: end;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+}
+.listener-row label,
+.deploy-listener-row > div {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.listener-row label > span,
+.deploy-listeners > .ro-label {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.listener-row .check-field,
+.listener-map-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 40px;
+  white-space: nowrap;
+}
+.deploy-listener-row {
+  grid-template-columns: minmax(150px, 1fr) 130px auto;
+  align-items: center;
+}
+.deploy-listener-row small { color: var(--text-muted); }
+.deploy-listener-row input[type="number"] { width: 100%; }
+@media (max-width: 900px) {
+  .listener-row, .deploy-listener-row { grid-template-columns: minmax(0, 1fr) minmax(120px, .6fr); align-items: end; }
+}

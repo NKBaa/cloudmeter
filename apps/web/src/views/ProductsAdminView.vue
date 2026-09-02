@@ -70,11 +70,13 @@ type EditableOptions = {
 };
 type RouteSpec = {
   containerPort?: number;
+  listeners?: ListenerPort[];
   basePath?: string;
   websocket?: boolean;
   sse?: boolean;
   portMapping?: { available?: boolean };
 };
+type ListenerPort = { key: string; containerPort: number; remark: string; primary: boolean; userEditable: boolean; mappingAvailable: boolean; mappingEnabled?: boolean };
 type HealthSpec = {
   path?: string;
   intervalSeconds?: number;
@@ -127,6 +129,7 @@ type VersionForm = {
   volumes: Volume[];
   dependencies: Dependency[];
   containerPort: number;
+  listeners: ListenerPort[];
   basePath: string;
   websocket: boolean;
   sse: boolean;
@@ -255,6 +258,7 @@ function defaultVersionForm(): VersionForm {
     volumes: [],
     dependencies: [],
     containerPort: 8080,
+    listeners: [{ key: "web", containerPort: 8080, remark: "Web 入口", primary: true, userEditable: false, mappingAvailable: false }],
     basePath: "/",
     websocket: true,
     sse: true,
@@ -281,6 +285,13 @@ function resetVersionForm() {
   fieldErrors.value = {};
   editingVersion.value = null;
   if (selected.value) versionDrafts.delete(selected.value);
+}
+function addListenerPort() {
+  const index = versionForm.listeners.length + 1;
+  versionForm.listeners.push({ key: `port-${index}`, containerPort: 8000 + index, remark: "", primary: false, userEditable: false, mappingAvailable: false });
+}
+function removeListenerPort(index: number) {
+  if (!versionForm.listeners[index]?.primary) versionForm.listeners.splice(index, 1);
 }
 function cloneVersionForm(source: VersionForm): VersionForm {
   return JSON.parse(JSON.stringify(source)) as VersionForm;
@@ -535,6 +546,23 @@ async function importTemplate(event: Event) {
         route.containerPort ?? runtime.containerPort,
         8080,
       ),
+      listeners: Array.isArray(route.listeners) && route.listeners.length
+        ? route.listeners.map((listener: any, index: number) => ({
+            key: String(listener.key || (index === 0 ? "web" : `port-${index + 1}`)),
+            containerPort: numberValue(listener.containerPort, 8080 + index),
+            remark: String(listener.remark || ""),
+            primary: listener.primary === true || index === 0,
+            userEditable: listener.userEditable === true,
+            mappingAvailable: listener.mappingAvailable === true,
+          }))
+        : [{
+            key: "web",
+            containerPort: numberValue(route.containerPort ?? runtime.containerPort, 8080),
+            remark: "Web 入口",
+            primary: true,
+            userEditable: false,
+            mappingAvailable: Boolean(route.portMapping?.available),
+          }],
       basePath: String(route.basePath || "/"),
       websocket: route.websocket !== false,
       sse: route.sse !== false,
@@ -906,7 +934,8 @@ async function createVersion() {
         imageDigest: versionForm.imageDigest.trim(),
         runtimeSpec,
         routeSpec: {
-          containerPort: versionForm.containerPort,
+          containerPort: versionForm.listeners.find((item) => item.primary)?.containerPort || versionForm.containerPort,
+          listeners: versionForm.listeners.map((item) => ({ ...item, key: item.key.trim().toLowerCase(), remark: item.remark.trim() })),
           basePath: versionForm.basePath.trim() || "/",
           websocket: versionForm.websocket,
           sse: versionForm.sse,
@@ -998,6 +1027,7 @@ function versionFormFromItem(item: Version): VersionForm {
       environment: importedEditableOption(runtime, "environment", false),
     },
     containerPort: numberValue(item.routeSpec?.containerPort, 8080),
+    listeners: item.routeSpec?.listeners?.length ? item.routeSpec.listeners.map((listener) => ({ ...listener })) : [{ key: "web", containerPort: numberValue(item.routeSpec?.containerPort, 8080), remark: "Web 入口", primary: true, userEditable: false, mappingAvailable: Boolean(item.routeSpec?.portMapping?.available) }],
     basePath: item.routeSpec?.basePath ?? "/",
     websocket: item.routeSpec?.websocket !== false,
     sse: item.routeSpec?.sse !== false,
@@ -1872,23 +1902,20 @@ function dataPolicyLabel(value?: string) {
                   >
                 </div>
               </div>
+              <div class="listener-editor">
+                <div v-for="(listener, index) in versionForm.listeners" :key="index" class="listener-row">
+                  <label><span>端口标识</span><input v-model="listener.key" pattern="[a-z][a-z0-9-]{0,31}" required /></label>
+                  <label><span>容器监听端口</span><input v-model.number="listener.containerPort" type="number" min="1" max="65535" required /></label>
+                  <label><span>用途备注</span><input v-model="listener.remark" maxlength="120" placeholder="例如 Web、API、WebSocket" /></label>
+                  <label class="check-field"><input v-model="listener.userEditable" type="checkbox" /><span>用户可改</span></label>
+                  <label class="check-field"><input v-model="listener.mappingAvailable" type="checkbox" /><span>允许直连</span></label>
+                  <button v-if="!listener.primary" type="button" class="secondary compact" @click="removeListenerPort(index)">删除</button>
+                  <span v-else class="readonly-tag">域名主入口</span>
+                </div>
+                <button type="button" class="secondary compact" @click="addListenerPort">添加监听端口</button>
+              </div>
               <div class="config-grid route-fields-grid">
                 <label class="aligned-config-field"
-                  ><span>容器内网监听端口</span
-                  ><input
-                    v-model.number="versionForm.containerPort"
-                    data-field="containerPort"
-                    :class="{ 'field-invalid': fieldError('containerPort') }"
-                    @input="clearFieldError('containerPort')"
-                    type="number"
-                    min="1"
-                    max="65535"
-                    step="1"
-                    required
-                  /><small
-                    >必须与镜像进程实际监听端口一致；它不是宿主机映射端口。平台会用此端口执行健康检查、内网转发和同用户容器互访</small
-                  ></label
-                ><label class="aligned-config-field"
                   ><span>内部 Base Path</span
                   ><input
                     v-model="versionForm.basePath"
@@ -1917,19 +1944,6 @@ function dataPolicyLabel(value?: string) {
                   <div><strong>允许 SSE 流式响应</strong></div>
                   <label class="switch"
                     ><input v-model="versionForm.sse" type="checkbox" /><span
-                  /></label>
-                </div>
-                <div class="switch-setting route-port-mapping">
-                  <div>
-                    <strong>允许用户开启端口映射</strong
-                    ><small
-                      >开启后用户可在部署时为实例选择直连访问，端口每次部署由系统自动分配</small
-                    >
-                  </div>
-                  <label class="switch"
-                    ><input
-                      v-model="versionForm.portMappingAvailable"
-                      type="checkbox" /><span
                   /></label>
                 </div>
               </div>

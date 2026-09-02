@@ -89,8 +89,8 @@ func (e *DockerExecutor) Images(ctx context.Context) ([]DockerImage, error) {
 // cached image instead of re-pulling it.
 func (e *DockerExecutor) ImageExists(ctx context.Context, reference string) bool {
 	var rawImages []struct {
-		ID       string   `json:"Id"`
-		RepoTags []string `json:"RepoTags"`
+		ID          string   `json:"Id"`
+		RepoTags    []string `json:"RepoTags"`
 		RepoDigests []string `json:"RepoDigests"`
 	}
 	if err := e.request(ctx, http.MethodGet, "/images/json?all=false", nil, &rawImages); err != nil {
@@ -111,7 +111,8 @@ func (e *DockerExecutor) ImageExists(ctx context.Context, reference string) bool
 
 func (e *DockerExecutor) RemoveImage(ctx context.Context, imageID string) error {
 	if !strings.HasPrefix(imageID, "sha256:") || len(imageID) != 71 {
-		return fmt.Errorf("invalid docker image ID")	}
+		return fmt.Errorf("invalid docker image ID")
+	}
 	return e.request(ctx, http.MethodDelete, "/images/"+urlEscape(imageID)+"?force=false&noprune=false", nil, nil)
 }
 
@@ -529,7 +530,7 @@ type PortMapping struct {
 	HostPort     int // 0 = auto-assign
 }
 
-func (e *DockerExecutor) Create(ctx context.Context, name, image, network string, aliases []string, spec map[string]any, mapping *PortMapping) (string, error) {
+func (e *DockerExecutor) Create(ctx context.Context, name, image, network string, aliases []string, spec map[string]any, mappings []PortMapping) (string, error) {
 	if err := e.assertNetworkOwner(ctx, network); err != nil {
 		return "", err
 	}
@@ -572,11 +573,17 @@ func (e *DockerExecutor) Create(ctx context.Context, name, image, network string
 	}
 	endpoints := map[string]any{network: endpoint}
 	exposed := map[string]any{}
-	if mapping != nil && mapping.Enabled && mapping.InternalPort >= 1 && mapping.InternalPort <= 65535 {
+	bindings := map[string]any{}
+	for _, mapping := range mappings {
+		if !mapping.Enabled || mapping.InternalPort < 1 || mapping.InternalPort > 65535 {
+			continue
+		}
 		portKey := fmt.Sprintf("%d/tcp", mapping.InternalPort)
-		host := fmt.Sprintf("%d", mapping.HostPort)
 		exposed[portKey] = struct{}{}
-		hostConfig["PortBindings"] = map[string]any{portKey: []any{map[string]any{"HostPort": host}}}
+		bindings[portKey] = []any{map[string]any{"HostPort": fmt.Sprintf("%d", mapping.HostPort)}}
+	}
+	if len(bindings) > 0 {
+		hostConfig["PortBindings"] = bindings
 		// Internal user networks cannot publish host ports. Attach the default
 		// bridge as a secondary network so the direct host mapping materializes,
 		// while the app keeps its service aliases on the user network.

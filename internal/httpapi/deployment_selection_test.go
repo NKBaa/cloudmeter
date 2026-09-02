@@ -30,6 +30,33 @@ func TestSelectedRouteSpecUsesTemplateInternalPort(t *testing.T) {
 	}
 }
 
+func TestSelectedRouteSpecAppliesPerListenerPermissions(t *testing.T) {
+	template := map[string]any{
+		"containerPort": 8080.0,
+		"listeners": []any{
+			map[string]any{"key": "web", "containerPort": 8080.0, "remark": "Web", "primary": true, "userEditable": false, "mappingAvailable": true},
+			map[string]any{"key": "api", "containerPort": 9000.0, "remark": "API", "primary": false, "userEditable": true, "mappingAvailable": false},
+		},
+	}
+	selected, err := selectedRouteSpec(template, selectedResources{ListenerPorts: []selectedListenerPort{{Key: "web", ContainerPort: 8080, MappingEnabled: true}, {Key: "api", ContainerPort: 9001}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	listeners, err := routeListeners(selected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !listeners[0].MappingEnabled || listeners[1].ContainerPort != 9001 {
+		t.Fatalf("listeners=%+v", listeners)
+	}
+	if _, err = selectedRouteSpec(template, selectedResources{ListenerPorts: []selectedListenerPort{{Key: "web", ContainerPort: 8081}}}); err == nil {
+		t.Fatal("fixed listener port override accepted")
+	}
+	if _, err = selectedRouteSpec(template, selectedResources{ListenerPorts: []selectedListenerPort{{Key: "api", ContainerPort: 9000, MappingEnabled: true}}}); err == nil {
+		t.Fatal("unavailable direct mapping accepted")
+	}
+}
+
 func TestSelectedRuntimeSpecUsesOneSharedVolumeCapacity(t *testing.T) {
 	template := map[string]any{
 		"cpuCores": 1.0, "memoryMiB": 512.0, "systemDiskGiB": 5.0, "dataVolumeGiB": 10.0,
