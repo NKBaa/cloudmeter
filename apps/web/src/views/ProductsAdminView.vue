@@ -145,6 +145,7 @@ type VersionForm = {
   dataVolumeGiB: number;
   editableOptions: EditableOptions;
   companions: Companion[];
+  companionsEnabled: boolean;
 };
 
 const products = ref<Product[]>([]);
@@ -285,6 +286,7 @@ function defaultVersionForm(): VersionForm {
       environment: false,
     },
     companions: [],
+    companionsEnabled: false,
   };
 }
 function resetVersionForm() {
@@ -909,13 +911,13 @@ async function createVersion() {
       secretDescriptions: secretDescriptions(),
       editableSecretKeys: editableSecretKeys(),
       dependencies: dependencies(),
-      companions: versionForm.companions.map((companion) => ({
+      companions: versionForm.companionsEnabled ? versionForm.companions.map((companion) => ({
         key: companion.key.trim().toLowerCase(), name: companion.name.trim(), image: companion.image.trim(), serviceName: companion.serviceName.trim().toLowerCase(), cpuCores: companion.cpuCores, memoryMiB: companion.memoryMiB, ports: companion.ports,
         environment: uniqueEntries(companion.environment),
         command: companion.command.map((item: any) => typeof item === "string" ? item.trim() : String(item.value || "").trim()).filter(Boolean),
         volumes: companion.volumes,
         health: companion.healthPort ? { containerPort: companion.healthPort, path: companion.healthPath || "", timeoutSeconds: 5 } : undefined,
-      })),
+      })) : [],
     };
     if (versionForm.volumes.length)
       runtimeSpec.dataVolumeGiB = versionForm.dataVolumeGiB;
@@ -986,6 +988,7 @@ async function createVersion() {
   }
 }
 function applyAstrBotNapCatPreset() {
+  versionForm.companionsEnabled = true;
   versionForm.imageDigest = "soulter/astrbot:v4.0.0";
   versionForm.containerPort = 6185;
   versionForm.environment = [{ key: "TZ", value: "Asia/Shanghai", editable: false, description: "时区" }];
@@ -1060,6 +1063,7 @@ function versionFormFromItem(item: Version): VersionForm {
       healthPort: numberValue(companion.health?.containerPort, 0),
       healthPath: String(companion.health?.path || ""),
     })),
+    companionsEnabled: Array.isArray(runtime.companions) && runtime.companions.length > 0,
   };
 }
 async function loadVersionIntoEditor(item: Version) {
@@ -1515,13 +1519,14 @@ function dataPolicyLabel(value?: string) {
                 >
               </div>
             </section>
-            <section class="config-section" v-if="versionForm.companions.length || selectedProduct">
+            <section class="config-section">
               <div class="config-heading with-action">
                 <Network :size="18" />
                 <div><strong>组合容器</strong><small>与主容器一起发布、更新和回滚；仅主容器接入公网</small></div>
-                <button type="button" class="secondary compact" @click="applyAstrBotNapCatPreset">AstrBot + NapCat 预设</button>
+                <label class="switch-setting"><span>启用组合部署</span><label class="switch"><input v-model="versionForm.companionsEnabled" type="checkbox" /><span /></label></label>
+                <button v-if="versionForm.companionsEnabled" type="button" class="secondary compact" @click="applyAstrBotNapCatPreset">AstrBot + NapCat 预设</button>
               </div>
-              <div class="repeat-list">
+              <div v-if="versionForm.companionsEnabled" class="repeat-list">
                 <div v-for="(companion, index) in versionForm.companions" :key="index" class="repeat-row">
                   <input v-model="companion.name" placeholder="显示名称" />
                   <input v-model="companion.key" placeholder="服务标识，如 napcat" pattern="[a-z][a-z0-9-]{0,31}" />

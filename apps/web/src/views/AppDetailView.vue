@@ -62,6 +62,7 @@ type RuntimeSpec = {
   editableEnvKeys?: string[];
   envDescriptions?: Record<string, string>;
   dependencies?: Dependency[];
+  companions?: Array<{ key: string; name: string; serviceName: string; cpuCores?: number; memoryMiB?: number; ports?: number[]; health?: { containerPort?: number } }>;
 };
 type Version = {
   id: string;
@@ -159,6 +160,11 @@ const passwordAccess = ref(false);
 const accessUsername = ref("");
 const accessPassword = ref("");
 const accessPasswordConfigured = ref(false);
+const containerResources = computed(() => {
+  const spec = selectedVersion.value?.runtimeSpec;
+  if (!spec) return [];
+  return [{ key: "primary", name: app.value?.productSlug || "主容器", serviceName: "公网入口", cpuCores: Number(spec.cpuCores || 1), memoryMiB: Number(spec.memoryMiB || 512), ports: containerPort.value ? [containerPort.value] : [] }, ...(spec.companions || []).map((item) => ({ key: item.key, name: item.name, serviceName: item.serviceName, cpuCores: Number(item.cpuCores || 0), memoryMiB: Number(item.memoryMiB || 0), ports: item.ports || [] }))];
+});
 
 function versionName(item: Version) {
   return item.versionLabel
@@ -531,6 +537,14 @@ onMounted(async () => {
             </div>
           </div>
         </article>
+      </section>
+      <section v-if="containerResources.length > 1" class="config-section">
+        <div class="config-heading"><Server :size="18" /><div><strong>组合容器资源</strong><small>计费合并到当前应用，详情按容器分别展示</small></div></div>
+        <div class="repeat-list">
+          <div v-for="item in containerResources" :key="item.key" class="repeat-row">
+            <strong>{{ item.name }}</strong><span>{{ item.serviceName }}</span><span>CPU {{ item.cpuCores }} 核</span><span>内存 {{ item.memoryMiB }} MiB</span><span>内网端口 {{ item.ports.join(', ') || '未声明' }}</span>
+          </div>
+        </div>
       </section>
       <section class="config-section">
         <div class="config-section-head" @click="configExpanded = !configExpanded" style="cursor: pointer; user-select: none;">
