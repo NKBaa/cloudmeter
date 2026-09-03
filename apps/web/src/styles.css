@@ -5057,8 +5057,10 @@ input.field-invalid, select.field-invalid, textarea.field-invalid {
   gap: 3px;
 }
 .deploy-section-heading strong {
-  font-size: 12px;
-  font-weight: 650;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.35;
 }
 .deploy-section-heading small,
 .deploy-section-note {
@@ -7212,7 +7214,7 @@ textarea:focus {
 .listener-add-action:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .deploy-listener-row {
   display: grid;
-  grid-template-columns: minmax(140px, 1fr) 88px 96px;
+  grid-template-columns: minmax(140px, 1fr) 88px 122px;
   gap: 8px;
   min-height: 48px;
   padding: 6px 8px;
@@ -7223,7 +7225,9 @@ textarea:focus {
 }
 .deploy-listener-row > div:first-child { gap: 2px; }
 .deploy-listener-row strong {
-  font-size: 12px;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 650;
   line-height: 1.35;
 }
 .deploy-listener-row small {
@@ -7246,7 +7250,7 @@ textarea:focus {
   gap: 8px;
   min-height: 24px;
   color: var(--text);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   white-space: nowrap;
 }
@@ -7259,7 +7263,7 @@ textarea:focus {
 @media (max-width: 900px) {
   .listener-fields { grid-template-columns: minmax(0, 1fr) minmax(140px, .7fr); }
   .listener-fields label:last-child { grid-column: 1 / -1; }
-  .deploy-listener-row { grid-template-columns: minmax(0, 1fr) 88px 96px; }
+  .deploy-listener-row { grid-template-columns: minmax(0, 1fr) 88px 122px; }
 }
 @media (max-width: 560px) {
   .listener-row { padding: 14px; }
